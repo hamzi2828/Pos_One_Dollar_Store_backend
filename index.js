@@ -11,9 +11,13 @@ const auditLogger = require('./src/middleware/auditLogger');
 const dashboardRoutes = require('./src/routes/dashboardRoutes');
 
 // CORS: allow frontend to access backend
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:3000';
+// FRONTEND_ORIGIN may list several sites, comma separated.
+const FRONTEND_ORIGINS = (process.env.FRONTEND_ORIGIN || 'http://localhost:3000')
+  .split(',')
+  .map((o) => o.trim().replace(/\/$/, ''))
+  .filter(Boolean);
 app.use(cors({
-  origin: [FRONTEND_ORIGIN, 'http://localhost:3000', 'http://localhost:3001', 'https://www.hamzamobile.com'],
+  origin: [...FRONTEND_ORIGINS, 'http://localhost:3000', 'http://localhost:3001', 'https://www.hamzamobile.com'],
   credentials: true,
 }));
 
