@@ -1,0 +1,625 @@
+// createProductService.js
+const Product = require('../../models/product');
+const crypto = require('crypto');
+
+// Check if Vercel Blob is configured
+const USE_BLOB_STORAGE = !!process.env.BLOB_READ_WRITE_TOKEN;
+
+// Helper function to convert uploaded filename to public path (for local storage)
+const toPublicPath = (filename) => {
+  if (!filename) return null;
+  return `/uploads/${filename}`;
+};
+
+// Import blob upload helper if using Vercel Blob
+let blobUpload;
+if (USE_BLOB_STORAGE) {
+  blobUpload = require('../../helper/blobUpload');
+}
+
+const {
+  parseMaybeJSON,
+  normalizeCode,
+  normalizeAttributes,
+  normalizeBarcodes,
+  normalizeBatches,
+  variantLabel,
+  isCodeTaken,
+  prepareProductCodes,
+  toBranchId,
+  getMainBranchId,
+} = require('../../helper/productCodes');
+const Branch = require('../../models/branch');
+
+// Helper function to check if value is a valid number
+const isNumber = (value) => {
+  return typeof value === 'number' && !isNaN(value) && isFinite(value);
+};
+
+// multipart/form-data sends booleans as strings
+const toBool = (value) => value === true || value === 'true' || value === 1 || value === '1' || value === 'on';
+
+const hasValue = (value) => value !== undefined && value !== null && value !== '';
+
+// piecesPerBox: integer >= 1 (default 1)
+const toPiecesPerBox = (value) => {
+  const n = Math.floor(Number(value));
+  return Number.isFinite(n) && n >= 1 ? n : 1;
+};
+
+// Stock in pieces from "boxes + loose pieces". Returns undefined when neither is given.
+const stockFromBoxes = (boxes, loosePieces, piecesPerBox) => {
+  if (!hasValue(boxes) && !hasValue(loosePieces)) return undefined;
+  const b = Math.max(0, Math.floor(Number(boxes) || 0));
+  const l = Math.max(0, Math.floor(Number(loosePieces) || 0));
+  return b * toPiecesPerBox(piecesPerBox) + l;
+};
+
+const nameInitials = (productName) =>
+  String(productName || '').split(' ').map(word => word.charAt(0)).join('').toUpperCase();
+
+// Middle part of a variant id/sku.
+// color + size only -> old format "RED-M"; otherwise built from the variant label
+// e.g. {Storage:"128GB", Color:"Black"} -> "128GB-BLACK".
+const variantCodePart = (variant = {}) => {
+  const color = String(variant.color || '').trim();
+  const size = String(variant.size || '').trim();
+  const attrs = normalizeAttributes(variant.attributes);
+  if (color && size && !attrs) {
+    return `${color.substring(0, 3).toUpperCase()}-${size.charAt(0).toUpperCase()}`;
+  }
+  const parts = variantLabel({ color, size, attributes: attrs })
+    .split(' / ')
+    .map((p) => p.replace(/[^A-Za-z0-9]/g, '').substring(0, 5).toUpperCase())
+    .filter(Boolean);
+  return parts.length ? parts.join('-') : 'VAR';
+};
+
+// Generate unique variant ID: PRODUCT-COLOR-SIZE-RANDOM (or PRODUCT-<label parts>-RANDOM)
+const generateVariantId = (productName, variant) => {
+  const randomSuffix = crypto.randomBytes(3).toString('hex').toUpperCase();
+  return `${nameInitials(productName)}-${variantCodePart(variant)}-${randomSuffix}`;
+};
+
+// Generate SKU for variant: PRODUCT-COLOR-SIZE-NN (or PRODUCT-<label parts>-NN)
+const generateVariantSKU = (productName, variant, index) => {
+  const variantNumber = String(index + 1).padStart(2, '0');
+  return `${nameInitials(productName)}-${variantCodePart(variant)}-${variantNumber}`;
+};
+
+// SKUs are scannable codes now, so a generated SKU must not clash with another
+// code of this product (`taken`, uppercased) or of another product.
+const ensureUniqueSku = async (sku, taken, excludeId = null) => {
+  let candidate = sku;
+  for (let n = 2; n < 50; n++) {
+    const code = normalizeCode(candidate);
+    if (!taken.has(code) && !(await isCodeTaken(code, excludeId))) {
+      taken.add(code);
+      return candidate;
+    }
+    candidate = n < 10 ? `${sku}-${n}` : `${sku}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+  }
+  throw new Error('Could not generate a unique variant SKU, please set one manually');
+};
+
+// Code-related fields of one variant from the request (strings allowed).
+// Returns only the keys that were present in the input.
+const parseVariantCodeFields = (v = {}) => {
+  const out = {};
+  if (v.attributes !== undefined) out.attributes = normalizeAttributes(v.attributes);
+  if (v.shortCode !== undefined) out.shortCode = normalizeCode(v.shortCode) || undefined;
+  if (v.barcodes !== undefined) out.barcodes = normalizeBarcodes(v.barcodes);
+  if (v.batches !== undefined) out.batches = normalizeBatches(v.batches);
+  return out;
+};
+
+// ----- Branch stock input (who gets the stock typed in the form) -----
+
+const badRequest = (message) => {
+  const err = new Error(message);
+  err.status = 400;
+  return err;
+};
+
+// `branchStock` from the request ([{ branch, stock }], may be a JSON string).
+// Returns undefined when not sent. Throws 400 on bad ids / numbers / duplicates.
+const parseBranchStockInput = (input, where = 'branchStock') => {
+  if (input === undefined || input === null || input === '') return undefined;
+  const list = parseMaybeJSON(input);
+  if (!Array.isArray(list)) throw badRequest(`${where} must be a list of { branch, stock }`);
+  const seen = new Set();
+  return list.map((row, i) => {
+    const branch = toBranchId(row && (row.branch || row.branchId));
+    if (!branch) throw badRequest(`${where}[${i}].branch is not a valid branch id`);
+    if (seen.has(branch)) throw badRequest(`${where} lists branch ${branch} twice`);
+    seen.add(branch);
+    const stock = Number(row.stock);
+    if (!Number.isInteger(stock) || stock < 0) throw badRequest(`${where}[${i}].stock must be a non-negative integer`);
+    return { branch, stock };
+  });
+};
+
+// 400 when one of these branch ids does not exist (soft-deleted = missing).
+const assertBranchesExist = async (ids) => {
+  const unique = [...new Set((ids || []).map(toBranchId).filter(Boolean))];
+  if (!unique.length) return;
+  let q = Branch.find({ _id: { $in: unique } });
+  if (q && typeof q.select === 'function') q = q.select('_id');
+  if (q && typeof q.lean === 'function') q = q.lean();
+  const found = new Set(((await q) || []).map((b) => String(b._id)));
+  const missing = unique.filter((id) => !found.has(id));
+  if (missing.length) throw badRequest(`Branch not found: ${missing.join(', ')}`);
+};
+
+/**
+ * Branch context for create/update. opts from the controller:
+ *   { branchId (write branch), isSuperAdmin, allBranches, warnings[] }
+ * No opts (old callers / scripts) = super admin working on the main branch.
+ */
+const branchContext = async (opts = {}) => {
+  const mainBranchId = toBranchId(opts.mainBranchId) || (await getMainBranchId());
+  const writeBranchId = toBranchId(opts.branchId) || mainBranchId;
+  const isSuperAdmin = opts.isSuperAdmin === undefined ? true : !!opts.isSuperAdmin;
+  return {
+    mainBranchId,
+    writeBranchId,
+    isSuperAdmin,
+    // Super admin looking at "all branches": `stock` in the form is the total.
+    allBranches: opts.allBranches === undefined ? !toBranchId(opts.branchId) && isSuperAdmin : !!opts.allBranches && isSuperAdmin,
+    warnings: Array.isArray(opts.warnings) ? opts.warnings : [],
+    branchIdsUsed: [],
+  };
+};
+
+// Branch of a batch typed in the form: the super admin may name one; everyone
+// else (and batches without one) -> the write branch.
+const assignBatchBranches = (batches, ctx) =>
+  (batches || []).map((b) => {
+    const wanted = toBranchId(b.branch);
+    const branch = ctx.isSuperAdmin && wanted ? wanted : ctx.writeBranchId;
+    if (wanted && !ctx.isSuperAdmin && wanted !== ctx.writeBranchId) {
+      ctx.warnings.push('Batches were saved in your branch (you can only add stock to your own branch)');
+    }
+    ctx.branchIdsUsed.push(branch);
+    return { ...b, branch };
+  });
+
+// `branchStock` typed for a unit: super admin only (others get a warning).
+const readBranchStock = (input, ctx, where) => {
+  const rows = parseBranchStockInput(input, where);
+  if (rows === undefined) return undefined;
+  if (!ctx.isSuperAdmin) {
+    ctx.warnings.push(`${where} ignored: only the super admin can set stock for several branches`);
+    return undefined;
+  }
+  rows.forEach((r) => ctx.branchIdsUsed.push(r.branch));
+  return rows;
+};
+
+// Process color-specific media files
+const processColorMedia = (files, existingColorMedia = {}) => {
+  const colorMedia = typeof existingColorMedia === 'object' ? existingColorMedia : {};
+  
+  // Process color thumbnails
+  if (files.colorThumbnail) {
+    const thumbFiles = Array.isArray(files.colorThumbnail) ? files.colorThumbnail : [files.colorThumbnail];
+    thumbFiles.forEach(file => {
+      // Extract color from filename (format: color_originalname.ext)
+      const colorMatch = file.originalname.match(/^([^_]+)_/);
+      if (colorMatch) {
+        const color = colorMatch[1];
+        if (!colorMedia[color]) colorMedia[color] = { bannerUrls: [] };
+        colorMedia[color].thumbnailUrl = toPublicPath(file.filename);
+      }
+    });
+  }
+  
+  // Process color banners
+  if (files.colorBanner) {
+    const bannerFiles = Array.isArray(files.colorBanner) ? files.colorBanner : [files.colorBanner];
+    bannerFiles.forEach(file => {
+      // Extract color from filename
+      const colorMatch = file.originalname.match(/^([^_]+)_/);
+      if (colorMatch) {
+        const color = colorMatch[1];
+        if (!colorMedia[color]) colorMedia[color] = { bannerUrls: [] };
+        if (!colorMedia[color].bannerUrls) colorMedia[color].bannerUrls = [];
+        
+        // Add new banner URL to existing banners
+        const newBannerUrl = toPublicPath(file.filename);
+        colorMedia[color].bannerUrls.push(newBannerUrl);
+      }
+    });
+  }
+  
+  return colorMedia;
+};
+
+const createProductService = {
+  /**
+   * Create a new product with the provided data and files
+   * @param {Object} payload - Request body data
+   * @param {Object} files - Uploaded files
+   * @returns {Promise<Object>} Created product
+   */
+  createProduct: async (payload, files, opts = {}) => {
+    // Stock / boxes / batches typed in the form go to the write branch
+    // (opts.branchId); the super admin may send `branchStock` instead.
+    const ctx = await branchContext(opts);
+
+    let {
+      name,
+      slug,
+      category,
+      subCategory,
+      price,
+      discountedPrice,
+      stock,
+      status = 'draft',
+      thumbnailUrl,
+      bannerUrls = [],
+      productType = 'single',
+      variants = [],
+      colorMedia,
+      description,
+      shortDescription,
+      features,
+      metaTitle,
+      metaDescription,
+      metaKeywords,
+      metaSchema,
+      displayOn = 'both',
+      websitePrice,
+      websiteDiscountedPrice,
+      preorderEnabled,
+      preorderMessage,
+      guidelineId,
+      showGuidelines,
+      dimensionLength,
+      dimensionWidth,
+      dimensionHeight,
+      weight,
+      compatibleCars,
+      sku,
+      costPrice,
+      shortCode,
+      barcodes,
+      batches,
+      piecesPerBox,
+      addFullBoxBarcode,
+      boxes,
+      loosePieces,
+    } = payload;
+
+    // Barcode / box / batch fields (may be JSON strings via multipart/form-data)
+    piecesPerBox = toPiecesPerBox(piecesPerBox);
+    addFullBoxBarcode = toBool(addFullBoxBarcode);
+    shortCode = normalizeCode(shortCode) || undefined;
+    barcodes = normalizeBarcodes(barcodes);
+    batches = assignBatchBranches(normalizeBatches(batches), ctx);
+    const singleBranchStock = productType === 'variant' ? undefined : readBranchStock(payload.branchStock, ctx, 'branchStock');
+
+    // Parse fields that might come as JSON strings via multipart/form-data
+    bannerUrls = parseMaybeJSON(bannerUrls) || [];
+    variants = parseMaybeJSON(variants) || [];
+    colorMedia = parseMaybeJSON(colorMedia);
+    compatibleCars = parseMaybeJSON(compatibleCars) || [];
+
+    // Process files - use Vercel Blob or local storage
+    if (USE_BLOB_STORAGE && blobUpload) {
+      // Upload to Vercel Blob
+      console.log('Using Vercel Blob storage...');
+      const blobResult = await blobUpload.processProductFiles(files);
+
+      if (blobResult.thumbnailUrl) {
+        thumbnailUrl = blobResult.thumbnailUrl;
+      }
+      if (blobResult.bannerUrls.length) {
+        bannerUrls = [...blobResult.bannerUrls, ...bannerUrls];
+      }
+      if (Object.keys(blobResult.colorMedia).length) {
+        colorMedia = { ...colorMedia, ...blobResult.colorMedia };
+      }
+    } else {
+      // Local storage processing
+      const thumbFile = Array.isArray(files?.thumbnail) ? files.thumbnail[0] : undefined;
+      const bannerFiles = Array.isArray(files?.banners) ? files.banners : [];
+
+      // Process color-specific media files if present
+      if (files.colorThumbnail || files.colorBanner || payload.existingColorThumbnails || payload.existingColorBanners) {
+        console.log('Files received:', Object.keys(files));
+        console.log('Processing color media...');
+        colorMedia = processColorMedia(files, colorMedia);
+      }
+
+      if (thumbFile) {
+        thumbnailUrl = toPublicPath(thumbFile.filename);
+      }
+      if (bannerFiles.length) {
+        const uploadedBanners = bannerFiles.map((f) => toPublicPath(f.filename));
+        if (Array.isArray(bannerUrls) && bannerUrls.length) {
+          bannerUrls = [...uploadedBanners, ...bannerUrls];
+        } else {
+          bannerUrls = uploadedBanners;
+        }
+      }
+    }
+
+    // Handle existing color thumbnails (for edit scenarios)
+    if (payload.existingColorThumbnails) {
+      const thumbsArray = Array.isArray(payload.existingColorThumbnails)
+        ? payload.existingColorThumbnails
+        : [payload.existingColorThumbnails];
+
+      thumbsArray.forEach(item => {
+        try {
+          const parsed = typeof item === 'string' ? JSON.parse(item) : item;
+          if (parsed.color && parsed.url) {
+            if (!colorMedia[parsed.color]) colorMedia[parsed.color] = { bannerUrls: [] };
+            if (!colorMedia[parsed.color].thumbnailUrl) {
+              colorMedia[parsed.color].thumbnailUrl = parsed.url;
+            }
+          }
+        } catch (e) {
+          console.error('Error parsing existingColorThumbnails item:', e);
+        }
+      });
+    }
+
+    // Handle existing color banners (for edit scenarios)
+    if (payload.existingColorBanners) {
+      const bannersArray = Array.isArray(payload.existingColorBanners)
+        ? payload.existingColorBanners
+        : [payload.existingColorBanners];
+
+      bannersArray.forEach(item => {
+        try {
+          const parsed = typeof item === 'string' ? JSON.parse(item) : item;
+          if (parsed.color && parsed.urls) {
+            if (!colorMedia[parsed.color]) colorMedia[parsed.color] = { bannerUrls: [] };
+            const existingBanners = parsed.urls || [];
+            const newBanners = colorMedia[parsed.color].bannerUrls || [];
+            const existingUrls = existingBanners.filter(url => !newBanners.includes(url));
+            colorMedia[parsed.color].bannerUrls = [...existingUrls, ...newBanners].slice(0, 10);
+          }
+        } catch (e) {
+          console.error('Error parsing existingColorBanners item:', e);
+        }
+      });
+    }
+
+    console.log('Final processed colorMedia:', colorMedia);
+
+    // Coerce numeric fields when coming from multipart strings
+    if (typeof price === 'string' && price !== '') price = Number(price);
+    if (typeof websitePrice === 'string' && websitePrice !== '') websitePrice = Number(websitePrice);
+    if (typeof discountedPrice === 'string' && discountedPrice !== '') discountedPrice = Number(discountedPrice);
+    if (typeof websiteDiscountedPrice === 'string' && websiteDiscountedPrice !== '') websiteDiscountedPrice = Number(websiteDiscountedPrice);
+    if (typeof stock === 'string' && stock !== '') stock = Number(stock);
+    
+    if (!name || !slug || !category) {
+      throw new Error('name, slug and category are required');
+    }
+
+    name = String(name).trim();
+    slug = String(slug).trim().toLowerCase();
+    category = String(category).trim();
+    subCategory = subCategory ? String(subCategory).trim() : undefined;
+    status = ['published', 'draft', 'out_of_stock'].includes(status) ? status : 'draft';
+
+    if (productType === 'variant') {
+      if (!Array.isArray(variants) || variants.length === 0) {
+        throw new Error('At least one variant is required for variant products');
+      }
+      
+      // Basic validation and ID generation for variants
+      variants = variants.map((v, index) => {
+        const color = String(v.color || '').trim();
+        const size = String(v.size || '').trim();
+        const codeFields = parseVariantCodeFields(v);
+        const variantBatches = assignBatchBranches(codeFields.batches || [], ctx);
+        const variantBranchStock = variantBatches.length
+          ? undefined
+          : readBranchStock(v.branchStock, ctx, `variants[${index}].branchStock`);
+        // Stock: batches win (computed by prepareProductCodes), then boxes + loose pieces, then stock
+        const boxStock = stockFromBoxes(v.boxes, v.loosePieces, piecesPerBox);
+        let variantStock;
+        if (variantBatches.length) variantStock = variantBatches.reduce((s, b) => s + (b.quantity || 0), 0);
+        else if (variantBranchStock) variantStock = variantBranchStock.reduce((s, r) => s + r.stock, 0);
+        else if (boxStock !== undefined) variantStock = boxStock;
+        else variantStock = Number(v.stock || 0);
+
+        // Parse discountedPrice - handle both number and string values
+        let discountedPrice = undefined;
+        if (v.discountedPrice !== undefined && v.discountedPrice !== null && v.discountedPrice !== '') {
+          const parsed = Number(v.discountedPrice);
+          if (!isNaN(parsed) && parsed > 0) {
+            discountedPrice = parsed;
+          }
+        }
+
+        // Parse websitePrice - handle both number and string values
+        let websitePrice = undefined;
+        if (v.websitePrice !== undefined && v.websitePrice !== null && v.websitePrice !== '') {
+          const parsed = Number(v.websitePrice);
+          if (!isNaN(parsed) && parsed > 0) {
+            websitePrice = parsed;
+          }
+        }
+
+        // Parse websiteDiscountedPrice - handle both number and string values
+        let websiteDiscountedPrice = undefined;
+        if (v.websiteDiscountedPrice !== undefined && v.websiteDiscountedPrice !== null && v.websiteDiscountedPrice !== '') {
+          const parsed = Number(v.websiteDiscountedPrice);
+          if (!isNaN(parsed) && parsed > 0) {
+            websiteDiscountedPrice = parsed;
+          }
+        }
+
+        // Parse costPrice for variant
+        let variantCostPrice = undefined;
+        if (v.costPrice !== undefined && v.costPrice !== null && v.costPrice !== '') {
+          const parsed = Number(v.costPrice);
+          if (!isNaN(parsed) && parsed >= 0) {
+            variantCostPrice = parsed;
+          }
+        }
+
+        return {
+          variantId: v.variantId || generateVariantId(name, { color, size, attributes: codeFields.attributes }), // Generate if not provided
+          color,
+          size,
+          attributes: codeFields.attributes,
+          shortCode: codeFields.shortCode,
+          barcodes: codeFields.barcodes || [],
+          batches: variantBatches,
+          // pieces per branch; typed stock -> the write branch
+          branchStock: variantBranchStock || (variantBatches.length ? [] : [{ branch: ctx.writeBranchId, stock: variantStock }]),
+          price: Number(v.price || 0),
+          websitePrice,
+          stock: variantStock,
+          // SKU generated below (after validation) if not provided
+          sku: v.sku ? String(v.sku).trim() : undefined,
+          costPrice: variantCostPrice,
+          discountedPrice,
+          websiteDiscountedPrice,
+        };
+      });
+
+      for (const v of variants) {
+        if (!v.color && !v.size && !v.attributes) {
+          throw new Error('Each variant must include at least one option (color, size or attributes)');
+        }
+        if (!isNumber(v.price) || v.price < 0) {
+          throw new Error('Variant price must be a non-negative number');
+        }
+        if (!Number.isInteger(v.stock) || v.stock < 0) {
+          throw new Error('Variant stock must be a non-negative integer');
+        }
+      }
+
+      // Generate missing SKUs, unique within this product and across products
+      const takenSkus = new Set(variants.map((v) => normalizeCode(v.sku)).filter(Boolean));
+      for (let index = 0; index < variants.length; index++) {
+        const v = variants[index];
+        if (!v.sku) v.sku = await ensureUniqueSku(generateVariantSKU(name, v, index), takenSkus);
+      }
+
+      // Derive stock and base price if not provided
+      const derivedStock = variants.reduce((sum, v) => sum + (Number(v.stock) || 0), 0);
+      const basePrice = isNumber(price) ? price : variants[0]?.price || 0;
+      stock = derivedStock;
+      price = basePrice;
+      
+    } else {
+      // single product validations
+      if (!isNumber(price) || price < 0) {
+        throw new Error('price must be a non-negative number');
+      }
+      if (batches.length) {
+        // Stock comes from the batches (summed by prepareProductCodes)
+        stock = batches.reduce((s, b) => s + (b.quantity || 0), 0);
+      } else if (singleBranchStock) {
+        stock = singleBranchStock.reduce((s, r) => s + r.stock, 0);
+      } else {
+        const boxStock = stockFromBoxes(boxes, loosePieces, piecesPerBox);
+        if (boxStock !== undefined) stock = boxStock;
+        if (!Number.isInteger(stock) || stock < 0) {
+          throw new Error('stock must be a non-negative integer');
+        }
+      }
+    }
+
+    // Enforce banner length on server as well
+    if (Array.isArray(bannerUrls) && bannerUrls.length > 5) {
+      bannerUrls = bannerUrls.slice(0, 5);
+    }
+
+    const doc = {
+      name,
+      slug,
+      category,
+      subCategory,
+      price,
+      websitePrice: (displayOn === 'both' && isNumber(websitePrice)) ? websitePrice : undefined,
+      discountedPrice: isNumber(discountedPrice) ? discountedPrice : undefined,
+      websiteDiscountedPrice: (displayOn === 'both' && isNumber(websiteDiscountedPrice)) ? websiteDiscountedPrice : undefined,
+      stock,
+      status,
+      thumbnailUrl: thumbnailUrl ? String(thumbnailUrl).trim() : undefined,
+      bannerUrls: Array.isArray(bannerUrls) ? bannerUrls.map((u) => String(u)) : [],
+      productType: productType === 'variant' ? 'variant' : 'single',
+      displayOn: ['website', 'pos', 'both'].includes(displayOn) ? displayOn : 'both',
+      variants: Array.isArray(variants) ? variants : [],
+      description: description ? String(description).trim() : undefined,
+      shortDescription: shortDescription ? String(shortDescription).trim() : undefined,
+      features: features ? String(features).trim() : undefined,
+      metaTitle: metaTitle ? String(metaTitle).trim() : undefined,
+      metaDescription: metaDescription ? String(metaDescription).trim() : undefined,
+      metaKeywords: metaKeywords ? String(metaKeywords).trim() : undefined,
+      metaSchema: metaSchema ? String(metaSchema).trim() : undefined,
+      preorderEnabled: preorderEnabled === 'true' || preorderEnabled === true,
+      preorderMessage: preorderMessage ? String(preorderMessage).trim() : '',
+      guidelineId: guidelineId && guidelineId !== 'null' && guidelineId !== '' ? guidelineId : null,
+      showGuidelines: showGuidelines === 'true' || showGuidelines === true,
+      // Dimensions (L x W x H) and weight
+      dimensionLength: dimensionLength ? String(dimensionLength).trim() : undefined,
+      dimensionWidth: dimensionWidth ? String(dimensionWidth).trim() : undefined,
+      dimensionHeight: dimensionHeight ? String(dimensionHeight).trim() : undefined,
+      weight: weight ? String(weight).trim() : undefined,
+      // SKU and Cost Price (top-level, for single products)
+      sku: sku ? String(sku).trim() : undefined,
+      costPrice: costPrice !== undefined && costPrice !== null && costPrice !== '' ? Number(costPrice) : undefined,
+      // Compatible cars
+      compatibleCars: Array.isArray(compatibleCars) ? compatibleCars.filter(Boolean) : [],
+      // Barcodes / packaging (single products; variant products keep these per variant)
+      shortCode,
+      barcodes,
+      batches,
+      piecesPerBox,
+      // Pieces per branch (single product). Variant products: filled from the variants.
+      branchStock:
+        productType === 'variant'
+          ? []
+          : singleBranchStock || (batches.length ? [] : [{ branch: ctx.writeBranchId, stock }]),
+    };
+
+    // Add colorMedia to the document
+    if (colorMedia && typeof colorMedia === 'object' && Object.keys(colorMedia).length > 0) {
+      console.log('Adding colorMedia to document:', colorMedia);
+      doc.colorMedia = colorMedia;
+    }
+
+    // Short codes, batch numbers, full-box code, stock from batches, scanCodes.
+    // Throws 409 DUPLICATE_CODE if a code is already used.
+    await assertBranchesExist(ctx.branchIdsUsed);
+    await prepareProductCodes(doc, {
+      addFullBoxBarcode,
+      mainBranchId: ctx.mainBranchId,
+      defaultBranchId: ctx.writeBranchId,
+    });
+
+    console.log('Final document before saving:', JSON.stringify(doc, null, 2));
+    const created = await Product.create(doc);
+    console.log('Created product with colorMedia:', created.colorMedia);
+    return created;
+  }
+};
+
+module.exports = createProductService;
+// Shared with updateProductService
+module.exports.helpers = {
+  toBool,
+  hasValue,
+  toPiecesPerBox,
+  stockFromBoxes,
+  generateVariantId,
+  generateVariantSKU,
+  ensureUniqueSku,
+  parseVariantCodeFields,
+  parseBranchStockInput,
+  assertBranchesExist,
+  branchContext,
+  assignBatchBranches,
+  readBranchStock,
+};

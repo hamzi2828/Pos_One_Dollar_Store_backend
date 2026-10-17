@@ -1,0 +1,59 @@
+{
+  "name": "hamza-mobile-backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "build": "echo 'Build complete'",
+    "db:clone": "node cloneDatabase.js",
+    "seed:admin": "node Seeder/createAdminUser.js",
+    "seed:networks": "node Seeder/createNetworks.js",
+    "seed:trainers": "node Seeder/createTrainers.js",
+    "seed:classes": "node Seeder/createGymClasses.js",
+    "seed:categories": "node src/seeds/seedCategories.js",
+    "seed:pages": "node src/seeds/seedPages.js",
+    "seed:blog-content": "node src/seeds/seedBlogContent.js",
+    "seed:cars": "node src/seeds/seedCars.js",
+    "seed:hero-slides": "node src/seeds/seedHeroSlides.js",
+    "seed:attributes": "node src/seeds/seedAttributes.js",
+    "seed:autocare-categories": "node src/seeds/seedAutoCareCategories.js",
+    "seed:category-meta": "node src/seeds/seedCategoryMeta.js",
+    "seed:products": "node src/seeds/seedProducts.js",
+    "seed:car-hierarchy": "node src/seeds/seedCarHierarchy.js",
+    "migrate:product-codes": "node scripts/backfillProductCodes.js",
+    "migrate:branches": "node scripts/migrateBranches.js",
+    "seed:demo-branches": "node Seeder/createDemoBranches.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hamzi2828/hk_auto_care_backend.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/hamzi2828/hk_auto_care_backend/issues"
+  },
+  "homepage": "https://github.com/hamzi2828/hk_auto_care_backend#readme",
+  "dependencies": {
+    "@vercel/blob": "^0.27.1",
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "google-auth-library": "^9.15.1",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.17.1",
+    "multer": "^2.0.2",
+    "nodemailer": "^8.0.1",
+    "redis": "^5.12.1",
+    "stripe": "^18.5.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10"
+  }
+}
