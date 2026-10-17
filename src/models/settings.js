@@ -9,13 +9,13 @@ const settingsSchema = new mongoose.Schema(
       type: String, 
       required: true, 
       trim: true, 
-      default: 'HK Auto Care' 
+      default: 'Mirpur Mobile & Stationery' 
     },
     siteUrl: { 
       type: String, 
       required: true, 
       trim: true, 
-      default: 'https://hamzamobile.com' 
+      default: 'https://mirpur-pos.vercel.app' 
     },
     logoUrl: {
       type: String,
@@ -237,8 +237,8 @@ settingsSchema.statics.getSettings = async function() {
   if (!settings) {
     // Create default settings if none exist
     settings = await this.create({
-      siteName: 'HK Auto Care',
-      siteUrl: 'https://hamzamobile.com',
+      siteName: 'Mirpur Mobile & Stationery',
+      siteUrl: 'https://mirpur-pos.vercel.app',
       logoUrl: '/images/logo.png',
       timezone: 'UTC+05:00',
       dateFormat: 'MM/DD/YYYY',

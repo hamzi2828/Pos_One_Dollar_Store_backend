@@ -474,8 +474,8 @@ const settingsController = {
 
       // Create default settings
       const defaultSettings = {
-        siteName: 'HK Auto Care',
-        siteUrl: 'https://hamzamobile.com',
+        siteName: 'Mirpur Mobile & Stationery',
+        siteUrl: 'https://mirpur-pos.vercel.app',
         logoUrl: '/images/logo.png',
         headerLogoWidth: 160,
         headerLogoHeight: 56,
