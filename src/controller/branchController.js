@@ -105,13 +105,19 @@ const branchController = {
 
       const branches = await Branch.find(filter).sort({ isMain: -1, name: 1 }).lean();
 
+      // Staff counts are extra info for the Branches screen: never let them
+      // break the list (pickers like the stock transfer form need the branches).
       let counts = {};
       if (access.isSuperAdmin && branches.length) {
-        const rows = await User.aggregate([
-          { $match: { branch: { $in: branches.map((b) => b._id) } } },
-          { $group: { _id: '$branch', count: { $sum: 1 } } },
-        ]);
-        counts = rows.reduce((acc, r) => { acc[String(r._id)] = r.count; return acc; }, {});
+        try {
+          const rows = await User.aggregate([
+            { $match: { branch: { $in: branches.map((b) => b._id) } } },
+            { $group: { _id: '$branch', count: { $sum: 1 } } },
+          ]);
+          counts = rows.reduce((acc, r) => { acc[String(r._id)] = r.count; return acc; }, {});
+        } catch (countErr) {
+          console.error('Branch staff counts failed:', countErr.message);
+        }
       }
 
       const data = branches.map((b) => shape(b, access.isSuperAdmin ? { staffCount: counts[String(b._id)] || 0 } : {}));

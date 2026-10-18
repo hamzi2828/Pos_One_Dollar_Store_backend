@@ -7,7 +7,9 @@ const {
   getMainBranchId,
   withBranchStock,
   branchStockLevelQuery,
+  toBranchId,
 } = require('../helper/productCodes');
+const Branch = require('../models/branch');
 
 // 409 for a barcode / short code that is already used (thrown by helper/productCodes.js)
 const duplicateCodeResponse = (res, error) =>
@@ -36,8 +38,20 @@ const toView = (product, view) =>
   view && product ? withBranchStock(product, view.branchId, view.mainBranchId, { restrict: view.restrict }) : product;
 
 // Who gets the stock typed in the product form (see services/products/*).
+// The super admin may pick the branch in the product form (`stockBranchId`);
+// branch staff always write to their own branch.
 const writeOptions = async (req) => {
   if (!req.access) return { warnings: [] }; // not wired yet -> main branch, legacy admin
+  const picked = req.access.isSuperAdmin ? toBranchId(req.body && req.body.stockBranchId) : null;
+  if (picked) {
+    const branch = await Branch.findById(picked).select('_id').lean();
+    if (!branch) {
+      const err = new Error('Branch not found');
+      err.status = 400;
+      throw err;
+    }
+    return { branchId: picked, isSuperAdmin: true, allBranches: false, warnings: [] };
+  }
   return {
     branchId: await resolveWriteBranch(req),
     isSuperAdmin: !!req.access.isSuperAdmin,

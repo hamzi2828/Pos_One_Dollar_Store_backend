@@ -28,6 +28,7 @@ const {
   prepareProductCodes,
   toBranchId,
   getMainBranchId,
+  generateShortCode,
 } = require('../../helper/productCodes');
 const Branch = require('../../models/branch');
 
@@ -295,6 +296,14 @@ const createProductService = {
     piecesPerBox = toPiecesPerBox(piecesPerBox);
     addFullBoxBarcode = toBool(addFullBoxBarcode);
     shortCode = normalizeCode(shortCode) || undefined;
+    // Single products: short code + SKU are made automatically when not given
+    // (the form shows them read-only). SKU = name initials + short code, e.g. "SGA-48213".
+    if (productType !== 'variant') {
+      if (!shortCode) shortCode = await generateShortCode();
+      if (!sku || !String(sku).trim()) {
+        sku = await ensureUniqueSku(`${nameInitials(name) || 'P'}-${shortCode}`, new Set([shortCode]));
+      }
+    }
     barcodes = normalizeBarcodes(barcodes);
     batches = assignBatchBranches(normalizeBatches(batches), ctx);
     const singleBranchStock = productType === 'variant' ? undefined : readBranchStock(payload.branchStock, ctx, 'branchStock');
