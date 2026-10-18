@@ -163,7 +163,6 @@ const auditLogController = {
         overviewAgg,
         topUsers,
         topProducts,
-        topBlogs,
         topPaths,
         actionBreakdown,
         methodBreakdown,
@@ -258,15 +257,6 @@ const auditLogController = {
               uniqueUsers: { $size: '$uniqueUsers' },
             },
           },
-          { $sort: { count: -1 } },
-          { $limit: 10 },
-        ]),
-
-        // Top viewed blogs
-        AuditLog.aggregate([
-          { $match: { ...matchStage, action: 'view_blog' } },
-          { $group: { _id: '$details.slug', count: { $sum: 1 } } },
-          { $match: { _id: { $ne: null } } },
           { $sort: { count: -1 } },
           { $limit: 10 },
         ]),
@@ -452,7 +442,6 @@ const auditLogController = {
           overview,
           topUsers,
           topProducts,
-          topBlogs,
           topPaths,
           actionBreakdown,
           methodBreakdown,

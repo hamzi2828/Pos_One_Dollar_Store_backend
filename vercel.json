@@ -15,6 +15,12 @@
       "dest": "/index.js"
     }
   ],
+  "crons": [
+    {
+      "path": "/api/counters/check-cutoffs",
+      "schedule": "*/15 * * * *"
+    }
+  ],
   "env": {
     "NODE_ENV": "production"
   }

@@ -1,9 +1,10 @@
 const mongoose = require('mongoose');
 
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/hamzaMobile';
+// Local development falls back to a local database; deployments set MONGO_URI.
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/dollar_store_pos';
 
 if (!process.env.MONGO_URI) {
-  console.warn('⚠️  WARNING: Using hardcoded MongoDB credentials. Please set MONGO_URI in .env file for security.');
+  console.warn('⚠️  MONGO_URI is not set: using the local database mongodb://localhost:27017/dollar_store_pos');
 }
 
 const connectionOptions = {
@@ -19,7 +20,7 @@ mongoose.set('bufferCommands', true);
 // Cache the connection promise on globalThis so it survives module re-imports
 // across Vercel serverless invocations within the same warm lambda instance.
 // Without this, every cold start re-establishes the Mongo handshake (~1–3s).
-const globalCache = globalThis.__hkMongoCache || (globalThis.__hkMongoCache = { conn: null, promise: null });
+const globalCache = globalThis.__posMongoCache || (globalThis.__posMongoCache = { conn: null, promise: null });
 
 const initializeConnection = async () => {
   if (globalCache.conn && mongoose.connection.readyState === 1) {

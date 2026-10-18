@@ -1,15 +1,12 @@
 // src/controller/productController.js
+// Admin products: list, get, create, update, delete. Stock numbers are the
+// shop's (productCodes.withBranchStock with the shop's branch id).
+const mongoose = require('mongoose');
 const Product = require('../models/product');
-const { toPublicPath } = require('../helper/upload');
-const { processColorMedia } = require('../helper/colorMediaHelper');
 const { resolveWriteBranch } = require('../middleware/access');
-const {
-  getMainBranchId,
-  withBranchStock,
-  branchStockLevelQuery,
-  toBranchId,
-} = require('../helper/productCodes');
-const Branch = require('../models/branch');
+const { getMainBranchId, withBranchStock, branchStockLevelQuery } = require('../helper/productCodes');
+const createProductService = require('../services/products/createProductService');
+const updateProductService = require('../services/products/updateProductService');
 
 // 409 for a barcode / short code that is already used (thrown by helper/productCodes.js)
 const duplicateCodeResponse = (res, error) =>
@@ -19,50 +16,20 @@ const duplicateCodeResponse = (res, error) =>
     conflictProductId: error.conflictProductId,
   });
 
+// The product as the shop sees it: `stock` / batches = the shop's.
+const toView = (product, shopId) => (product ? withBranchStock(product, shopId, shopId) : product);
 
-// ----- Branch view -----
-// Admin calls (req.access set by loadAccess): `stock` = stock in the request's
-// branch (staff: their branch; super admin: picked branch or all), plus
-// `totalStock` and `branchStock` (super admin only — staff only see their own
-// branch). Public calls (no req.access, e.g. the website): totals as before.
-const branchView = async (req) => {
-  if (!req.access) return null;
-  return {
-    branchId: req.access.branchId || null,
-    mainBranchId: await getMainBranchId(),
-    restrict: !req.access.isSuperAdmin,
-  };
-};
-
-const toView = (product, view) =>
-  view && product ? withBranchStock(product, view.branchId, view.mainBranchId, { restrict: view.restrict }) : product;
-
-// Who gets the stock typed in the product form (see services/products/*).
-// The super admin may pick the branch in the product form (`stockBranchId`);
-// branch staff always write to their own branch.
-const writeOptions = async (req) => {
-  if (!req.access) return { warnings: [] }; // not wired yet -> main branch, legacy admin
-  const picked = req.access.isSuperAdmin ? toBranchId(req.body && req.body.stockBranchId) : null;
-  if (picked) {
-    const branch = await Branch.findById(picked).select('_id').lean();
-    if (!branch) {
-      const err = new Error('Branch not found');
-      err.status = 400;
-      throw err;
-    }
-    return { branchId: picked, isSuperAdmin: true, allBranches: false, warnings: [] };
-  }
-  return {
-    branchId: await resolveWriteBranch(req),
-    isSuperAdmin: !!req.access.isSuperAdmin,
-    allBranches: !!req.access.isSuperAdmin && !req.access.branchId,
-    warnings: [],
-  };
-};
+// Context for the create / update services: stock typed in the form goes to the shop.
+const writeOptions = async (req) => ({
+  branchId: await resolveWriteBranch(req),
+  warnings: [],
+  // Who made the change (price-history log).
+  userId: req.access.userId,
+});
 
 const uniq = (list) => [...new Set(list || [])];
 
-// Status-carrying errors (403 no branch, 400 bad branchStock, 409 conflict).
+// Status-carrying errors (400 bad input, 409 conflict).
 const statusError = (res, error) => {
   if (error && Number.isInteger(error.status) && error.status >= 400 && error.status < 500) {
     return res.status(error.status).json({ message: error.message, code: typeof error.code === 'string' ? error.code : undefined });
@@ -70,43 +37,34 @@ const statusError = (res, error) => {
   return null;
 };
 
+const sendWriteError = (res, error, label) => {
+  if (error && error.code === 'DUPLICATE_CODE') return duplicateCodeResponse(res, error);
+  if (error && error.code === 11000) return res.status(409).json({ message: 'Slug already exists' });
+  if (statusError(res, error)) return undefined;
+  console.error(`${label} error:`, error);
+  return res.status(400).json({ message: `Error ${label.toLowerCase()}`, error: error.message });
+};
+
 const productController = {
-  // GET /products - list all products with optional filters
+  // GET /products?status=&category=&search=&stockLevel=low|out|in&page=&limit=
   listProducts: async (req, res) => {
     try {
-      const { status, category, search, displayOn, stockLevel } = req.query;
+      const { status, category, search, stockLevel } = req.query;
       const pageNum = Math.max(1, parseInt(req.query.page, 10) || 1);
       const hasLimit = req.query.limit !== undefined;
       const limitNum = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 12));
+      const shopId = await getMainBranchId();
 
       const filter = {};
-      const view = await branchView(req);
-      // Stock conditions of the branch being viewed (null = total stock).
+      // Stock conditions on the shop's stock.
       const and = [];
-      const addStockLevel = (level) =>
-        view ? and.push(branchStockLevelQuery(view.branchId, view.mainBranchId, level)) : null;
-
-      // Status filter
       if (status && status !== 'all') {
-        if (status === 'out_of_stock') {
-          if (view) addStockLevel('out');
-          else filter.stock = { $lte: 0 };
-        } else {
-          filter.status = status;
-        }
+        if (status === 'out_of_stock') and.push(branchStockLevelQuery(shopId, shopId, 'out'));
+        else filter.status = status;
       }
-
-      // Category filter
       if (category && category !== 'all') filter.category = category;
-      // Display-on filter (website / pos / both)
-      if (displayOn && ['website', 'pos', 'both'].includes(displayOn)) filter.displayOn = displayOn;
-      // Stock level filter (used by /admin/products/stock) — per branch for admin calls
-      if (['low', 'out', 'in'].includes(stockLevel)) {
-        if (view) addStockLevel(stockLevel);
-        else if (stockLevel === 'low') filter.stock = { $gt: 0, $lte: 5 };
-        else if (stockLevel === 'out') filter.stock = { $lte: 0 };
-        else filter.stock = { $gt: 0 };
-      }
+      // Stock level filter (used by /admin/products/stock)
+      if (['low', 'out', 'in'].includes(stockLevel)) and.push(branchStockLevelQuery(shopId, shopId, stockLevel));
 
       // Search — use text index for 3+ chars, regex fallback for shorter
       if (search && search.trim()) {
@@ -125,30 +83,17 @@ const productController = {
 
       if (and.length) filter.$and = and;
 
-      // Exclude heavy fields the list view never renders (big MBs saved).
-      // The public website never gets per-branch numbers.
-      const listProjection = view
-        ? { description: 0, features: 0, metaSchema: 0 }
-        : { description: 0, features: 0, metaSchema: 0, branchStock: 0, 'variants.branchStock': 0 };
-
-      const findQuery = Product.find(filter, listProjection)
+      // Exclude heavy fields the list view never renders.
+      const findQuery = Product.find(filter, { description: 0, features: 0 })
         .sort({ createdAt: -1 })
         .lean();
+      if (hasLimit) findQuery.skip((pageNum - 1) * limitNum).limit(limitNum);
 
-      if (hasLimit) {
-        findQuery.skip((pageNum - 1) * limitNum).limit(limitNum);
-      }
-
-      const [products, total] = await Promise.all([
-        findQuery,
-        Product.countDocuments(filter),
-      ]);
+      const [products, total] = await Promise.all([findQuery, Product.countDocuments(filter)]);
 
       return res.status(200).json({
         message: 'Products fetched successfully',
-        data: view ? products.map((p) => toView(p, view)) : products,
-        // Admin calls: which branch `stock` refers to (null = all branches).
-        ...(view ? { stockBranch: view.branchId } : {}),
+        data: products.map((p) => toView(p, shopId)),
         pagination: {
           total,
           page: pageNum,
@@ -164,91 +109,27 @@ const productController = {
     }
   },
 
-  // GET /products/random - get random products for collection
-  getRandomProducts: async (req, res) => {
-    try {
-      const limit = parseInt(req.query.limit) || 10;
-      
-      // Get all published products with stock > 0
-      const products = await Product.find({
-        status: 'published',
-        stock: { $gt: 0 }
-      });
-      
-      // Shuffle the array and limit the results
-      const shuffled = products.sort(() => Math.random() - 0.5).slice(0, limit);
-      
-      return res.status(200).json({ 
-        message: 'Random products fetched successfully', 
-        data: shuffled 
-      });
-    } catch (error) {
-      console.error('Get random products error:', error);
-      return res.status(400).json({ 
-        message: 'Error fetching random products', 
-        error: error.message 
-      });
-    }
-  },
-
-  // GET /products/latest - get latest products (public route)
-  getLatestProducts: async (req, res) => {
-    try {
-      const limit = parseInt(req.query.limit) || 10;
-      
-      // Get latest published products sorted by creation date
-      const products = await Product.find({
-        status: 'published'
-      })
-      .sort({ createdAt: -1 })
-      .limit(limit);
-      
-      return res.status(200).json({ 
-        message: 'Latest products fetched successfully', 
-        data: products 
-      });
-    } catch (error) {
-      console.error('Get latest products error:', error);
-      return res.status(400).json({ 
-        message: 'Error fetching latest products', 
-        error: error.message 
-      });
-    }
-  },
-
-  // GET /products/:id - get product by id
+  // GET /products/:id
   getProductById: async (req, res) => {
     try {
-      const { id } = req.params;
-      const product = await Product.findById(id);
+      const product = mongoose.isValidObjectId(req.params.id) ? await Product.findById(req.params.id) : null;
       if (!product) return res.status(404).json({ message: 'Product not found' });
-      const view = await branchView(req);
-      return res.status(200).json({ message: 'Product fetched successfully', data: toView(product, view) });
+      return res.status(200).json({ message: 'Product fetched successfully', data: toView(product, await getMainBranchId()) });
     } catch (error) {
       console.error('Get product error:', error);
       return res.status(400).json({ message: 'Error fetching product', error: error.message });
     }
   },
 
-  // POST /products - create a new product
+  // POST /products — multipart form (see services/products/createProductService.js)
   createProduct: async (req, res) => {
     try {
-      const payload = req.body || {};
-      const files = req.files || {};
-
-      console.log('createProduct files:', files);
-      console.log('createProduct body:', payload);
-      
-      // Use the createProductService to handle the creation logic
-      const createProductService = require('../services/products/createProductService');
       const opts = await writeOptions(req);
-      const created = await createProductService.createProduct(payload, files, opts);
-      const view = await branchView(req);
-
+      const created = await createProductService.createProduct(req.body || {}, req.files || {}, opts);
       const productId = created && created._id ? String(created._id) : '';
       return res.status(201).json({
         message: 'Product created successfully',
-        data: toView(created, view),
+        data: toView(created, await getMainBranchId()),
         ...(opts.warnings.length ? { warnings: uniq(opts.warnings) } : {}),
         // Frontend opens the sticker print flow right after creating
         next: {
@@ -257,62 +138,31 @@ const productController = {
         },
       });
     } catch (error) {
-      if (error && error.code === 'DUPLICATE_CODE') {
-        return duplicateCodeResponse(res, error);
-      }
-      if (error && error.code === 11000) {
-        return res.status(409).json({ message: 'Slug already exists' });
-      }
-      if (statusError(res, error)) return undefined;
-      console.error('Create product error:', error);
-      return res.status(400).json({ message: 'Error creating product', error: error.message });
+      return sendWriteError(res, error, 'Creating product');
     }
   },
 
-  // PUT /products/:id - update a product
+  // PUT /products/:id — multipart form, partial update (see services/products/updateProductService.js)
   updateProduct: async (req, res) => {
     try {
-      const { id } = req.params;
-      const payload = req.body || {};
-      const files = req.files || {};
-      
-      console.log('Update product payload:', payload);
-      console.log('Update product files:', files);
-      // Use the updateProductService to handle the update logic
-      const updateProductService = require('../services/products/updateProductService');
       const opts = await writeOptions(req);
-      const updated = await updateProductService.updateProduct(id, payload, files, opts);
-      const view = await branchView(req);
-
+      const updated = await updateProductService.updateProduct(req.params.id, req.body || {}, req.files || {}, opts);
       return res.status(200).json({
         message: 'Product updated successfully',
-        data: toView(updated, view),
+        data: toView(updated, await getMainBranchId()),
         ...(opts.warnings.length ? { warnings: uniq(opts.warnings) } : {}),
       });
-      
     } catch (error) {
-      if (error && error.code === 'DUPLICATE_CODE') {
-        return duplicateCodeResponse(res, error);
-      }
-      if (error && error.code === 11000) {
-        return res.status(409).json({ message: 'Slug already exists' });
-      }
-      if (statusError(res, error)) return undefined;
-      console.error('Update product error:', error);
-      return res.status(400).json({ 
-        message: 'Error updating product', 
-        error: error.message 
-      });
+      return sendWriteError(res, error, 'Updating product');
     }
   },
 
-  // DELETE /products/:id - delete a product
+  // DELETE /products/:id — soft delete
   deleteProduct: async (req, res) => {
     try {
-      const { id } = req.params;
-      const deleted = await Product.softDeleteById(id, req.user?._id || null);
+      const deleted = await Product.softDeleteById(req.params.id, req.access.userId || null);
       if (!deleted) return res.status(404).json({ message: 'Product not found' });
-      return res.status(200).json({ message: 'Product deleted successfully', id });
+      return res.status(200).json({ message: 'Product deleted successfully', id: req.params.id });
     } catch (error) {
       console.error('Delete product error:', error);
       return res.status(400).json({ message: 'Error deleting product', error: error.message });

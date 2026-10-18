@@ -1,114 +1,13 @@
 const AuditLog = require('../models/auditLog');
 
-// Named actions for known routes (for nicer labels in the UI)
+// Named actions for known admin routes (nicer labels in the Activity Log).
 const ROUTE_ACTION_MAP = {
   // Auth
   'POST /user/login':           'login',
-  'POST /user/signup':          'signup',
-  'POST /user/google-login':    'google_login',
-  'POST /user/stack-sync':      'stack_auth_sync',
-  'GET /auth/google/callback':  'google_oauth_callback',
-
-  // Profile
-  'PUT /update/user':           'update_profile',
-  'DELETE /user':               'delete_account',
-  'GET /userDetailForProfile':  'view_profile',
   'PUT /user/change-password':  'change_password',
 
-  // Addresses
-  'POST /user/addresses':       'add_address',
-  'PUT /user/addresses/:id':    'update_address',
-  'DELETE /user/addresses/:id': 'delete_address',
-  'GET /user/addresses':        'view_addresses',
-
-  // User Cars
-  'POST /user/cars':            'add_car',
-  'PUT /user/cars/:id':         'update_car',
-  'DELETE /user/cars/:id':      'remove_car',
-  'GET /user/cars':             'view_cars',
-
-  // Cart
-  'POST /cart':                 'add_to_cart',
-  'POST /cart/add':             'add_to_cart',
-  'PUT /cart/update':           'update_cart',
-  'PUT /cart/item/:id':         'update_cart_item',
-  'DELETE /cart/item/:id':      'remove_from_cart',
-  'DELETE /cart':               'clear_cart',
-  'POST /cart/merge':           'merge_guest_cart',
-  'GET /cart':                  'view_cart',
-
-  // Wishlist
-  'POST /wishlist':             'add_to_wishlist',
-  'POST /wishlist/add':         'add_to_wishlist',
-  'POST /wishlist/toggle':      'toggle_wishlist',
-  'DELETE /wishlist/:id':       'remove_from_wishlist',
-  'GET /wishlist':              'view_wishlist',
-
-  // Orders
-  'POST /orders':               'place_order',
-  'POST /orders/create':        'place_order',
-  'GET /orders':                'view_orders',
-  'GET /orders/:id':            'view_order_detail',
-
   // Products
-  'GET /products/public':       'browse_products',
-  'GET /products/public/:id':   'view_product',
-  'GET /products/slug/:id':     'view_product',
-  'GET /product-detail/:id':    'view_product',
   'GET /products/:id':          'view_product',
-
-  // Categories
-  'GET /categories':            'browse_categories',
-  'GET /categories/public':     'browse_categories',
-
-  // Reviews
-  'POST /reviews':              'create_review',
-  'POST /reviews/create':       'create_review',
-  'PUT /reviews/:id':           'update_review',
-  'DELETE /reviews/:id':        'delete_review',
-  'GET /reviews/product/:id':   'view_reviews',
-
-  // Returns
-  'POST /returns':              'create_return',
-  'POST /returns/create':       'create_return',
-  'GET /returns':               'view_returns',
-
-  // Preorders
-  'POST /preorders':            'create_preorder',
-  'POST /preorders/create':     'create_preorder',
-  'DELETE /preorders/:id':      'cancel_preorder',
-  'GET /preorders':             'view_preorders',
-  'GET /user/preorders':        'view_preorders',
-
-  // Contact
-  'POST /contact':              'submit_contact',
-  'POST /contact/submit':       'submit_contact',
-
-  // Newsletter
-  'POST /newsletter/subscribe':   'newsletter_subscribe',
-  'POST /newsletter/unsubscribe': 'newsletter_unsubscribe',
-
-  // Discount
-  'POST /discounts/apply':      'apply_discount',
-  'POST /discount/apply':       'apply_discount',
-
-  // Blog
-  'GET /blogs':                 'browse_blogs',
-  'GET /blogs/:id':             'view_blog',
-  'GET /blogs/slug/:id':        'view_blog',
-  'POST /blog-comments':        'post_blog_comment',
-
-  // Services
-  'GET /service-categories':    'view_services',
-
-  // Pages
-  'GET /pages/:id':             'view_page',
-
-  // Settings
-  'GET /settings/public':       'view_settings',
-
-  // Car makes
-  'GET /car-makes/active':      'browse_car_makes',
 
   // Admin user management
   'PUT /update/status/:id':     'admin_update_user_status',
@@ -120,68 +19,47 @@ const ROUTE_ACTION_MAP = {
   'GET /admin/roles':              'admin_view_roles',
   'GET /admin/roles/:id':          'admin_view_role',
   'POST /admin/roles':             'admin_create_role',
+  'POST /admin/roles/defaults':    'admin_create_default_roles',
   'PUT /admin/roles/:id':          'admin_update_role',
   'PUT /admin/roles/:id/permissions': 'admin_update_role_permissions',
   'DELETE /admin/roles/:id':       'admin_delete_role',
-
-  // Branches
-  'POST /admin/branches':                'admin_create_branch',
-  'PUT /admin/branches/:id':             'admin_update_branch',
-  'DELETE /admin/branches/:id':          'admin_delete_branch',
-  'POST /admin/branches/:id/set-main':   'admin_set_main_branch',
 
   // Staff users
   'POST /admin/staff':                     'admin_create_staff',
   'PUT /admin/staff/:id':                  'admin_update_staff',
   'POST /admin/staff/:id/reset-password':  'admin_reset_staff_password',
   'DELETE /admin/staff/:id':               'admin_delete_staff',
+  'POST /api/employees/:id/login':         'admin_create_employee_login',
+  'DELETE /api/employees/:id/login':       'admin_unlink_employee_login',
 
   // Stock
-  'POST /products/:id/stock/receive':          'receive_stock',
-  'POST /admin/stock-transfers':               'stock_transfer',
-  'POST /admin/stock-transfers/:id/cancel':    'cancel_stock_transfer',
+  'POST /products/:id/stock/receive':      'receive_stock',
 };
 
 // Actions with elevated severity — audit-relevant / security-sensitive.
 const SEVERITY_MAP = {
-  // Critical — destructive or authentication-impacting
   login:                    'warn',
-  signup:                   'warn',
-  google_login:             'warn',
   change_password:          'critical',
-  delete_account:           'critical',
   admin_delete_user:        'critical',
   admin_update_user_status: 'critical',
   admin_update_user_role:   'critical',
   admin_create_role:        'warn',
+  admin_create_default_roles: 'warn',
   admin_update_role:        'warn',
   admin_update_role_permissions: 'critical',
   admin_delete_role:        'critical',
-  admin_create_branch:      'warn',
-  admin_update_branch:      'warn',
-  admin_delete_branch:      'critical',
-  admin_set_main_branch:    'critical',
   admin_create_staff:       'warn',
   admin_update_staff:       'critical',
   admin_reset_staff_password: 'critical',
   admin_delete_staff:       'critical',
-  stock_transfer:           'warn',
-  cancel_stock_transfer:    'warn',
+  admin_create_employee_login: 'warn',
+  admin_unlink_employee_login: 'warn',
 };
 
 // Routes to completely skip (health, static, audit logs themselves)
 const SKIP_PREFIXES = ['/uploads', '/health', '/admin/audit-logs', '/favicon'];
 
-// Noisy polling endpoints — keep every Nth hit instead of every one, so they don't
-// drown out meaningful activity. Tune by raising N.
-const SAMPLE_ROUTES = new Map([
-  ['GET /orders/admin/count',      10],
-  ['GET /preorders/admin/count',   10],
-  ['GET /returns/admin/count',     10],
-]);
-const sampleCounters = new Map();
-
-const AUTH_ACTIONS = new Set(['login', 'signup', 'google_login', 'stack_auth_sync', 'google_oauth_callback']);
+const AUTH_ACTIONS = new Set(['login']);
 const SENSITIVE_QUERY_KEYS = new Set(['password', 'token', 'secret', 'apikey', 'api_key', 'authorization']);
 
 function normalizePathForMatching(path) {
@@ -234,21 +112,7 @@ function parseUserAgent(ua) {
 /** Extract the most likely "resource id" touched by this request. */
 function extractResourceId(req) {
   const p = req.params || {};
-  return (
-    p.id ||
-    p.productId ||
-    p.orderId ||
-    p.userId ||
-    p.returnId ||
-    p.reviewId ||
-    p.itemId ||
-    p.roleId ||
-    p.blogId ||
-    p.categoryId ||
-    p.commentId ||
-    p.vendorId ||
-    null
-  );
+  return p.id || p.productId || p.orderId || p.userId || p.roleId || p.categoryId || p.vendorId || null;
 }
 
 /** Strip secrets out of ?query=... so we never persist them. */
@@ -289,57 +153,12 @@ function tryParseBody(chunk, contentType) {
   try { return JSON.parse(asString); } catch { return asString.slice(0, 500); }
 }
 
-function shouldSample(key) {
-  const rate = SAMPLE_ROUTES.get(key);
-  if (!rate) return true;
-  const next = (sampleCounters.get(key) || 0) + 1;
-  sampleCounters.set(key, next);
-  return next % rate === 0;
-}
-
 function buildDetails(action, req, responseBody) {
   const d = {};
 
   switch (action) {
     case 'login':
-    case 'google_login':
-    case 'signup':
-    case 'stack_auth_sync':
       d.email = req.body?.email || responseBody?.data?.email || null;
-      break;
-    case 'add_to_cart':
-      d.productId = req.body?.productId || null;
-      d.quantity = req.body?.quantity || null;
-      break;
-    case 'remove_from_cart':
-    case 'update_cart_item':
-      d.itemId = req.params?.id || req.params?.itemId || null;
-      d.quantity = req.body?.quantity || null;
-      break;
-    case 'add_to_wishlist':
-    case 'toggle_wishlist':
-      d.productId = req.body?.productId || null;
-      break;
-    case 'remove_from_wishlist':
-      d.productId = req.params?.id || req.params?.productId || null;
-      break;
-    case 'place_order':
-      d.orderId = responseBody?.data?._id || null;
-      d.total = req.body?.total || responseBody?.data?.total || null;
-      break;
-    case 'apply_discount':
-      d.code = req.body?.code || null;
-      break;
-    case 'create_review':
-      d.productId = req.body?.productId || null;
-      d.rating = req.body?.rating || null;
-      break;
-    case 'create_return':
-      d.orderId = req.body?.orderId || null;
-      d.reason = req.body?.reason || null;
-      break;
-    case 'create_preorder':
-      d.productId = req.body?.productId || null;
       break;
     case 'admin_update_user_status':
       d.targetUserId = req.params?.id || null;
@@ -369,13 +188,11 @@ function buildDetails(action, req, responseBody) {
       d.email = req.body?.email || null;
       d.isSuperAdmin = req.body?.isSuperAdmin === true;
       d.staffRole = req.body?.staffRole || null;
-      d.branch = req.body?.branch || null;
       break;
     case 'admin_update_staff':
       d.targetUserId = req.params?.id || null;
       d.fields = Object.keys(req.body || {}).filter((k) => !/password/i.test(k));
       if (req.body?.staffRole !== undefined) d.staffRole = req.body.staffRole;
-      if (req.body?.branch !== undefined) d.branch = req.body.branch;
       if (req.body?.isActive !== undefined) d.isActive = req.body.isActive;
       if (req.body?.isSuperAdmin !== undefined) d.isSuperAdmin = req.body.isSuperAdmin;
       break;
@@ -383,29 +200,21 @@ function buildDetails(action, req, responseBody) {
     case 'admin_delete_staff':
       d.targetUserId = req.params?.id || null;
       break;
-    case 'admin_create_branch':
-    case 'admin_update_branch':
-      d.name = req.body?.name || null;
-      d.code = req.body?.code || null;
+    case 'admin_create_employee_login':
+      d.employeeId = req.params?.id || null;
+      d.email = req.body?.email || null;
+      d.staffRole = req.body?.roleId || null;
+      break;
+    case 'admin_unlink_employee_login':
+      d.employeeId = req.params?.id || null;
       break;
     case 'receive_stock':
       d.productId = req.params?.id || null;
       d.variantId = req.body?.variantId || null;
       d.quantity = req.body?.quantity ?? null;
-      d.branchId = req.access?.branchId || null;
-      break;
-    case 'stock_transfer':
-      d.fromBranchId = req.body?.fromBranchId || null;
-      d.toBranchId = req.body?.toBranchId || null;
-      d.itemCount = Array.isArray(req.body?.items) ? req.body.items.length : 0;
-      break;
-    case 'submit_contact':
-      d.email = req.body?.email || null;
-      d.subject = req.body?.subject || null;
       break;
     case 'view_product':
-    case 'view_blog':
-      d.slug = req.params?.slug || req.params?.id || req.path.split('/').pop() || null;
+      d.slug = req.params?.id || req.path.split('/').pop() || null;
       break;
     default:
       break;
@@ -427,9 +236,6 @@ function auditLogger(req, res, next) {
   const startedAt = Date.now();
   const normalizedPath = normalizePathForMatching(req.path);
   const key = `${method} ${normalizedPath}`;
-
-  if (!shouldSample(key)) return next();
-
   const action = ROUTE_ACTION_MAP[key] || `${method.toLowerCase()} ${normalizedPath}`;
 
   let logged = false;

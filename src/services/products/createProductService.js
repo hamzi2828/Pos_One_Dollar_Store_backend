@@ -1,4 +1,6 @@
 // createProductService.js
+// Create a product from the admin product form (multipart). Codes, batches and
+// stock rules: helper/productCodes.js. Stock typed in the form goes to the shop.
 const Product = require('../../models/product');
 const crypto = require('crypto');
 
@@ -30,7 +32,6 @@ const {
   getMainBranchId,
   generateShortCode,
 } = require('../../helper/productCodes');
-const Branch = require('../../models/branch');
 
 // Helper function to check if value is a valid number
 const isNumber = (value) => {
@@ -114,88 +115,20 @@ const parseVariantCodeFields = (v = {}) => {
   return out;
 };
 
-// ----- Branch stock input (who gets the stock typed in the form) -----
+// ----- Where stock typed in the form goes: the shop -----
 
-const badRequest = (message) => {
-  const err = new Error(message);
-  err.status = 400;
-  return err;
-};
-
-// `branchStock` from the request ([{ branch, stock }], may be a JSON string).
-// Returns undefined when not sent. Throws 400 on bad ids / numbers / duplicates.
-const parseBranchStockInput = (input, where = 'branchStock') => {
-  if (input === undefined || input === null || input === '') return undefined;
-  const list = parseMaybeJSON(input);
-  if (!Array.isArray(list)) throw badRequest(`${where} must be a list of { branch, stock }`);
-  const seen = new Set();
-  return list.map((row, i) => {
-    const branch = toBranchId(row && (row.branch || row.branchId));
-    if (!branch) throw badRequest(`${where}[${i}].branch is not a valid branch id`);
-    if (seen.has(branch)) throw badRequest(`${where} lists branch ${branch} twice`);
-    seen.add(branch);
-    const stock = Number(row.stock);
-    if (!Number.isInteger(stock) || stock < 0) throw badRequest(`${where}[${i}].stock must be a non-negative integer`);
-    return { branch, stock };
-  });
-};
-
-// 400 when one of these branch ids does not exist (soft-deleted = missing).
-const assertBranchesExist = async (ids) => {
-  const unique = [...new Set((ids || []).map(toBranchId).filter(Boolean))];
-  if (!unique.length) return;
-  let q = Branch.find({ _id: { $in: unique } });
-  if (q && typeof q.select === 'function') q = q.select('_id');
-  if (q && typeof q.lean === 'function') q = q.lean();
-  const found = new Set(((await q) || []).map((b) => String(b._id)));
-  const missing = unique.filter((id) => !found.has(id));
-  if (missing.length) throw badRequest(`Branch not found: ${missing.join(', ')}`);
-};
-
-/**
- * Branch context for create/update. opts from the controller:
- *   { branchId (write branch), isSuperAdmin, allBranches, warnings[] }
- * No opts (old callers / scripts) = super admin working on the main branch.
- */
+/** opts from the controller: { branchId (the shop), warnings[] }. No opts (scripts) = the shop. */
 const branchContext = async (opts = {}) => {
-  const mainBranchId = toBranchId(opts.mainBranchId) || (await getMainBranchId());
-  const writeBranchId = toBranchId(opts.branchId) || mainBranchId;
-  const isSuperAdmin = opts.isSuperAdmin === undefined ? true : !!opts.isSuperAdmin;
+  const mainBranchId = await getMainBranchId();
   return {
     mainBranchId,
-    writeBranchId,
-    isSuperAdmin,
-    // Super admin looking at "all branches": `stock` in the form is the total.
-    allBranches: opts.allBranches === undefined ? !toBranchId(opts.branchId) && isSuperAdmin : !!opts.allBranches && isSuperAdmin,
+    writeBranchId: toBranchId(opts.branchId) || mainBranchId,
     warnings: Array.isArray(opts.warnings) ? opts.warnings : [],
-    branchIdsUsed: [],
   };
 };
 
-// Branch of a batch typed in the form: the super admin may name one; everyone
-// else (and batches without one) -> the write branch.
-const assignBatchBranches = (batches, ctx) =>
-  (batches || []).map((b) => {
-    const wanted = toBranchId(b.branch);
-    const branch = ctx.isSuperAdmin && wanted ? wanted : ctx.writeBranchId;
-    if (wanted && !ctx.isSuperAdmin && wanted !== ctx.writeBranchId) {
-      ctx.warnings.push('Batches were saved in your branch (you can only add stock to your own branch)');
-    }
-    ctx.branchIdsUsed.push(branch);
-    return { ...b, branch };
-  });
-
-// `branchStock` typed for a unit: super admin only (others get a warning).
-const readBranchStock = (input, ctx, where) => {
-  const rows = parseBranchStockInput(input, where);
-  if (rows === undefined) return undefined;
-  if (!ctx.isSuperAdmin) {
-    ctx.warnings.push(`${where} ignored: only the super admin can set stock for several branches`);
-    return undefined;
-  }
-  rows.forEach((r) => ctx.branchIdsUsed.push(r.branch));
-  return rows;
-};
+// Batches typed in the form belong to the shop.
+const assignBatchBranches = (batches, ctx) => (batches || []).map((b) => ({ ...b, branch: ctx.writeBranchId }));
 
 // Process color-specific media files
 const processColorMedia = (files, existingColorMedia = {}) => {
@@ -244,8 +177,6 @@ const createProductService = {
    * @returns {Promise<Object>} Created product
    */
   createProduct: async (payload, files, opts = {}) => {
-    // Stock / boxes / batches typed in the form go to the write branch
-    // (opts.branchId); the super admin may send `branchStock` instead.
     const ctx = await branchContext(opts);
 
     let {
@@ -265,22 +196,10 @@ const createProductService = {
       description,
       shortDescription,
       features,
-      metaTitle,
-      metaDescription,
-      metaKeywords,
-      metaSchema,
-      displayOn = 'both',
-      websitePrice,
-      websiteDiscountedPrice,
-      preorderEnabled,
-      preorderMessage,
-      guidelineId,
-      showGuidelines,
       dimensionLength,
       dimensionWidth,
       dimensionHeight,
       weight,
-      compatibleCars,
       sku,
       costPrice,
       shortCode,
@@ -306,18 +225,14 @@ const createProductService = {
     }
     barcodes = normalizeBarcodes(barcodes);
     batches = assignBatchBranches(normalizeBatches(batches), ctx);
-    const singleBranchStock = productType === 'variant' ? undefined : readBranchStock(payload.branchStock, ctx, 'branchStock');
 
     // Parse fields that might come as JSON strings via multipart/form-data
     bannerUrls = parseMaybeJSON(bannerUrls) || [];
     variants = parseMaybeJSON(variants) || [];
     colorMedia = parseMaybeJSON(colorMedia);
-    compatibleCars = parseMaybeJSON(compatibleCars) || [];
 
     // Process files - use Vercel Blob or local storage
     if (USE_BLOB_STORAGE && blobUpload) {
-      // Upload to Vercel Blob
-      console.log('Using Vercel Blob storage...');
       const blobResult = await blobUpload.processProductFiles(files);
 
       if (blobResult.thumbnailUrl) {
@@ -336,8 +251,6 @@ const createProductService = {
 
       // Process color-specific media files if present
       if (files.colorThumbnail || files.colorBanner || payload.existingColorThumbnails || payload.existingColorBanners) {
-        console.log('Files received:', Object.keys(files));
-        console.log('Processing color media...');
         colorMedia = processColorMedia(files, colorMedia);
       }
 
@@ -397,13 +310,9 @@ const createProductService = {
       });
     }
 
-    console.log('Final processed colorMedia:', colorMedia);
-
     // Coerce numeric fields when coming from multipart strings
     if (typeof price === 'string' && price !== '') price = Number(price);
-    if (typeof websitePrice === 'string' && websitePrice !== '') websitePrice = Number(websitePrice);
     if (typeof discountedPrice === 'string' && discountedPrice !== '') discountedPrice = Number(discountedPrice);
-    if (typeof websiteDiscountedPrice === 'string' && websiteDiscountedPrice !== '') websiteDiscountedPrice = Number(websiteDiscountedPrice);
     if (typeof stock === 'string' && stock !== '') stock = Number(stock);
     
     if (!name || !slug || !category) {
@@ -427,14 +336,10 @@ const createProductService = {
         const size = String(v.size || '').trim();
         const codeFields = parseVariantCodeFields(v);
         const variantBatches = assignBatchBranches(codeFields.batches || [], ctx);
-        const variantBranchStock = variantBatches.length
-          ? undefined
-          : readBranchStock(v.branchStock, ctx, `variants[${index}].branchStock`);
         // Stock: batches win (computed by prepareProductCodes), then boxes + loose pieces, then stock
         const boxStock = stockFromBoxes(v.boxes, v.loosePieces, piecesPerBox);
         let variantStock;
         if (variantBatches.length) variantStock = variantBatches.reduce((s, b) => s + (b.quantity || 0), 0);
-        else if (variantBranchStock) variantStock = variantBranchStock.reduce((s, r) => s + r.stock, 0);
         else if (boxStock !== undefined) variantStock = boxStock;
         else variantStock = Number(v.stock || 0);
 
@@ -444,24 +349,6 @@ const createProductService = {
           const parsed = Number(v.discountedPrice);
           if (!isNaN(parsed) && parsed > 0) {
             discountedPrice = parsed;
-          }
-        }
-
-        // Parse websitePrice - handle both number and string values
-        let websitePrice = undefined;
-        if (v.websitePrice !== undefined && v.websitePrice !== null && v.websitePrice !== '') {
-          const parsed = Number(v.websitePrice);
-          if (!isNaN(parsed) && parsed > 0) {
-            websitePrice = parsed;
-          }
-        }
-
-        // Parse websiteDiscountedPrice - handle both number and string values
-        let websiteDiscountedPrice = undefined;
-        if (v.websiteDiscountedPrice !== undefined && v.websiteDiscountedPrice !== null && v.websiteDiscountedPrice !== '') {
-          const parsed = Number(v.websiteDiscountedPrice);
-          if (!isNaN(parsed) && parsed > 0) {
-            websiteDiscountedPrice = parsed;
           }
         }
 
@@ -482,16 +369,14 @@ const createProductService = {
           shortCode: codeFields.shortCode,
           barcodes: codeFields.barcodes || [],
           batches: variantBatches,
-          // pieces per branch; typed stock -> the write branch
-          branchStock: variantBranchStock || (variantBatches.length ? [] : [{ branch: ctx.writeBranchId, stock: variantStock }]),
+          // typed stock -> the shop (batches carry their own)
+          branchStock: variantBatches.length ? [] : [{ branch: ctx.writeBranchId, stock: variantStock }],
           price: Number(v.price || 0),
-          websitePrice,
           stock: variantStock,
           // SKU generated below (after validation) if not provided
           sku: v.sku ? String(v.sku).trim() : undefined,
           costPrice: variantCostPrice,
           discountedPrice,
-          websiteDiscountedPrice,
         };
       });
 
@@ -528,8 +413,6 @@ const createProductService = {
       if (batches.length) {
         // Stock comes from the batches (summed by prepareProductCodes)
         stock = batches.reduce((s, b) => s + (b.quantity || 0), 0);
-      } else if (singleBranchStock) {
-        stock = singleBranchStock.reduce((s, r) => s + r.stock, 0);
       } else {
         const boxStock = stockFromBoxes(boxes, loosePieces, piecesPerBox);
         if (boxStock !== undefined) stock = boxStock;
@@ -550,27 +433,16 @@ const createProductService = {
       category,
       subCategory,
       price,
-      websitePrice: (displayOn === 'both' && isNumber(websitePrice)) ? websitePrice : undefined,
       discountedPrice: isNumber(discountedPrice) ? discountedPrice : undefined,
-      websiteDiscountedPrice: (displayOn === 'both' && isNumber(websiteDiscountedPrice)) ? websiteDiscountedPrice : undefined,
       stock,
       status,
       thumbnailUrl: thumbnailUrl ? String(thumbnailUrl).trim() : undefined,
       bannerUrls: Array.isArray(bannerUrls) ? bannerUrls.map((u) => String(u)) : [],
       productType: productType === 'variant' ? 'variant' : 'single',
-      displayOn: ['website', 'pos', 'both'].includes(displayOn) ? displayOn : 'both',
       variants: Array.isArray(variants) ? variants : [],
       description: description ? String(description).trim() : undefined,
       shortDescription: shortDescription ? String(shortDescription).trim() : undefined,
       features: features ? String(features).trim() : undefined,
-      metaTitle: metaTitle ? String(metaTitle).trim() : undefined,
-      metaDescription: metaDescription ? String(metaDescription).trim() : undefined,
-      metaKeywords: metaKeywords ? String(metaKeywords).trim() : undefined,
-      metaSchema: metaSchema ? String(metaSchema).trim() : undefined,
-      preorderEnabled: preorderEnabled === 'true' || preorderEnabled === true,
-      preorderMessage: preorderMessage ? String(preorderMessage).trim() : '',
-      guidelineId: guidelineId && guidelineId !== 'null' && guidelineId !== '' ? guidelineId : null,
-      showGuidelines: showGuidelines === 'true' || showGuidelines === true,
       // Dimensions (L x W x H) and weight
       dimensionLength: dimensionLength ? String(dimensionLength).trim() : undefined,
       dimensionWidth: dimensionWidth ? String(dimensionWidth).trim() : undefined,
@@ -579,39 +451,29 @@ const createProductService = {
       // SKU and Cost Price (top-level, for single products)
       sku: sku ? String(sku).trim() : undefined,
       costPrice: costPrice !== undefined && costPrice !== null && costPrice !== '' ? Number(costPrice) : undefined,
-      // Compatible cars
-      compatibleCars: Array.isArray(compatibleCars) ? compatibleCars.filter(Boolean) : [],
       // Barcodes / packaging (single products; variant products keep these per variant)
       shortCode,
       barcodes,
       batches,
       piecesPerBox,
-      // Pieces per branch (single product). Variant products: filled from the variants.
-      branchStock:
-        productType === 'variant'
-          ? []
-          : singleBranchStock || (batches.length ? [] : [{ branch: ctx.writeBranchId, stock }]),
+      // The shop's pieces (single product). Variant products: filled from the variants.
+      branchStock: productType === 'variant' || batches.length ? [] : [{ branch: ctx.writeBranchId, stock }],
     };
 
     // Add colorMedia to the document
     if (colorMedia && typeof colorMedia === 'object' && Object.keys(colorMedia).length > 0) {
-      console.log('Adding colorMedia to document:', colorMedia);
       doc.colorMedia = colorMedia;
     }
 
     // Short codes, batch numbers, full-box code, stock from batches, scanCodes.
     // Throws 409 DUPLICATE_CODE if a code is already used.
-    await assertBranchesExist(ctx.branchIdsUsed);
     await prepareProductCodes(doc, {
       addFullBoxBarcode,
       mainBranchId: ctx.mainBranchId,
       defaultBranchId: ctx.writeBranchId,
     });
 
-    console.log('Final document before saving:', JSON.stringify(doc, null, 2));
-    const created = await Product.create(doc);
-    console.log('Created product with colorMedia:', created.colorMedia);
-    return created;
+    return Product.create(doc);
   }
 };
 
@@ -626,9 +488,5 @@ module.exports.helpers = {
   generateVariantSKU,
   ensureUniqueSku,
   parseVariantCodeFields,
-  parseBranchStockInput,
-  assertBranchesExist,
   branchContext,
-  assignBatchBranches,
-  readBranchStock,
 };

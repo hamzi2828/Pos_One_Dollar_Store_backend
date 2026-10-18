@@ -2,11 +2,9 @@ const Purchase = require('../models/purchase');
 const Vendor = require('../models/vendor');
 const Product = require('../models/product');
 const { resolveWriteBranch } = require('../middleware/access');
-const { scopedBranchFilter } = require('../helper/branchScope');
 
-// Purchases are recorded per branch (they do NOT move stock — receiving stock
-// is a separate step). Staff only see their branch; old records (branch: null)
-// belong to the main branch.
+// Purchases (old procurement screen). They do NOT move stock — receiving
+// stock is a separate step.
 
 const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -72,7 +70,7 @@ const purchaseController = {
         sortDir = 'desc',
       } = req.query;
 
-      const filter = { isDeleted: false, ...(await scopedBranchFilter(req)) };
+      const filter = { isDeleted: false };
       if (vendorId) filter.vendorId = vendorId;
       if (status && ['pending', 'partial', 'paid', 'overdue'].includes(status)) {
         filter.paymentStatus = status;
@@ -95,7 +93,6 @@ const purchaseController = {
       const [items, total, totals] = await Promise.all([
         Purchase.find(filter)
           .select('-payments') // don't ship payment history on list view
-          .populate('branch', 'name code')
           .sort(sort)
           .skip((page - 1) * limit)
           .limit(limit)
@@ -135,8 +132,7 @@ const purchaseController = {
   // GET /admin/procurement/purchases/:id
   getById: async (req, res) => {
     try {
-      const p = await Purchase.findOne({ _id: req.params.id, isDeleted: false, ...(await scopedBranchFilter(req)) })
-        .populate('branch', 'name code')
+      const p = await Purchase.findOne({ _id: req.params.id, isDeleted: false })
         .lean();
       if (!p) return res.status(404).json({ message: 'Purchase not found' });
       return res.status(200).json({ message: 'Purchase', data: p });
@@ -162,13 +158,7 @@ const purchaseController = {
 
       if (!vendorId) return res.status(400).json({ message: 'vendorId is required' });
 
-      let branch;
-      try {
-        branch = await resolveWriteBranch(req);
-      } catch (err) {
-        if (err.status) return res.status(err.status).json({ message: err.message });
-        throw err;
-      }
+      const branch = await resolveWriteBranch(req);
 
       const vendor = await Vendor.findOne({ _id: vendorId, isDeleted: false }).lean();
       if (!vendor) return res.status(400).json({ message: 'Vendor not found' });
@@ -216,7 +206,7 @@ const purchaseController = {
   // PUT /admin/procurement/purchases/:id
   update: async (req, res) => {
     try {
-      const p = await Purchase.findOne({ _id: req.params.id, isDeleted: false, ...(await scopedBranchFilter(req)) });
+      const p = await Purchase.findOne({ _id: req.params.id, isDeleted: false });
       if (!p) return res.status(404).json({ message: 'Purchase not found' });
 
       const { purchaseDate, dueDate, items, taxPercent, discount, notes, vendorId } = req.body || {};
@@ -252,7 +242,7 @@ const purchaseController = {
   // DELETE /admin/procurement/purchases/:id — soft delete
   softDelete: async (req, res) => {
     try {
-      const p = await Purchase.findOne({ _id: req.params.id, isDeleted: false, ...(await scopedBranchFilter(req)) });
+      const p = await Purchase.findOne({ _id: req.params.id, isDeleted: false });
       if (!p) return res.status(404).json({ message: 'Purchase not found' });
       p.isDeleted = true;
       p.deletedAt = new Date();
@@ -274,7 +264,7 @@ const purchaseController = {
         return res.status(400).json({ message: 'Payment amount must be greater than zero' });
       }
 
-      const p = await Purchase.findOne({ _id: req.params.id, isDeleted: false, ...(await scopedBranchFilter(req)) });
+      const p = await Purchase.findOne({ _id: req.params.id, isDeleted: false });
       if (!p) return res.status(404).json({ message: 'Purchase not found' });
 
       if (amt > p.pendingAmount + 0.001) {
@@ -305,7 +295,7 @@ const purchaseController = {
   listTransactions: async (req, res) => {
     try {
       const { search, startDate, endDate, paymentMethod } = req.query || {};
-      const q = { isDeleted: false, 'payments.0': { $exists: true }, ...(await scopedBranchFilter(req)) };
+      const q = { isDeleted: false, 'payments.0': { $exists: true } };
       if (search && String(search).trim()) {
         const rx = new RegExp(String(search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
         q.$or = [{ invoiceNumber: rx }, { vendorName: rx }];
@@ -383,7 +373,7 @@ const purchaseController = {
   // DELETE /admin/procurement/purchases/:id/payments/:paymentId
   removePayment: async (req, res) => {
     try {
-      const p = await Purchase.findOne({ _id: req.params.id, isDeleted: false, ...(await scopedBranchFilter(req)) });
+      const p = await Purchase.findOne({ _id: req.params.id, isDeleted: false });
       if (!p) return res.status(404).json({ message: 'Purchase not found' });
       const payment = p.payments.id(req.params.paymentId);
       if (!payment) return res.status(404).json({ message: 'Payment not found' });
@@ -444,10 +434,9 @@ const purchaseController = {
   // GET /admin/procurement/summary — dashboard cards
   summary: async (req, res) => {
     try {
-      const bf = await scopedBranchFilter(req);
       const [counts, statusBreakdown, recentOverdue] = await Promise.all([
         Purchase.aggregate([
-          { $match: { isDeleted: false, ...bf } },
+          { $match: { isDeleted: false } },
           {
             $group: {
               _id: null,
@@ -459,7 +448,7 @@ const purchaseController = {
           },
         ]),
         Purchase.aggregate([
-          { $match: { isDeleted: false, ...bf } },
+          { $match: { isDeleted: false } },
           { $group: { _id: '$paymentStatus', count: { $sum: 1 }, amount: { $sum: '$pendingAmount' } } },
         ]),
         Vendor.countDocuments({ isDeleted: false }),

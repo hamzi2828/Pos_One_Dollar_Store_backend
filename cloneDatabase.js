@@ -4,15 +4,14 @@ const { MongoClient } = require('mongodb');
 // Clones one database into another on the same cluster.
 //
 // Credentials come from MONGO_URI (.env) — nothing is hardcoded here.
-// Defaults clone the legacy shared database into this project's own database.
+// Both database names must be given (e.g. to copy the shop's data into a test database):
 //
-//   node cloneDatabase.js                 # hk_autocare -> hamzaMobile
 //   CLONE_SOURCE_DB=x CLONE_TARGET_DB=y node cloneDatabase.js
 //
 // The target collections are DROPPED and replaced. The source is only read.
 
-const SOURCE_DB = process.env.CLONE_SOURCE_DB || 'hk_autocare';
-const TARGET_DB = process.env.CLONE_TARGET_DB || 'hamzaMobile';
+const SOURCE_DB = process.env.CLONE_SOURCE_DB;
+const TARGET_DB = process.env.CLONE_TARGET_DB;
 
 // Both databases live on the cluster in MONGO_URI unless overridden.
 const SOURCE_URI = process.env.CLONE_SOURCE_URI || process.env.MONGO_URI;
@@ -23,6 +22,9 @@ const BATCH_SIZE = 1000;
 function assertPreconditions() {
   if (!SOURCE_URI || !TARGET_URI) {
     throw new Error('MONGO_URI is not set. Add it to .env before running the clone.');
+  }
+  if (!SOURCE_DB || !TARGET_DB) {
+    throw new Error('Set CLONE_SOURCE_DB and CLONE_TARGET_DB (the target is overwritten).');
   }
   if (SOURCE_URI === TARGET_URI && SOURCE_DB === TARGET_DB) {
     throw new Error(`Source and target are the same database (${SOURCE_DB}). Refusing to run.`);

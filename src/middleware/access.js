@@ -1,29 +1,24 @@
 // src/middleware/access.js
-// Who is calling, which branch they work in, and what they may do.
+// Who is calling and what they may do. DOLLAR & Co is ONE shop: every record
+// belongs to the main branch (models/branch.js -> Branch.getMain()).
 //
 // Use AFTER `auth` (which only verifies the JWT):
 //   router.get('/x', auth, loadAccess, requirePermission('products', 'view'), handler)
 //
 // req.access = {
-//   userId, isSuperAdmin,
-//   userBranchId,   // branch the user belongs to (null for super admin)
-//   branchId,       // branch this request works on:
-//                   //   branch user  -> always their own branch (cannot change it)
-//                   //   super admin  -> branch picked with header `x-branch-id`
-//                   //                   or query `branchId`/`branch`; null = all branches
-//   permissions,    // { products: ['view','create'], ... }
+//   userId, isSuperAdmin, roleName,
+//   branchId, userBranchId,  // both = the shop (main branch id) for every user
+//   permissions,             // { products: ['view','create'], ... }
 //   can(key, action)
 // }
 //
-// Helpers for controllers:
-//   branchFilter(req, field='branch')  -> {} (all branches) or { [field]: branchId }
-//   resolveWriteBranch(req)            -> branch id to write to (sale, receive stock...).
-//                                         Super admin with no branch picked -> main branch.
+// Helpers kept for the store modules (they stamp records with the shop's branch):
+//   branchFilter(req)        -> {} (one shop = every record)
+//   resolveWriteBranch(req)  -> the shop's branch id
 
-const mongoose = require('mongoose');
 const User = require('../models/user');
 const Role = require('../models/role');
-const Branch = require('../models/branch');
+const { getMainBranchId } = require('../helper/productCodes');
 
 const CACHE_MS = 30 * 1000;
 const cache = new Map(); // userId -> { at, data }
@@ -59,8 +54,7 @@ async function loadUserAccess(userId) {
     }
   }
 
-  // Before the branches migration runs, existing admins have no staffRole and
-  // no branch: keep treating them as super admins so nothing breaks.
+  // Old admin accounts (role 'admin', no staff role, no shop) are super admins.
   const legacyAdmin = user.role === 'admin' && !user.staffRole && !user.branch;
   const data = {
     user,
@@ -72,12 +66,6 @@ async function loadUserAccess(userId) {
   return data;
 }
 
-const pickRequestedBranch = (req) => {
-  const raw = req.headers['x-branch-id'] || req.query.branchId || req.query.branch || null;
-  if (!raw || raw === 'all') return null;
-  return mongoose.Types.ObjectId.isValid(String(raw)) ? String(raw) : null;
-};
-
 async function loadAccess(req, res, next) {
   try {
     const userId = req.user?._id || req.user?.id;
@@ -87,21 +75,13 @@ async function loadAccess(req, res, next) {
     if (!info) return res.status(401).json({ message: 'User not found' });
     if (info.user.isActive === false) return res.status(403).json({ message: 'Account is disabled' });
 
-    const userBranchId = info.user.branch ? String(info.user.branch) : null;
-    let branchId;
-    if (info.isSuperAdmin) {
-      branchId = pickRequestedBranch(req);
-    } else {
-      // Staff must belong to a branch; customers (no staff role) have none.
-      branchId = userBranchId;
-    }
-
+    const shopId = await getMainBranchId();
     req.access = {
       userId: String(userId),
       isSuperAdmin: info.isSuperAdmin,
       roleName: info.isSuperAdmin ? 'Super Admin' : info.roleName,
-      userBranchId,
-      branchId,
+      userBranchId: shopId,
+      branchId: shopId,
       permissions: info.permissions,
       can(key, action = 'view') {
         if (this.isSuperAdmin) return true;
@@ -135,26 +115,11 @@ const requireSuperAdmin = (req, res, next) => {
   return res.status(403).json({ message: 'Only the super admin can do this' });
 };
 
-// Matches nothing: used for non-super-admin users without a branch.
-const NO_BRANCH = new mongoose.Types.ObjectId('000000000000000000000000');
+// One shop: lists are never filtered by branch.
+const branchFilter = () => ({});
 
-const branchFilter = (req, field = 'branch') => {
-  const id = req.access?.branchId;
-  if (id) return { [field]: new mongoose.Types.ObjectId(id) };
-  if (req.access?.isSuperAdmin) return {}; // all branches
-  return { [field]: NO_BRANCH };
-};
-
-async function resolveWriteBranch(req) {
-  if (req.access?.branchId) return req.access.branchId;
-  if (!req.access?.isSuperAdmin) {
-    const err = new Error('Your account is not assigned to a branch. Ask the super admin.');
-    err.status = 403;
-    throw err;
-  }
-  const main = await Branch.getMain();
-  return String(main._id);
-}
+// The shop's branch id (stamped on new records / used by the stock engine).
+const resolveWriteBranch = async (req) => req?.access?.branchId || getMainBranchId();
 
 module.exports = {
   loadAccess,

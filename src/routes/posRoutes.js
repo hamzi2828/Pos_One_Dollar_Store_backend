@@ -1,10 +1,11 @@
 // POS Routes — mounted at /api/pos from allRoutes.js
 //
-// Every route: auth (JWT) + loadAccess (role/branch/permissions) + a permission:
+// Every route: auth (JWT) + loadAccess (role/permissions) + a permission:
 //   pos        = the selling screen (products, customers, new sale, held carts)
 //   pos_orders = POS order history (list, refund = edit, delete = delete)
-// Branch scoping (which branch's stock/orders) happens in the controllers via
-// req.access (branchFilter / resolveWriteBranch).
+// Sales figures (dashboard stats, sales chart, order history) are NOT for the
+// plain `pos` cashier: they need dashboard / pos_orders / till_verify view
+// (the shift salesman must not see today's sale before cash closing).
 const express = require('express');
 const router = express.Router();
 const posController = require('../controller/posController');
@@ -32,22 +33,28 @@ router.get('/categories', can('pos', 'view'), posController.getCategories);
 router.get('/customers', can(['pos', 'customers'], 'view'), posController.getCustomers);
 router.get('/customers/search', can(['pos', 'customers'], 'view'), posController.searchCustomers);
 router.post('/customers', can(['pos', 'customers'], 'create'), posController.createOrFindCustomer);
-router.post('/customers/:id/cars', can(['pos', 'customers'], 'create'), posController.addCustomerCar);
 router.get('/customers/:id', can(['pos', 'customers', 'pos_orders'], 'view'), posController.getCustomerById);
 router.get('/customers/:id/pending', can(['pos', 'pos_orders'], 'view'), posController.getCustomerPendingOrders);
 
+// Who may see sales figures (not the plain cashier).
+const SALES_VIEWERS = ['dashboard', 'pos_orders', 'till_verify'];
+
+// Cart preview: the server prices the cart exactly like createOrder will.
+router.post('/quote', can('pos', 'view'), posController.quote);
+
 // Orders
 router.post('/orders', can('pos', 'create'), posController.createOrder);
-router.get('/orders', can('pos_orders', 'view'), posController.getOrders);
+router.get('/orders', can(SALES_VIEWERS, 'view'), posController.getOrders);
 router.get('/orders/pending', can(['pos', 'pos_orders'], 'view'), posController.getPendingOrders);
-router.get('/orders/:id', can(['pos', 'pos_orders'], 'view'), posController.getOrderById);
+router.get('/orders/:id', can(['pos', ...SALES_VIEWERS], 'view'), posController.getOrderById);
 router.post('/orders/:id/payment', can(['pos', 'pos_orders'], 'edit'), posController.addPayment);
+router.post('/orders/:id/whatsapp', can(['pos', 'pos_orders'], 'create'), posController.resendWhatsapp); // resend slip
 router.post('/orders/:id/refund', can('pos_orders', 'edit'), posController.refundOrder); // puts stock back once
 router.delete('/orders/:id', can('pos_orders', 'delete'), posController.deleteOrder);
 
-// Dashboard
-router.get('/dashboard/stats', can(['pos', 'dashboard'], 'view'), posController.getDashboardStats);
-router.get('/dashboard/sales-chart', can(['pos', 'dashboard'], 'view'), posController.getSalesChart);
+// Dashboard (sales figures)
+router.get('/dashboard/stats', can(SALES_VIEWERS, 'view'), posController.getDashboardStats);
+router.get('/dashboard/sales-chart', can(SALES_VIEWERS, 'view'), posController.getSalesChart);
 
 // Held orders (parked carts of the POS screen)
 router.get('/held-orders', can('pos', 'view'), heldOrderController.getAllHeldOrders);

@@ -21,12 +21,14 @@ const MAX_FILE_SIZE = 5 * 1024 * 1024;
  * @param {string} filename - Original filename
  * @param {string} mimetype - File mimetype
  * @param {string} folder - Folder path (e.g., 'products', 'categories')
+ * @param {{ allowPdf?: boolean }} [options] - allowPdf: also accept PDF (document uploads)
  * @returns {Promise<string>} - Public URL of uploaded file
  */
-async function uploadToBlob(buffer, filename, mimetype, folder = 'uploads') {
+async function uploadToBlob(buffer, filename, mimetype, folder = 'uploads', options = {}) {
   // Validate file type
-  if (!ALLOWED_IMAGE_MIME_TYPES.has(mimetype)) {
-    throw new Error('Only image files are allowed');
+  const isPdf = mimetype === 'application/pdf';
+  if (!ALLOWED_IMAGE_MIME_TYPES.has(mimetype) && !(isPdf && options.allowPdf)) {
+    throw new Error(options.allowPdf ? 'Only images or PDF files are allowed' : 'Only image files are allowed');
   }
 
   // Validate file size

@@ -1,4 +1,6 @@
 // src/controller/roleController.js
+// Roles & Permissions. The built-in Admin role always exists (ensureAdminRole);
+// the shop's ready-made roles (DEFAULT_ROLES) are added with POST /admin/roles/defaults.
 
 const Role = require('../models/role');
 const User = require('../models/user');
@@ -9,6 +11,7 @@ const {
     buildAllPermissions,
     sanitizePermissions,
     ADMIN_ROLE_NAME,
+    DEFAULT_ROLES,
 } = require('../constants/rolePermissions');
 const { paginate, buildRegexSearchFilter, readPagingQuery } = require('../helper/paginate');
 
@@ -90,6 +93,55 @@ function samePermissions(a, b) {
         const y = Array.isArray(b[k]) ? [...b[k]].sort() : [];
         return x.length === y.length && x.every((v, i) => v === y[i]);
     });
+}
+
+const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** Not-deleted role with this name (case-insensitive), optionally not `exceptId`. */
+const findRoleByName = (name, exceptId = null) =>
+    Role.findOne({
+        name: new RegExp(`^${escapeRegex(name)}$`, 'i'),
+        isDeleted: { $ne: true },
+        ...(exceptId ? { _id: { $ne: exceptId } } : {}),
+    });
+
+const roleError = (status, message) => Object.assign(new Error(message), { status });
+
+/**
+ * Validate + create one custom role (POST /admin/roles and the default roles).
+ * Throws err.status 400 (no name / reserved name) or 409 (name taken).
+ */
+async function createRoleRecord({ name, description, permissions } = {}) {
+    const trimmedName = String(name || '').trim();
+    if (!trimmedName) throw roleError(400, 'Role name is required');
+    if (trimmedName.toLowerCase() === ADMIN_ROLE_NAME.toLowerCase()) {
+        throw roleError(400, `"${ADMIN_ROLE_NAME}" is reserved`);
+    }
+    if (await findRoleByName(trimmedName)) throw roleError(409, 'A role with that name already exists');
+    return Role.create({
+        name: trimmedName,
+        description: typeof description === 'string' ? description.trim() : '',
+        permissions: sanitizePermissions(permissions),
+        isSystem: false,
+    });
+}
+
+/**
+ * Create every role of DEFAULT_ROLES that does not exist yet (matched by name,
+ * case-insensitive). Existing roles are never changed. -> { created, skipped }
+ */
+async function createDefaultRoles() {
+    const created = [];
+    const skipped = [];
+    for (const def of DEFAULT_ROLES) {
+        if (await findRoleByName(def.name)) {
+            skipped.push(def.name);
+            continue;
+        }
+        await createRoleRecord(def);
+        created.push(def.name);
+    }
+    return { created, skipped };
 }
 
 /** Live number of (not deleted) users per staff role, for the given role ids. */
@@ -196,38 +248,26 @@ const roleController = {
     /** POST /admin/roles */
     createRole: async (req, res) => {
         try {
-            const { name, description, permissions } = req.body || {};
-
-            if (!name || !String(name).trim()) {
-                return res.status(400).json({ message: 'Role name is required' });
-            }
-            const trimmedName = String(name).trim();
-            if (trimmedName.toLowerCase() === ADMIN_ROLE_NAME.toLowerCase()) {
-                return res.status(400).json({ message: `"${ADMIN_ROLE_NAME}" is reserved` });
-            }
-
-            const dup = await Role.findOne({
-                name: new RegExp(`^${trimmedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
-                isDeleted: { $ne: true },
-            });
-            if (dup) {
-                return res.status(409).json({ message: 'A role with that name already exists' });
-            }
-
-            const role = await Role.create({
-                name: trimmedName,
-                description: typeof description === 'string' ? description.trim() : '',
-                permissions: sanitizePermissions(permissions),
-                isSystem: false,
-            });
-
+            const role = await createRoleRecord(req.body || {});
             return res.status(201).json({
                 message: 'Role created successfully',
                 data: shapeRole(role),
             });
         } catch (error) {
+            if (error.status) return res.status(error.status).json({ message: error.message });
             console.error('Error creating role:', error);
             return res.status(500).json({ message: 'Failed to create role' });
+        }
+    },
+
+    /** POST /admin/roles/defaults — add the shop's ready-made roles that are missing. */
+    createDefaults: async (_req, res) => {
+        try {
+            const data = await createDefaultRoles();
+            return res.status(200).json({ success: true, message: 'Default roles checked', data });
+        } catch (error) {
+            console.error('Error creating default roles:', error);
+            return res.status(500).json({ success: false, message: 'Failed to create default roles' });
         }
     },
 
@@ -249,11 +289,7 @@ const roleController = {
                 if (trimmed.toLowerCase() === ADMIN_ROLE_NAME.toLowerCase()) {
                     return res.status(400).json({ message: `"${ADMIN_ROLE_NAME}" is reserved` });
                 }
-                const dup = await Role.findOne({
-                    _id: { $ne: role._id },
-                    name: new RegExp(`^${trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
-                    isDeleted: { $ne: true },
-                });
+                const dup = await findRoleByName(trimmed, role._id);
                 if (dup) return res.status(409).json({ message: 'A role with that name already exists' });
                 role.name = trimmed;
             }
@@ -338,3 +374,4 @@ const roleController = {
 
 module.exports = roleController;
 module.exports.ensureAdminRole = ensureAdminRole;
+module.exports.createDefaultRoles = createDefaultRoles;

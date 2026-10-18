@@ -1,56 +1,105 @@
 // POS Controller — sales, customers, orders, dashboard stats.
 // POS customers share the main User collection so records created here show
 // up in /admin/users and vice-versa.
+//
+// Money is decided HERE, never by the browser: every sale is priced by
+// services/sales/pricingService.computeBill() (same code as POST /quote).
+const mongoose = require('mongoose');
 const Product = require('../models/product');
 const User = require('../models/user');
 const POSOrder = require('../models/posOrder');
 const Category = require('../models/category');
 const { PAYMENT_NOTES, PAYMENT_STATUS } = require('../constants/paymentNotes');
-const { findProductByCode, resolveScan, variantLabel, normalizeCode } = require('../helper/productCodes');
+const {
+  findProductByCode,
+  variantLabel,
+  normalizeCode,
+  getMainBranchId,
+  withBranchStock,
+  branchStockQuery,
+} = require('../helper/productCodes');
 const stockService = require('../services/stockService');
+const tillService = require('../services/tillService');
+const notificationService = require('../services/notificationService');
+const locationService = require('../services/inventory/locationService');
+const pricing = require('../services/sales/pricingService');
+const { orderForViewer, productForViewer, attachShelfCodes } = require('../services/sales/posView');
 const Branch = require('../models/branch');
 const { resolveWriteBranch } = require('../middleware/access');
-const {
-  getMainBranchId,
-  scopedBranchFilter,
-  branchScope,
-  byBranchBreakdown,
-  unitBranchStock,
-  withBranchStock,
-  branchProductStockQuery,
-  sameId,
-} = require('../helper/branchScope');
 
 const escapeRegex = (str) => String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-// Branch the POS sells from: branch staff -> their branch; super admin -> the
-// picked branch, or the main branch when none is picked. Sends 403 and returns
-// null when the user has no branch.
-const posBranchOr403 = async (req, res) => {
-  try {
-    return String(await resolveWriteBranch(req));
-  } catch (err) {
-    if (err.status) {
-      res.status(err.status).json({ success: false, message: err.message });
-      return null;
-    }
-    throw err;
-  }
-};
-
-// May this user see other branches' stock? (super admin / stock_transfers view)
-const seesOtherBranches = (req) => {
-  const a = req.access || {};
-  return !!a.isSuperAdmin || (typeof a.can === 'function' && a.can('stock_transfers', 'view'));
-};
+// The shop the POS sells from (stock is taken from its branch id).
+const shopBranch = async (req) => String(await resolveWriteBranch(req));
 
 const toPlain = (doc) => (doc && typeof doc.toObject === 'function' ? doc.toObject({ flattenMaps: true }) : doc);
 
+const userIdOf = (req) => req.user?._id || req.user?.id || null;
+
+// Error with err.status (pricing / till) -> JSON like the module routes do.
+const sendKnownError = (res, err) => {
+  res.status(err.status).json({
+    success: false,
+    message: err.message,
+    code: err.code || undefined,
+    ...(err.maxManualDiscount !== undefined ? { maxManualDiscount: err.maxManualDiscount, maxManualDiscountPct: err.maxManualDiscountPct } : {}),
+  });
+};
+
+// Ledger context of an order (StockMovement refType/refId/refNo).
+const orderMovement = (order, userId, note) => ({
+  refType: 'POSOrder',
+  refId: order._id,
+  refNo: order.orderNumber,
+  userId: userId || null,
+  ...(note ? { note } : {}),
+});
+
+// Same population everywhere an order is returned.
+const loadOrderForResponse = (id) =>
+  POSOrder.findById(id)
+    .populate('customer', 'firstName lastName email phone')
+    .populate('cashier', 'firstName lastName email')
+    .populate('items.product', 'name thumbnailUrl bannerUrls price')
+    .populate('paymentHistory.receivedBy', 'firstName lastName')
+    .populate('branch', 'name code address phone');
+
+// WhatsApp slip: queue it but never let it block or fail the sale / payment.
+// The status is written compare-and-set: if the notifications module changed
+// it during the call (e.g. to 'sent'), we leave its value alone. A later
+// "skipped" (e.g. payment slips switched off) never hides an earlier result.
+const WHATSAPP_WAIT_MS = 2500;
+const queueReceipt = async (order, event, { resend = false } = {}) => {
+  const before = order.whatsappStatus || 'none';
+  let result = null;
+  try {
+    result = await Promise.race([
+      notificationService.enqueueOrderReceipt(order, { event, resend }),
+      new Promise((resolve) => setTimeout(() => resolve({ queued: false, reason: 'timeout' }), WHATSAPP_WAIT_MS)),
+    ]);
+  } catch (err) {
+    console.error('[pos] whatsapp receipt failed:', err.message);
+    result = { queued: false, reason: 'error' };
+  }
+  const queued = !!(result && result.queued);
+  const reason = (result && result.reason) || '';
+  const status = queued ? 'queued' : /error|fail|timeout/i.test(reason) ? 'failed' : 'skipped';
+  if (before === 'none' || status !== 'skipped' || resend) {
+    try {
+      const unchanged = before === 'none' ? { $in: [null, 'none'] } : before;
+      await POSOrder.updateOne({ _id: order._id, whatsappStatus: unchanged }, { $set: { whatsappStatus: status } });
+    } catch (err) {
+      console.error('[pos] whatsapp status save failed:', err.message);
+    }
+  }
+  return { queued, reason, status };
+};
+
 // Put an order's pieces back into stock exactly once. The stockRestored flag is
 // claimed atomically first, so two delete/refund clicks can't restore twice.
-// Pieces go back to the ORDER's branch (old orders without one -> main branch),
-// not to the branch of whoever clicks refund/delete.
-const restoreOrderStockOnce = async (order) => {
+// Pieces go back to the ORDER's branch (old orders without one -> the shop).
+// Ledger rows carry the order refs.
+const restoreOrderStockOnce = async (order, { userId = null, note = '' } = {}) => {
   if (order.stockRestored) return { claimed: false, errors: [] };
   const claim = await POSOrder.updateOne(
     { _id: order._id, stockRestored: { $ne: true } },
@@ -61,25 +110,77 @@ const restoreOrderStockOnce = async (order) => {
   if (!modified) return { claimed: false, errors: [] };
   const orderBranch = order.branch && order.branch._id ? order.branch._id : order.branch;
   const branchId = orderBranch ? String(orderBranch) : await getMainBranchId();
-  const { errors } = await stockService.restoreOrderItems(order.items, { branchId });
+  const { errors } = await stockService.restoreOrderItems(order.items, {
+    branchId,
+    movement: orderMovement(order, userId, note),
+  });
   return { claimed: true, errors };
 };
 
+// Partial / full payment of a NEW sale from the server total.
+const paymentPlan = ({ total, paymentMethod, isPartialPayment, paidAmount, cashAmount }) => {
+  let paid = total;
+  let status = PAYMENT_STATUS.FULL;
+  let orderStatus = 'completed';
+  if (isPartialPayment && paidAmount !== undefined && paidAmount !== null && paidAmount !== '') {
+    paid = Math.min(total, Math.max(0, pricing.round2(Number(paidAmount) || 0)));
+    if (total - paid > 0.004) {
+      status = paid > 0 ? PAYMENT_STATUS.PARTIAL : PAYMENT_STATUS.PENDING;
+      orderStatus = 'pending';
+    } else paid = total;
+  }
+  const pending = pricing.round2(Math.max(0, total - paid));
+  const tendered = Number(cashAmount);
+  const out = { paid, pending, status, orderStatus, cashAmount: undefined, cardAmount: undefined, changeGiven: undefined };
+  if (paymentMethod === 'cash') {
+    out.cashAmount = Number.isFinite(tendered) && tendered > 0 ? pricing.round2(tendered) : paid;
+    out.changeGiven = pending > 0 ? 0 : pricing.round2(Math.max(0, out.cashAmount - total));
+  } else if (paymentMethod === 'bank_transfer') {
+    out.changeGiven = pending === 0 && Number.isFinite(tendered) && tendered > total ? pricing.round2(tendered - total) : undefined;
+  } else if (paymentMethod === 'card') {
+    out.cardAmount = paid;
+  } else if (paymentMethod === 'split') {
+    // Split = some cash, the rest by card.
+    const cash = Math.min(paid, Math.max(0, pricing.round2(Number.isFinite(tendered) ? tendered : 0)));
+    out.cashAmount = cash;
+    out.cardAmount = pricing.round2(paid - cash);
+  }
+  return out;
+};
+
+const PAYMENT_METHODS = ['cash', 'card', 'split', 'bank_transfer'];
+
+// Body -> pricing input (shared by quote and createOrder so they always agree).
+// Manual discount: `manualDiscount: { type, value, reason }`; the old body
+// (`discount` amount + `discountReason`) still works as a fixed discount.
+const pricingInput = (body, branchId, access) => {
+  const manualDiscount =
+    body.manualDiscount !== undefined
+      ? body.manualDiscount
+      : Number(body.discount) > 0
+      ? { type: 'fixed', value: Number(body.discount), reason: body.discountReason }
+      : null;
+  return {
+    items: body.items,
+    branchId,
+    access,
+    manualDiscount,
+    taxIds: body.taxIds,
+    appliedTaxes: body.appliedTaxes,
+  };
+};
+
 const posController = {
-  // GET /api/pos/products — published products visible on POS with stock > 0
-  // in the POS branch. `stock` (and variants[].stock / batches) = this branch's
-  // stock; `totalStock` = all branches.
+  // GET /api/pos/products — published products with stock > 0 in the shop.
   getProducts: async (req, res) => {
     try {
       const { search, category, limit } = req.query;
-      const branchId = await posBranchOr403(req, res);
-      if (!branchId) return undefined;
+      const branchId = await shopBranch(req);
       const mainBranchId = await getMainBranchId();
 
       const query = {
         status: 'published',
-        displayOn: { $in: ['pos', 'both'] },
-        $and: [branchProductStockQuery(branchId, mainBranchId)],
+        $and: [branchStockQuery(branchId, mainBranchId)],
       };
 
       if (category) query.category = category;
@@ -110,13 +211,15 @@ const posController = {
 
       const found = await productsQuery.lean();
       const products = (found || [])
-        .map((p) => withBranchStock(p, branchId, mainBranchId, { restrict: !seesOtherBranches(req) }))
-        .filter((p) => (Number(p.stock) || 0) > 0);
+        .map((p) => withBranchStock(p, branchId, mainBranchId))
+        .filter((p) => (Number(p.stock) || 0) > 0)
+        .map((p) => productForViewer(p, req.access));
+      // Where each item lives in the shop (shelf chips on the results).
+      await attachShelfCodes(products, branchId);
 
       return res.status(200).json({
         success: true,
         data: products,
-        branchId,
         message: 'Products fetched successfully',
       });
     } catch (error) {
@@ -128,19 +231,15 @@ const posController = {
   // GET /api/pos/products/barcode/:barcode — any scanned/typed code: short code,
   // barcode, box / full-box code, batch code, SKU or slug.
   // data = the product (unchanged for the frontend); match = what the code means.
-  // Stock numbers are for the POS branch (same branch createOrder sells from).
-  // match.otherBranches = [{ branchId, name, code, stock }] where this unit has
-  // stock elsewhere — only for super admin or users who can view stock_transfers.
+  // Stock numbers are the shop's (the same stock createOrder sells from).
   getProductByBarcode: async (req, res) => {
     try {
       const { barcode } = req.params;
-      const branchId = await posBranchOr403(req, res);
-      if (!branchId) return undefined;
+      const branchId = await shopBranch(req);
       const mainBranchId = await getMainBranchId();
       const found = await findProductByCode(barcode, {
         // out_of_stock included so the cashier sees "out of stock" instead of "not found"
         status: { $in: ['published', 'out_of_stock'] },
-        displayOn: { $in: ['pos', 'both'] },
       });
       if (!found) {
         return res.status(404).json({ success: false, message: 'Product not found' });
@@ -154,25 +253,50 @@ const posController = {
         variant = product.variants[0];
         variantId = variant.variantId;
       }
-      // Plain copies: per-branch fields (branchStock, batch.branch) read reliably.
+      // Plain copies: stock fields (branchStock, batch.branch) read reliably.
       const plain = toPlain(product);
       let unit = null;
       if (variant) unit = (plain.variants || []).find((v) => String(v.variantId) === String(variantId)) || toPlain(variant);
       else if (product.productType !== 'variant') unit = plain;
-      // Product as seen from this branch: stock / variants[].stock / batches = here.
-      const here = withBranchStock(plain, branchId, mainBranchId, { restrict: !seesOtherBranches(req) });
+      // Product as the shop sees it: stock / variants[].stock / batches.
+      const here = productForViewer(withBranchStock(plain, branchId, mainBranchId), req.access);
       const available = unit
         ? Math.max(0, Number(stockService.unitAvailable(unit, branchId, mainBranchId)) || 0)
         : Math.max(0, Number(here.stock) || 0);
 
-      // Batch info from this branch's batches only (quantity = pieces here).
+      // Batch info (quantity = pieces in the shop).
       let batch = null;
       if (m.batchNo && unit) {
         const hereUnit = variantId
           ? (here.variants || []).find((v) => String(v.variantId) === String(variantId))
           : here;
         const b = ((hereUnit && hereUnit.batches) || []).find((x) => normalizeCode(x.batchNo) === m.batchNo);
-        if (b) batch = { batchNo: b.batchNo, quantity: b.quantity, expiryDate: b.expiryDate, costPrice: b.costPrice };
+        if (b) {
+          batch = { batchNo: b.batchNo, quantity: b.quantity, expiryDate: b.expiryDate };
+          if (pricing.canSeeCost(req.access)) batch.costPrice = b.costPrice;
+        }
+      }
+
+      // Shelves of this unit: "A1-S2 (12), warehouse 30".
+      let location = null;
+      try {
+        const rows = await locationService.getProductLocations(product._id, { branchId });
+        const codes = (r) => r.shelves.filter((s) => s.qty > 0 || s.isHome).map((s) => s.code);
+        const rowOf = (vid) => rows.find((r) => (r.variantId || null) === (vid ? String(vid) : null));
+        const row = rowOf(variantId);
+        if (row) {
+          location = {
+            shelves: [...row.shelves].sort((a, b) => Number(b.isHome) - Number(a.isHome) || b.qty - a.qty),
+            shelved: row.shelved,
+            warehouse: row.warehouse,
+          };
+        }
+        here.shelfCodes = [...new Set(rows.flatMap(codes))];
+        if (Array.isArray(here.variants)) {
+          here.variants = here.variants.map((v) => ({ ...v, shelfCodes: rowOf(v.variantId) ? codes(rowOf(v.variantId)) : [] }));
+        }
+      } catch (locErr) {
+        console.error('[pos] shelf lookup failed:', locErr.message);
       }
 
       const match = {
@@ -184,25 +308,11 @@ const posController = {
         variantLabel: variantLabel(variant),
         available,
         batch,
-        branchId,
+        location,
+        shelfCodes: location ? location.shelves.filter((s) => s.qty > 0 || s.isHome).map((s) => s.code) : [],
+        // Sale price the server will charge for this unit.
+        price: pricing.unitSalePrice(unit || plain, plain.price),
       };
-
-      // Other branches holding this unit (lets the cashier say "available in Branch 2").
-      const branches = await Branch.find({ isActive: { $ne: false } }).select('name code isMain').lean();
-      const branchName = (branches.find((b) => sameId(b._id, branchId)) || {}).name || 'this branch';
-      if (seesOtherBranches(req)) {
-        match.otherBranches = branches
-          .filter((b) => !sameId(b._id, branchId))
-          .map((b) => ({
-            branchId: String(b._id),
-            name: b.name,
-            code: b.code,
-            stock: unit
-              ? unitBranchStock(unit, String(b._id), mainBranchId)
-              : Number(withBranchStock(plain, String(b._id), mainBranchId).stock) || 0,
-          }))
-          .filter((b) => b.stock > 0);
-      }
 
       const label = match.variantLabel ? `${product.name} (${match.variantLabel})` : product.name;
       if (available <= 0) {
@@ -210,7 +320,7 @@ const posController = {
           success: false,
           data: here,
           match,
-          message: `${label} is out of stock in ${branchName}`,
+          message: `${label} is out of stock`,
         });
       }
       if (available < match.qty) {
@@ -218,7 +328,7 @@ const posController = {
           success: false,
           data: here,
           match,
-          message: `Not enough stock for ${label} in ${branchName}. Available: ${available}, this code sells ${match.qty}`,
+          message: `Not enough stock for ${label}. Available: ${available}, this code sells ${match.qty}`,
         });
       }
       return res.status(200).json({ success: true, data: here, match, message: 'Product fetched successfully' });
@@ -239,10 +349,7 @@ const posController = {
         // Fallback to distinct on Product if Category schema lookup fails
       }
       if (!categoryNames.length) {
-        categoryNames = await Product.distinct('category', {
-          status: 'published',
-          displayOn: { $in: ['pos', 'both'] },
-        });
+        categoryNames = await Product.distinct('category', { status: 'published' });
         categoryNames = categoryNames.filter(Boolean).sort();
       }
       return res.status(200).json({ success: true, data: categoryNames, message: 'Categories fetched successfully' });
@@ -260,7 +367,7 @@ const posController = {
         isDeleted: { $ne: true },
         role: { $ne: 'admin' },
       })
-        .select('firstName lastName email phone carDetails addresses customerType source role')
+        .select('firstName lastName email phone customerType source role')
         .sort({ firstName: 1 });
       return res.status(200).json({ success: true, data: customers, message: 'Customers fetched successfully' });
     } catch (error) {
@@ -285,12 +392,9 @@ const posController = {
           { lastName: { $regex: raw, $options: 'i' } },
           { email: { $regex: raw, $options: 'i' } },
           { phone: { $regex: raw, $options: 'i' } },
-          { 'carDetails.brand': { $regex: raw, $options: 'i' } },
-          { 'carDetails.model': { $regex: raw, $options: 'i' } },
-          { 'carDetails.numberPlate': { $regex: raw, $options: 'i' } },
         ],
       })
-        .select('firstName lastName email phone carDetails address customerType source')
+        .select('firstName lastName email phone customerType source')
         .sort({ firstName: 1 })
         .limit(20);
 
@@ -304,9 +408,7 @@ const posController = {
   // GET /api/pos/customers/:id
   getCustomerById: async (req, res) => {
     try {
-      const customer = await User.findById(req.params.id).select(
-        'firstName lastName email phone carDetails address customerType source'
-      );
+      const customer = await User.findById(req.params.id).select('firstName lastName email phone customerType source');
       if (!customer) {
         return res.status(404).json({ success: false, message: 'Customer not found' });
       }
@@ -321,41 +423,37 @@ const posController = {
   // Email is required (matches the /admin/users profile flow).
   createOrFindCustomer: async (req, res) => {
     try {
-      const { firstName, lastName, email, phone, vehicleName } = req.body;
+      const { firstName, lastName, email, phone } = req.body;
       if (!firstName || !firstName.trim()) {
         return res.status(400).json({ success: false, message: 'Customer name is required' });
       }
-      if (!email || !email.trim()) {
-        return res.status(400).json({ success: false, message: 'Email is required' });
-      }
-      const normalizedEmail = String(email).trim().toLowerCase();
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
-        return res.status(400).json({ success: false, message: 'Enter a valid email address' });
-      }
-      if (!phone || !phone.trim()) {
+      if (!phone || !String(phone).trim()) {
         return res.status(400).json({ success: false, message: 'Mobile number is required' });
       }
-      if (!vehicleName || !vehicleName.trim()) {
-        return res.status(400).json({ success: false, message: 'Vehicle name is required' });
+      const phoneDigits = String(phone).replace(/\D/g, '');
+      if (phoneDigits.length < 7) {
+        return res.status(400).json({ success: false, message: 'Enter a valid mobile number' });
       }
+      // E-mail is optional at the counter. User.email is required + unique, so a
+      // customer without one gets an internal placeholder built from the phone.
+      const typedEmail = email && String(email).trim() ? String(email).trim().toLowerCase() : '';
+      if (typedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(typedEmail)) {
+        return res.status(400).json({ success: false, message: 'Enter a valid email address' });
+      }
+      const normalizedEmail = typedEmail || `${phoneDigits}@customer.dollarandco.local`;
 
-      // Try email first (the unique key on User), then fall back to phone.
-      let customer = await User.findOne({ email: normalizedEmail, isDeleted: { $ne: true } });
+      // A shop knows its customers by mobile number: phone first, then e-mail.
+      let customer = await User.findOne({ phone: String(phone).trim(), isDeleted: { $ne: true } });
       if (!customer) {
-        customer = await User.findOne({ phone: phone.trim(), isDeleted: { $ne: true } });
+        customer = await User.findOne({ email: normalizedEmail, isDeleted: { $ne: true } });
       }
 
       if (customer) {
-        const exists = customer.carDetails?.some(
-          (c) => c.model?.toLowerCase() === vehicleName.trim().toLowerCase()
-        );
-        if (!exists) {
-          customer.carDetails = customer.carDetails || [];
-          customer.carDetails.push({ brand: '', model: vehicleName.trim(), numberPlate: '' });
-        }
         // Back-fill phone if it was missing before.
-        if (!customer.phone) customer.phone = phone.trim();
-        await customer.save();
+        if (!customer.phone) {
+          customer.phone = phone.trim();
+          await customer.save();
+        }
         return res.status(200).json({ success: true, data: customer, message: 'Existing customer found', isNew: false });
       }
 
@@ -366,7 +464,6 @@ const posController = {
         role: 'user',
         phone: phone.trim(),
         customerType: 'walk-in',
-        carDetails: [{ brand: '', model: vehicleName.trim(), numberPlate: '' }],
         isActive: true,
       });
       await customer.save();
@@ -378,175 +475,106 @@ const posController = {
     }
   },
 
-  // POST /api/pos/customers/:id/cars — add a car to an existing customer.
-  // Body: { brand, model, numberPlate? }. Silent dedupe on (brand, model,
-  // numberPlate) to avoid duplicate rows from repeated clicks.
-  addCustomerCar: async (req, res) => {
+  // POST /api/pos/quote — cart preview. Exactly the calculation createOrder
+  // will use (DB prices, discount rules, manual discount limit, tax).
+  // Body: { items, manualDiscount?: { type, value, reason }, taxIds?: [] }
+  quote: async (req, res) => {
     try {
-      const { id } = req.params;
-      const { brand, model, numberPlate } = req.body || {};
-      if (!brand || !String(brand).trim()) {
-        return res.status(400).json({ success: false, message: 'Brand is required' });
-      }
-      if (!model || !String(model).trim()) {
-        return res.status(400).json({ success: false, message: 'Model is required' });
-      }
-
-      const customer = await User.findOne({ _id: id, isDeleted: { $ne: true } });
-      if (!customer) {
-        return res.status(404).json({ success: false, message: 'Customer not found' });
-      }
-
-      const newCar = {
-        brand: String(brand).trim(),
-        model: String(model).trim(),
-        numberPlate: String(numberPlate || '').trim(),
-      };
-
-      // Duplicate detection. A plate alone is enough for a collision (plates
-      // are unique in practice). Otherwise match on brand+model exactly.
-      const existing = (customer.carDetails || []).find((c) => {
-        const sameBrand = (c.brand || '').toLowerCase() === newCar.brand.toLowerCase();
-        const sameModel = (c.model || '').toLowerCase() === newCar.model.toLowerCase();
-        const samePlate =
-          newCar.numberPlate &&
-          (c.numberPlate || '').toLowerCase() === newCar.numberPlate.toLowerCase();
-        if (samePlate) return true;
-        if (sameBrand && sameModel) {
-          // If both have a plate but differ, they're different cars.
-          if (newCar.numberPlate && (c.numberPlate || '').trim()) {
-            return samePlate;
-          }
-          return true;
-        }
-        return false;
-      });
-
-      if (existing) {
-        return res.status(409).json({
-          success: false,
-          message: `This car is already on ${customer.firstName}'s garage${existing.numberPlate ? ` (plate: ${existing.numberPlate})` : ''}.`,
-          data: customer,
-          code: 'duplicate_car',
-        });
-      }
-
-      customer.carDetails = customer.carDetails || [];
-      customer.carDetails.push(newCar);
-      await customer.save();
-
-      return res.status(200).json({
-        success: true,
-        data: customer,
-        message: 'Car added to customer',
-      });
+      const branchId = await shopBranch(req);
+      const bill = await pricing.computeBill(pricingInput(req.body || {}, branchId, req.access));
+      return res.status(200).json({ success: true, data: pricing.publicBill(bill, req.access) });
     } catch (error) {
-      console.error('Add customer car error:', error);
-      return res.status(400).json({ success: false, message: 'Error adding car', error: error.message });
+      if (error.status) return sendKnownError(res, error);
+      console.error('POS quote error:', error);
+      return res.status(500).json({ success: false, message: 'Could not price the cart', error: error.message });
     }
   },
 
-  // POST /api/pos/orders — create sale, validate stock, deduct inventory
+  // POST /api/pos/orders — create a sale.
+  //   1. price it on the server (client prices / costs / totals are ignored)
+  //   2. till must be open when the store requires it (409 TILL_NOT_OPEN)
+  //   3. deduct stock with ledger rows pointing at this order
+  //   4. save; then till bookkeeping + WhatsApp slip (never fail the sale)
+  // Body: { items: [{ product, variantId?, quantity, batchNo?, scannedCode?, isGift?, giftReason?,
+  //         priceOverride?, price? }], manualDiscount?, taxIds?,
+  //         expectedTotal?, paymentMethod, cashAmount?, isPartialPayment?, paidAmount?,
+  //         bankTransferScreenshot?, customer?, customerInfo?, notes? }
   createOrder: async (req, res) => {
+    const body = req.body || {};
     try {
-      const {
-        items,
-        customer,
-        customerInfo,
-        subtotal,
-        tax,
-        appliedTaxes,
-        discount,
-        discountType,
-        discountReason,
-        total,
-        paymentMethod,
-        cashAmount,
-        cardAmount,
-        change,
-        bankTransferScreenshot,
-        notes,
-        isPartialPayment,
-        paidAmount: requestedPaidAmount,
-      } = req.body;
-
-      const cashierId = req.user?._id || req.user?.id;
+      const cashierId = userIdOf(req);
       if (!cashierId) {
         return res.status(401).json({ success: false, message: 'Authentication required - cashier not found' });
       }
-      if (!items || items.length === 0) {
+      if (!Array.isArray(body.items) || body.items.length === 0) {
         return res.status(400).json({ success: false, message: 'Order must have at least one item' });
       }
+      const { paymentMethod } = body;
       if (!paymentMethod) {
         return res.status(400).json({ success: false, message: 'Payment method is required' });
       }
+      if (!PAYMENT_METHODS.includes(paymentMethod)) {
+        return res.status(400).json({ success: false, message: 'Unknown payment method' });
+      }
 
-      // Branch this sale belongs to; stock is taken from this branch only.
-      const branchId = await posBranchOr403(req, res);
-      if (!branchId) return undefined;
+      // The shop's branch id: stamped on the sale, stock is taken from it.
+      const branchId = await shopBranch(req);
+
+      // 1. Server-side bill.
+      let bill;
+      try {
+        bill = await pricing.computeBill(pricingInput(body, branchId, req.access));
+      } catch (err) {
+        if (err.status) return sendKnownError(res, err);
+        throw err;
+      }
+      // The cashier confirmed a total; if it changed meanwhile (price edit, rule ended) stop and show the new one.
+      if (body.expectedTotal !== undefined && body.expectedTotal !== null && body.expectedTotal !== '') {
+        const expected = Number(body.expectedTotal);
+        if (!Number.isFinite(expected) || Math.abs(expected - bill.total) > 0.01) {
+          return res.status(409).json({
+            success: false,
+            code: 'TOTAL_CHANGED',
+            message: `The bill total is now Rs ${bill.total.toLocaleString('en-PK')}. Check the cart and confirm again.`,
+            data: pricing.publicBill(bill, req.access),
+          });
+        }
+      }
+
+      // 2. Till session (cash drawer). 409 TILL_NOT_OPEN when one is required.
+      let till;
+      try {
+        till = (await tillService.resolveSaleSession(req)) || {};
+      } catch (err) {
+        if (err.status) return sendKnownError(res, err);
+        throw err;
+      }
+      const refOf = (x) => (x && x._id ? x._id : mongoose.isValidObjectId(x) ? x : null);
+      const session = till.session || null;
+
       const branchDoc = await Branch.findById(branchId).select('name code').lean();
+      const isPartialPayment = !!body.isPartialPayment;
+      const plan = paymentPlan({
+        total: bill.total,
+        paymentMethod,
+        isPartialPayment,
+        paidAmount: body.paidAmount,
+        cashAmount: body.cashAmount,
+      });
 
-      // Partial payment logic
-      let actualPaidAmount = total;
-      let actualPendingAmount = 0;
-      let actualPaymentStatus = PAYMENT_STATUS.FULL;
-      let actualOrderStatus = 'completed';
-
-      if (isPartialPayment && requestedPaidAmount !== undefined) {
-        actualPaidAmount = parseFloat(requestedPaidAmount) || 0;
-        actualPendingAmount = Math.max(0, total - actualPaidAmount);
-        if (actualPendingAmount > 0) {
-          actualPaymentStatus = actualPaidAmount > 0 ? PAYMENT_STATUS.PARTIAL : PAYMENT_STATUS.PENDING;
-          actualOrderStatus = 'pending';
-        } else {
-          actualPaymentStatus = PAYMENT_STATUS.FULL;
-        }
-      }
-
-      // Items that only carry a scanned code: fill product / variant / batch from it.
-      const orderItems = [];
-      for (const raw of items) {
-        const item = { ...raw };
-        delete item.batchAllocations; // always computed here
-        if (!item.isLabour && !item.isOutsource) {
-          const qty = Number(item.quantity);
-          if (!Number.isInteger(qty) || qty < 1) {
-            return res.status(400).json({ success: false, message: 'Item quantity must be a whole number of at least 1' });
-          }
-          if (item.scannedCode && (!item.product || !item.variantId)) {
-            let product = null;
-            let match = null;
-            if (item.product) {
-              product = await Product.findById(item.product);
-              match = product ? resolveScan(product, item.scannedCode) : null;
-            } else {
-              const found = await findProductByCode(item.scannedCode);
-              if (found) ({ product, match } = found);
-            }
-            if (!product) {
-              return res.status(404).json({ success: false, message: `Product not found: ${item.product || item.scannedCode}` });
-            }
-            item.product = product._id;
-            if (match) {
-              if (!item.variantId && match.variantId) item.variantId = match.variantId;
-              if (!item.batchNo && match.batchNo) item.batchNo = match.batchNo;
-            }
-          }
-          if (!item.product) {
-            return res.status(400).json({ success: false, message: 'Each product item needs a product' });
-          }
-        }
-        orderItems.push(item);
-      }
+      // 3. Id + number first, so every ledger row points at this order.
+      const refs = { _id: new mongoose.Types.ObjectId(), orderNumber: await POSOrder.generateOrderNumber() };
+      const movement = orderMovement(refs, cashierId);
+      const orderItems = bill.lines.map(pricing.toOrderItem);
 
       // Deduct stock FIRST: this checks and reserves the pieces in one safe step,
       // so two counters can never sell the same last piece.
       let deducted;
       try {
-        deducted = await stockService.deductOrderItems(orderItems, { branchId });
+        deducted = await stockService.deductOrderItems(orderItems, { branchId, movement });
       } catch (stockErr) {
         if (stockErr.isStockError) {
-          return res.status(stockErr.status || 400).json({ success: false, message: stockErr.message });
+          return res.status(stockErr.status || 400).json({ success: false, message: stockErr.message, code: stockErr.code });
         }
         throw stockErr;
       }
@@ -556,70 +584,80 @@ const posController = {
 
       let order;
       try {
-        const orderNumber = await POSOrder.generateOrderNumber();
+        const historyStatus = isPartialPayment ? plan.status : PAYMENT_STATUS.FULL;
+        const note = isPartialPayment ? PAYMENT_NOTES.INITIAL_PARTIAL : PAYMENT_NOTES.FULL;
+        const entry = (amount, method) => ({
+          amount,
+          paymentMethod: method,
+          paidAt: new Date(),
+          receivedBy: cashierId,
+          note,
+          paymentStatus: historyStatus,
+          bankTransferScreenshot: method === 'bank_transfer' ? body.bankTransferScreenshot : undefined,
+        });
+        let paymentHistory = [];
+        if (plan.paid > 0) {
+          paymentHistory =
+            paymentMethod === 'split'
+              ? [plan.cashAmount > 0 && entry(plan.cashAmount, 'cash'), plan.cardAmount > 0 && entry(plan.cardAmount, 'card')].filter(Boolean)
+              : [entry(plan.paid, paymentMethod)];
+        }
 
-        const initialPaymentHistoryStatus = isPartialPayment ? actualPaymentStatus : PAYMENT_STATUS.FULL;
-        const initialPaymentHistory = actualPaidAmount > 0
-          ? [
-              {
-                amount: actualPaidAmount,
-                paymentMethod,
-                paidAt: new Date(),
-                receivedBy: cashierId,
-                note: isPartialPayment ? PAYMENT_NOTES.INITIAL_PARTIAL : PAYMENT_NOTES.FULL,
-                paymentStatus: initialPaymentHistoryStatus,
-                bankTransferScreenshot: paymentMethod === 'bank_transfer' ? bankTransferScreenshot : undefined,
-              },
-            ]
-          : [];
-
-        const orderData = {
-          orderNumber,
+        order = new POSOrder({
+          _id: refs._id,
+          orderNumber: refs.orderNumber,
           branch: branchId,
           branchCode: (branchDoc && branchDoc.code) || '',
-          customer: customer || undefined,
-          customerInfo: customerInfo || undefined,
+          customer: mongoose.isValidObjectId(body.customer) ? body.customer : undefined,
+          customerInfo: body.customerInfo || undefined,
           items: orderItems,
-          subtotal,
-          tax,
-          appliedTaxes: appliedTaxes || [],
-          discount: discount || 0,
-          discountType: discountType || null,
-          discountReason: discountReason || '',
-          total,
+          subtotal: bill.subtotal,
+          tax: bill.tax,
+          appliedTaxes: bill.appliedTaxes,
+          discount: bill.discount,
+          discountType: bill.manual ? bill.manual.type : null,
+          discountReason: bill.manual ? bill.manual.reason : '',
+          appliedDiscounts: bill.appliedDiscounts.map(({ label, ...d }) => d), // eslint-disable-line no-unused-vars
+          cogs: bill.cogs,
+          giftCost: bill.giftCost,
+          total: bill.total,
           paymentMethod,
-          paymentStatus: actualPaymentStatus,
-          orderStatus: actualOrderStatus,
-          paidAmount: actualPaidAmount,
-          pendingAmount: actualPendingAmount,
-          paymentHistory: initialPaymentHistory,
-          cashAmount: paymentMethod === 'cash' ? cashAmount : undefined,
-          cardAmount: paymentMethod === 'card' ? cardAmount : undefined,
-          changeGiven: change,
-          bankTransferScreenshot: paymentMethod === 'bank_transfer' ? bankTransferScreenshot : undefined,
+          paymentStatus: plan.status,
+          orderStatus: plan.orderStatus,
+          paidAmount: plan.paid,
+          pendingAmount: plan.pending,
+          paymentHistory,
+          cashAmount: plan.cashAmount,
+          cardAmount: plan.cardAmount,
+          changeGiven: plan.changeGiven,
+          bankTransferScreenshot: paymentMethod === 'bank_transfer' ? body.bankTransferScreenshot : undefined,
           cashier: cashierId,
-          notes: notes || 'POS Order',
-          completedAt:
-            actualPaymentStatus === PAYMENT_STATUS.FULL || actualPaymentStatus === PAYMENT_STATUS.COMPLETED
-              ? new Date()
-              : undefined,
-        };
-
-        order = new POSOrder(orderData);
+          cashSession: refOf(session),
+          counter: refOf(till.counter),
+          notes: body.notes || 'POS Order',
+          completedAt: plan.status === PAYMENT_STATUS.FULL ? new Date() : undefined,
+        });
         await order.save();
       } catch (saveErr) {
-        // Order was not saved -> give the pieces back (same branch).
-        await stockService.restoreOrderItems(orderItems, { branchId });
+        // Order was not saved -> give the pieces back (same refs).
+        await stockService.restoreOrderItems(orderItems, { branchId, movement: { ...movement, note: 'Sale not saved' } });
         throw saveErr;
       }
 
-      const populatedOrder = await POSOrder.findById(order._id)
-        .populate('customer', 'firstName lastName email phone carDetails')
-        .populate('cashier', 'firstName lastName email')
-        .populate('items.product', 'name thumbnailUrl bannerUrls price')
-        .populate('branch', 'name code address phone');
+      // 4. Never fail the sale because of bookkeeping / messaging.
+      try {
+        await tillService.attachOrder(session, order);
+      } catch (tillErr) {
+        console.error('[pos] till attachOrder failed:', tillErr.message);
+      }
+      await queueReceipt(order, 'sale');
 
-      return res.status(201).json({ success: true, data: populatedOrder, message: 'Order created successfully' });
+      const populatedOrder = await loadOrderForResponse(order._id);
+      return res.status(201).json({
+        success: true,
+        data: orderForViewer(populatedOrder, req.access),
+        message: 'Order created successfully',
+      });
     } catch (error) {
       console.error('Create POS order error:', error);
       return res.status(400).json({
@@ -635,7 +673,7 @@ const posController = {
   getOrders: async (req, res) => {
     try {
       const { date, startDate, endDate, paymentMethod, orderType, search } = req.query;
-      const query = { isDeleted: { $ne: true }, ...(await scopedBranchFilter(req)) };
+      const query = { isDeleted: { $ne: true } };
 
       if (startDate && endDate) {
         const rangeStart = new Date(startDate);
@@ -671,10 +709,9 @@ const posController = {
       const [total, orders, summaryAgg] = await Promise.all([
         POSOrder.countDocuments(query),
         POSOrder.find(query)
-          .populate('customer', 'firstName lastName email phone carDetails customerType source')
+          .populate('customer', 'firstName lastName email phone customerType source')
           .populate('cashier', 'firstName lastName email')
           .populate('items.product', 'name thumbnailUrl bannerUrls price')
-          .populate('branch', 'name code')
           .sort({ createdAt: -1 })
           .skip(skip)
           .limit(limit),
@@ -686,13 +723,16 @@ const posController = {
               totalSales: { $sum: '$total' },
               totalPaid: { $sum: '$paidAmount' },
               totalPending: { $sum: '$pendingAmount' },
+              totalDiscount: { $sum: '$discount' },
+              totalCogs: { $sum: '$cogs' },
+              totalGiftCost: { $sum: '$giftCost' },
             },
           },
         ]),
       ]);
 
-      // Enrich customerInfo with customerType/source if missing
-      const ordersData = orders.map((o) => o.toObject());
+      // Enrich customerInfo with customerType/source if missing. Costs only for dashboard viewers.
+      const ordersData = orders.map((o) => orderForViewer(o, req.access));
       const phonesToLookup = ordersData
         .filter((o) => o.customerInfo?.phone && (!o.customerInfo.customerType || !o.customerInfo.source))
         .map((o) => o.customerInfo.phone);
@@ -721,6 +761,9 @@ const posController = {
           totalSales: s.totalSales || 0,
           totalPaid: s.totalPaid || 0,
           totalPending: s.totalPending || 0,
+          totalDiscount: s.totalDiscount || 0,
+          // Cost of sales only for dashboard viewers.
+          ...(pricing.canSeeCost(req.access) ? { totalCogs: s.totalCogs || 0, totalGiftCost: s.totalGiftCost || 0 } : {}),
         },
         pagination: { total, page, pages: Math.max(1, Math.ceil(total / limit)), limit },
         message: 'Orders fetched successfully',
@@ -734,19 +777,14 @@ const posController = {
   // GET /api/pos/orders/:id
   getOrderById: async (req, res) => {
     try {
-      // Orders of another branch are "not found" for branch staff.
-      const order = await POSOrder.findOne({
-        _id: req.params.id,
-        isDeleted: { $ne: true },
-        ...(await scopedBranchFilter(req)),
-      })
-        .populate('customer', 'firstName lastName email phone carDetails')
+      const order = await POSOrder.findOne({ _id: req.params.id, isDeleted: { $ne: true } })
+        .populate('customer', 'firstName lastName email phone')
         .populate('cashier', 'firstName lastName email')
         .populate('items.product', 'name thumbnailUrl bannerUrls price')
         .populate('paymentHistory.receivedBy', 'firstName lastName')
         .populate('branch', 'name code address phone');
       if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-      return res.status(200).json({ success: true, data: order, message: 'Order fetched successfully' });
+      return res.status(200).json({ success: true, data: orderForViewer(order, req.access), message: 'Order fetched successfully' });
     } catch (error) {
       console.error('Get order by ID error:', error);
       return res.status(400).json({ success: false, message: 'Error fetching order', error: error.message });
@@ -819,11 +857,8 @@ const posController = {
           periodLabel = 'Today';
       }
 
-      const bf = await scopedBranchFilter(req);
-      const scope = await branchScope(req);
-
       const periodStats = await POSOrder.aggregate([
-        { $match: { createdAt: { $gte: periodStart, $lt: periodEnd }, orderStatus: 'completed', isDeleted: { $ne: true }, ...bf } },
+        { $match: { createdAt: { $gte: periodStart, $lt: periodEnd }, orderStatus: 'completed', isDeleted: { $ne: true } } },
         {
           $group: {
             _id: null,
@@ -837,7 +872,7 @@ const posController = {
       ]);
 
       const paymentStats = await POSOrder.aggregate([
-        { $match: { createdAt: { $gte: periodStart, $lt: periodEnd }, isDeleted: { $ne: true }, ...bf } },
+        { $match: { createdAt: { $gte: periodStart, $lt: periodEnd }, isDeleted: { $ne: true } } },
         { $unwind: { path: '$paymentHistory', preserveNullAndEmptyArrays: false } },
         { $group: { _id: '$paymentHistory.paymentMethod', total: { $sum: '$paymentHistory.amount' } } },
       ]);
@@ -850,12 +885,12 @@ const posController = {
       });
 
       const comparisonStats = await POSOrder.aggregate([
-        { $match: { createdAt: { $gte: comparisonStart, $lt: comparisonEnd }, orderStatus: 'completed', isDeleted: { $ne: true }, ...bf } },
+        { $match: { createdAt: { $gte: comparisonStart, $lt: comparisonEnd }, orderStatus: 'completed', isDeleted: { $ne: true } } },
         { $group: { _id: null, totalSales: { $sum: '$total' }, totalOrders: { $sum: 1 } } },
       ]);
 
       const topProducts = await POSOrder.aggregate([
-        { $match: { createdAt: { $gte: periodStart, $lt: periodEnd }, orderStatus: 'completed', isDeleted: { $ne: true }, ...bf } },
+        { $match: { createdAt: { $gte: periodStart, $lt: periodEnd }, orderStatus: 'completed', isDeleted: { $ne: true } } },
         { $unwind: '$items' },
         {
           $group: {
@@ -883,23 +918,12 @@ const posController = {
         orderStatus: 'completed',
         createdAt: { $gte: periodStart, $lt: periodEnd },
         isDeleted: { $ne: true },
-        ...bf,
       })
         .sort({ createdAt: -1 })
         .limit(5)
         .populate('customer', 'firstName lastName')
         .populate('cashier', 'firstName lastName')
-        .populate('branch', 'name code')
-        .select('orderNumber total paymentMethod createdAt customer cashier branch branchCode');
-
-      // Super admin looking at all branches: sales per branch for the period.
-      const byBranch = scope.allBranches
-        ? await byBranchBreakdown(
-            POSOrder,
-            { createdAt: { $gte: periodStart, $lt: periodEnd }, orderStatus: 'completed', isDeleted: { $ne: true } },
-            { mainBranchId: scope.mainBranchId }
-          )
-        : undefined;
+        .select('orderNumber total paymentMethod createdAt customer cashier');
 
       const calcChange = (current, previous) => {
         if (!previous || previous === 0) return current > 0 ? 100 : 0;
@@ -944,8 +968,6 @@ const posController = {
           dateRange: { start: periodStart.toISOString(), end: periodEnd.toISOString() },
           topProducts,
           recentOrders,
-          branchId: scope.branchId,
-          byBranch,
         },
         message: 'Dashboard stats fetched successfully',
       });
@@ -983,9 +1005,8 @@ const posController = {
           dateFormat = 'daily';
       }
 
-      const bf = await scopedBranchFilter(req);
       const salesChart = await POSOrder.aggregate([
-        { $match: { createdAt: { $gte: startDate }, orderStatus: 'completed', isDeleted: { $ne: true }, ...bf } },
+        { $match: { createdAt: { $gte: startDate }, orderStatus: 'completed', isDeleted: { $ne: true } } },
         {
           $group: {
             _id: groupFormat,
@@ -1000,13 +1021,13 @@ const posController = {
 
       const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
       const hourlyChart = await POSOrder.aggregate([
-        { $match: { createdAt: { $gte: todayStart }, orderStatus: 'completed', isDeleted: { $ne: true }, ...bf } },
+        { $match: { createdAt: { $gte: todayStart }, orderStatus: 'completed', isDeleted: { $ne: true } } },
         { $group: { _id: { $hour: '$createdAt' }, totalSales: { $sum: '$total' }, totalOrders: { $sum: 1 } } },
         { $sort: { _id: 1 } },
       ]);
 
       const paymentDistribution = await POSOrder.aggregate([
-        { $match: { createdAt: { $gte: startDate }, orderStatus: 'completed', isDeleted: { $ne: true }, ...bf } },
+        { $match: { createdAt: { $gte: startDate }, orderStatus: 'completed', isDeleted: { $ne: true } } },
         { $group: { _id: '$paymentMethod', totalSales: { $sum: '$total' }, count: { $sum: 1 } } },
       ]);
 
@@ -1028,16 +1049,14 @@ const posController = {
       const query = {
         isDeleted: { $ne: true },
         paymentStatus: { $in: ['pending', 'partial'] },
-        ...(await scopedBranchFilter(req)),
       };
       if (customerId) query.customer = customerId;
 
       const orders = await POSOrder.find(query)
-        .populate('customer', 'firstName lastName email phone carDetails')
+        .populate('customer', 'firstName lastName email phone')
         .populate('cashier', 'firstName lastName email')
         .populate('items.product', 'name thumbnailUrl bannerUrls price')
         .populate('paymentHistory.receivedBy', 'firstName lastName')
-        .populate('branch', 'name code')
         .sort({ createdAt: -1 });
 
       const totalPending = orders.reduce((sum, o) => sum + (o.pendingAmount || 0), 0);
@@ -1045,7 +1064,7 @@ const posController = {
 
       return res.status(200).json({
         success: true,
-        data: orders,
+        data: orders.map((o) => orderForViewer(o, req.access)),
         summary: { totalOrders: orders.length, totalPending, totalPaid, totalAmount: totalPending + totalPaid },
         message: 'Pending orders fetched successfully',
       });
@@ -1055,50 +1074,72 @@ const posController = {
     }
   },
 
-  // POST /api/pos/orders/:id/payment — add payment to existing pending order
+  // POST /api/pos/orders/:id/payment — add payment to existing pending order.
+  // Body { amount, paymentMethod, note?, bankTransferScreenshot?, discount? }.
+  // A discount here counts towards the same manual discount limit as at the till.
   addPayment: async (req, res) => {
     try {
       const { id } = req.params;
-      const { amount, paymentMethod, note, bankTransferScreenshot, discount } = req.body;
-      const userId = req.user?._id || req.user?.id;
+      const { amount, paymentMethod, note, bankTransferScreenshot, discount } = req.body || {};
+      const userId = userIdOf(req);
 
-      if (!amount || amount <= 0) {
+      const paymentAmount = pricing.round2(Number(amount));
+      if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
         return res.status(400).json({ success: false, message: 'Payment amount must be greater than 0' });
       }
-      if (!paymentMethod) {
+      if (!['cash', 'card', 'bank_transfer'].includes(paymentMethod)) {
         return res.status(400).json({ success: false, message: 'Payment method is required' });
       }
+      if (!mongoose.isValidObjectId(id)) return res.status(404).json({ success: false, message: 'Order not found' });
 
-      const order = await POSOrder.findOne({ _id: id, isDeleted: { $ne: true }, ...(await scopedBranchFilter(req)) });
+      const order = await POSOrder.findOne({ _id: id, isDeleted: { $ne: true } });
       if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-      if (order.paymentStatus === 'completed')
-        return res.status(400).json({ success: false, message: 'Order is already fully paid' });
-      if (order.paymentStatus === 'refunded')
+      if (order.paymentStatus === 'refunded' || order.orderStatus === 'refunded')
         return res.status(400).json({ success: false, message: 'Cannot add payment to a refunded order' });
+      if (order.orderStatus === 'cancelled')
+        return res.status(400).json({ success: false, message: 'Cannot add payment to a cancelled order' });
+      if (['completed', 'full'].includes(order.paymentStatus) || !(order.pendingAmount > 0))
+        return res.status(400).json({ success: false, message: 'Order is already fully paid' });
 
-      const paymentAmount = parseFloat(amount);
-      const discountAmount = discount ? parseFloat(discount) : 0;
-
+      const discountAmount = discount ? pricing.round2(Number(discount)) : 0;
+      if (!Number.isFinite(discountAmount) || discountAmount < 0) {
+        return res.status(400).json({ success: false, message: 'Enter a valid discount' });
+      }
       if (discountAmount > 0) {
-        if (discountAmount > order.pendingAmount) {
+        if (discountAmount > order.pendingAmount + 0.001) {
           return res.status(400).json({
             success: false,
             message: `Discount amount (${discountAmount}) exceeds pending amount (${order.pendingAmount})`,
           });
         }
-        order.discount = (order.discount || 0) + discountAmount;
-        order.total = order.total - discountAmount;
-        order.pendingAmount = order.pendingAmount - discountAmount;
+        const limits = await pricing.manualLimits(req.access);
+        const manualSoFar = (order.appliedDiscounts || []).length
+          ? order.appliedDiscounts.filter((d) => d.kind === 'manual').reduce((s, d) => s + (Number(d.amount) || 0), 0)
+          : Number(order.discount) || 0;
+        const maxManual = pricing.round2(((Number(order.subtotal) || 0) * limits.maxManualDiscountPct) / 100);
+        if (!limits.unlimitedManualDiscount && manualSoFar + discountAmount > maxManual + 0.001) {
+          return res.status(403).json({
+            success: false,
+            code: 'DISCOUNT_LIMIT',
+            message: `Manual discount is limited to ${limits.maxManualDiscountPct}% of the bill (Rs ${maxManual.toLocaleString('en-PK')}). Ask a manager.`,
+            maxManualDiscount: maxManual,
+            maxManualDiscountPct: limits.maxManualDiscountPct,
+          });
+        }
+        order.discount = pricing.round2((order.discount || 0) + discountAmount);
+        order.total = pricing.round2(order.total - discountAmount);
+        order.pendingAmount = pricing.round2(order.pendingAmount - discountAmount);
+        order.appliedDiscounts.push({ rule: null, name: 'Discount at payment', kind: 'manual', valueType: 'fixed', value: discountAmount, amount: discountAmount });
       }
 
-      if (paymentAmount > order.pendingAmount) {
+      if (paymentAmount > order.pendingAmount + 0.001) {
         return res.status(400).json({
           success: false,
           message: `Payment amount (${paymentAmount}) exceeds pending amount (${order.pendingAmount})`,
         });
       }
 
-      const newPendingAmount = order.pendingAmount - paymentAmount;
+      const newPendingAmount = pricing.round2(Math.max(0, order.pendingAmount - paymentAmount));
       const newPaymentStatus = newPendingAmount <= 0 ? 'completed' : 'partial';
 
       order.paymentHistory.push({
@@ -1111,7 +1152,7 @@ const posController = {
         bankTransferScreenshot: paymentMethod === 'bank_transfer' ? bankTransferScreenshot : undefined,
       });
 
-      order.paidAmount += paymentAmount;
+      order.paidAmount = pricing.round2((order.paidAmount || 0) + paymentAmount);
       order.pendingAmount = newPendingAmount;
       if (newPendingAmount <= 0) {
         order.paymentStatus = 'completed';
@@ -1123,16 +1164,12 @@ const posController = {
       }
 
       await order.save();
+      await queueReceipt(order, 'payment');
 
-      const populatedOrder = await POSOrder.findById(order._id)
-        .populate('customer', 'firstName lastName email phone carDetails')
-        .populate('cashier', 'firstName lastName email')
-        .populate('items.product', 'name thumbnailUrl bannerUrls price')
-        .populate('paymentHistory.receivedBy', 'firstName lastName');
-
+      const populatedOrder = await loadOrderForResponse(order._id);
       return res.status(200).json({
         success: true,
-        data: populatedOrder,
+        data: orderForViewer(populatedOrder, req.access),
         message:
           order.paymentStatus === 'completed'
             ? 'Payment completed successfully'
@@ -1144,6 +1181,31 @@ const posController = {
     }
   },
 
+  // POST /api/pos/orders/:id/whatsapp — send the transaction slip to the WhatsApp group again.
+  resendWhatsapp: async (req, res) => {
+    try {
+      if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ success: false, message: 'Order not found' });
+      const order = await POSOrder.findOne({ _id: req.params.id, isDeleted: { $ne: true } });
+      if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+      const event = (order.paymentHistory || []).length > 1 ? 'payment' : 'sale';
+      const r = await queueReceipt(order, event, { resend: true });
+      const fresh = await POSOrder.findById(order._id).select('whatsappStatus').lean();
+      const whatsappStatus = (fresh && fresh.whatsappStatus) || r.status;
+      return res.status(200).json({
+        success: true,
+        data: { queued: r.queued, reason: r.reason || undefined, whatsappStatus },
+        message: r.queued
+          ? 'Slip sent to the WhatsApp queue'
+          : r.reason === 'not_configured'
+          ? 'WhatsApp group is not set up yet'
+          : `Slip not sent${r.reason ? ` (${r.reason})` : ''}`,
+      });
+    } catch (error) {
+      console.error('Resend WhatsApp error:', error);
+      return res.status(400).json({ success: false, message: 'Could not send the slip', error: error.message });
+    }
+  },
+
   // GET /api/pos/customers/:id/pending
   getCustomerPendingOrders: async (req, res) => {
     try {
@@ -1152,16 +1214,14 @@ const posController = {
         customer: id,
         isDeleted: { $ne: true },
         paymentStatus: { $in: ['pending', 'partial'] },
-        ...(await scopedBranchFilter(req)),
       })
         .populate('cashier', 'firstName lastName email')
-        .populate('branch', 'name code')
         .populate('items.product', 'name thumbnailUrl bannerUrls price')
         .sort({ createdAt: -1 });
       const totalPending = orders.reduce((sum, o) => sum + (o.pendingAmount || 0), 0);
       return res.status(200).json({
         success: true,
-        data: orders,
+        data: orders.map((o) => orderForViewer(o, req.access)),
         summary: { totalOrders: orders.length, totalPending },
         message: 'Customer pending orders fetched successfully',
       });
@@ -1174,13 +1234,13 @@ const posController = {
   // DELETE /api/pos/orders/:id — soft delete; puts the pieces back into stock once.
   deleteOrder: async (req, res) => {
     try {
-      const userId = req.user?._id || req.user?.id;
-      const order = await POSOrder.findOne({ _id: req.params.id, isDeleted: { $ne: true }, ...(await scopedBranchFilter(req)) });
+      const userId = userIdOf(req);
+      const order = await POSOrder.findOne({ _id: req.params.id, isDeleted: { $ne: true } });
       if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
       let stock = null;
       if (!['refunded', 'cancelled'].includes(order.orderStatus)) {
-        stock = await restoreOrderStockOnce(order);
+        stock = await restoreOrderStockOnce(order, { userId, note: 'Order deleted' });
       }
       order.isDeleted = true;
       order.deletedAt = new Date();
@@ -1199,11 +1259,12 @@ const posController = {
   },
 
   // POST /api/pos/orders/:id/refund — body { reason? }. Marks the order refunded
-  // and puts its pieces back into stock (only once).
+  // and puts its pieces back into stock (only once, ledger rows 'sale_return' with the order refs).
   refundOrder: async (req, res) => {
     try {
       const { reason } = req.body || {};
-      const order = await POSOrder.findOne({ _id: req.params.id, isDeleted: { $ne: true }, ...(await scopedBranchFilter(req)) });
+      const userId = userIdOf(req);
+      const order = await POSOrder.findOne({ _id: req.params.id, isDeleted: { $ne: true } });
       if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
       if (order.orderStatus === 'refunded' || order.paymentStatus === 'refunded') {
         return res.status(400).json({ success: false, message: 'Order is already refunded' });
@@ -1212,27 +1273,24 @@ const posController = {
         return res.status(400).json({ success: false, message: 'Cannot refund a cancelled order' });
       }
 
-      const stock = await restoreOrderStockOnce(order);
+      const cleanReason = reason ? String(reason).trim().slice(0, 300) : '';
+      const stock = await restoreOrderStockOnce(order, { userId, note: cleanReason ? `Refund: ${cleanReason}` : 'Refund' });
 
       order.orderStatus = 'refunded';
       order.paymentStatus = 'refunded';
       order.refundedAt = new Date();
+      // Who handed the cash back (till closing subtracts it from that person's till).
+      order.refundedBy = (req.access && req.access.userId) || userId || null;
       order.pendingAmount = 0; // nothing is owed on a refunded order
-      const cleanReason = reason ? String(reason).trim() : '';
       if (cleanReason) {
         order.notes = order.notes ? `${order.notes}\nRefund reason: ${cleanReason}` : `Refund reason: ${cleanReason}`;
       }
       await order.save();
 
-      const populatedOrder = await POSOrder.findById(order._id)
-        .populate('customer', 'firstName lastName email phone carDetails')
-        .populate('cashier', 'firstName lastName email')
-        .populate('items.product', 'name thumbnailUrl bannerUrls price')
-        .populate('paymentHistory.receivedBy', 'firstName lastName');
-
+      const populatedOrder = await loadOrderForResponse(order._id);
       return res.status(200).json({
         success: true,
-        data: populatedOrder,
+        data: orderForViewer(populatedOrder, req.access),
         stockRestored: !!stock.claimed,
         stockWarnings: stock.errors.length ? stock.errors : undefined,
         message: 'Order refunded successfully',
@@ -1242,7 +1300,6 @@ const posController = {
       return res.status(400).json({ success: false, message: 'Error refunding order', error: error.message });
     }
   },
-
   // POST /api/pos/upload/screenshot — bank transfer proof upload
   uploadScreenshot: async (req, res) => {
     try {

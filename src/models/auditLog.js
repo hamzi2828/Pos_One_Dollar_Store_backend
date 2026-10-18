@@ -83,7 +83,7 @@ auditLogSchema.index({ createdAt: -1, userId: 1 });
 auditLogSchema.index({ createdAt: -1, path: 1, method: 1 });
 // Range-bounded status breakdown
 auditLogSchema.index({ createdAt: -1, statusCode: 1 });
-// Product-view & blog-view aggregations
+// Product-view aggregations
 auditLogSchema.index({ action: 1, 'details.slug': 1, createdAt: -1 }, { sparse: true });
 // Severity feed (surface critical events fast)
 auditLogSchema.index({ severity: 1, createdAt: -1 });

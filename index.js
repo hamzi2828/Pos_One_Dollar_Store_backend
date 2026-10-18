@@ -10,25 +10,18 @@ const auditLogger = require('./src/middleware/auditLogger');
 
 const dashboardRoutes = require('./src/routes/dashboardRoutes');
 
-// CORS: allow frontend to access backend
+// CORS: allow the admin panel to call the API.
 // FRONTEND_ORIGIN may list several sites, comma separated.
 const FRONTEND_ORIGINS = (process.env.FRONTEND_ORIGIN || 'http://localhost:3000')
   .split(',')
   .map((o) => o.trim().replace(/\/$/, ''))
   .filter(Boolean);
 app.use(cors({
-  origin: [...FRONTEND_ORIGINS, 'http://localhost:3000', 'http://localhost:3001', 'https://www.hamzamobile.com'],
+  origin: [...FRONTEND_ORIGINS, 'http://localhost:3000', 'http://localhost:3001'],
   credentials: true,
 }));
 
-// Parse JSON (but not for webhook endpoint)
-app.use((req, res, next) => {
-  if (req.originalUrl === '/api/payment/webhook') {
-    next();
-  } else {
-    express.json({ limit: '50mb' })(req, res, next);
-  }
-});
+app.use(express.json({ limit: '50mb' }));
 
 // Also add urlencoded parser for form data
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -89,7 +82,7 @@ app.get('/', (req, res) => {
     const mongoose = require('mongoose');
 
     res.json({
-      message: 'Welcome to Mirpur Mobile & Stationery API',
+      message: 'DOLLAR & Co POS API',
       status: 'running',
       timestamp: new Date().toISOString(),
       version: '1.0.0',
@@ -102,7 +95,7 @@ app.get('/', (req, res) => {
   } catch (error) {
     console.error('Error in welcome route:', error);
     res.status(500).json({
-      message: 'Welcome to Mirpur Mobile & Stationery API',
+      message: 'DOLLAR & Co POS API',
       status: 'error',
       error: error.message,
       timestamp: new Date().toISOString(),
@@ -158,9 +151,9 @@ app.use((error, req, res, next) => {
   }
   
   if (error.code === 'LIMIT_UNEXPECTED_FILE') {
-    return res.status(400).json({ 
-      error: 'Too many files', 
-      message: 'Number of files exceeds the maximum allowed. Maximum 10 banner images are allowed.' 
+    return res.status(400).json({
+      error: 'Too many files',
+      message: `Too many files${error.field ? ` for "${error.field}"` : ''}. Please upload fewer files.`,
     });
   }
   

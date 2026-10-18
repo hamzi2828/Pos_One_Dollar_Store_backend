@@ -419,17 +419,12 @@ const sortBatchesForSale = (batches) =>
 const MAIN_TTL_MS = 60 * 1000;
 let mainCache = { at: 0, id: null };
 
-// Main branch id (string), cached 60s. Creates "Main Branch" if none exists.
+// The shop's branch id (string), cached 60s. Creates the shop if none exists (Branch.getMain).
 const getMainBranchId = async () => {
   if (mainCache.id && Date.now() - mainCache.at < MAIN_TTL_MS) return mainCache.id;
   const main = await Branch.getMain();
   mainCache = { at: Date.now(), id: main ? String(main._id) : null };
   return mainCache.id;
-};
-
-// Call after the main branch changes (branchController.setMain).
-const clearMainBranchCache = () => {
-  mainCache = { at: 0, id: null };
 };
 
 const sameBranch = (a, b) => {
@@ -678,7 +673,6 @@ module.exports = {
   toBranchId,
   sameBranch,
   getMainBranchId,
-  clearMainBranchCache,
   batchBranchId,
   unitTotalStock,
   unitBranchRows,

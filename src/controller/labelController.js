@@ -18,10 +18,8 @@
 //   batch     barcode = batch.barcode, shows batch no + expiry; copies = batch quantity (in boxes for box products)
 //   barcode   barcode = `code` param (must be one of the unit's own codes); copies = ceil(stock / code qty)
 //
-// Branches: default copies use the stock of the request's branch
-// (req.access.branchId: staff -> own branch, super admin -> picked branch;
-// super admin with none / no access info -> total of all branches). `batch`
-// labels list that branch's batches (all branches: one entry per batchNo).
+// Default copies use the shop's stock (req.access.branchId = the shop);
+// `batch` labels list the shop's batches.
 //
 // Sizes: 38x25 (default), 40x30, 50x25, 50x30, 60x40 (thermal, one label per page),
 //        a4 (A4 sheet, 3 columns x 8 rows = 24 labels of 70 x 37 mm, no page margins).
@@ -159,7 +157,7 @@ const getShopSettings = async (overrides = {}) => {
     // labels still print without a shop name
   }
   // The POS screens always price in PKR, so labels default to "Rs" regardless
-  // of the website currency in Settings. `currency` can override (code or symbol).
+  // of the shop currency in Settings. `currency` can override (code or symbol).
   let currency = 'Rs';
   const cur = asString(overrides.currency);
   if (cur) currency = CURRENCY_SYMBOLS[cur.toUpperCase()] || truncate(cur, 4);
@@ -176,7 +174,7 @@ const fullBoxEntry = (unit) => {
 
 const unitMainCode = (unit) => normalizeCode(unit.shortCode) || normalizeCode(unit.sku);
 
-// Branch whose stock sets the default copies. null = all branches.
+// Branch whose stock sets the default copies: the shop.
 const labelBranch = async (req) => {
   const branchId = req && req.access && req.access.branchId ? String(req.access.branchId) : null;
   return { branchId, mainBranchId: branchId ? await getMainBranchId() : null };
@@ -555,7 +553,7 @@ const labelController = {
       const where = await labelBranch(req);
 
       const units = listUnits(product).map(({ key, variant, unit }) => {
-        // stock of the request's branch (all branches when none)
+        // the shop's stock
         const stock = unitBranchStock(unit, where.branchId, where.mainBranchId);
         const fb = ppb > 1 ? fullBoxEntry(unit) : null;
         return {

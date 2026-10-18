@@ -28,7 +28,7 @@ const sizes = [
   'Free Size',
   'One Size',
 
-  // Auto-care volumes
+  // Volumes
   '50ml',
   '100ml',
   '250ml',
@@ -69,8 +69,8 @@ const colors = [
 
 async function seedAttributes() {
   try {
-    const mongoUri = process.env.MONGO_URI || 'mongodb://localhost:27017/hamzaMobile';
-    await mongoose.connect(mongoUri);
+    if (!process.env.MONGO_URI) throw new Error('MONGO_URI is not set (see .env.example)');
+    await mongoose.connect(process.env.MONGO_URI);
     console.log('Connected to MongoDB');
 
     // Sizes

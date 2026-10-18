@@ -6,10 +6,8 @@ const { uploadToBlob, deleteFromBlob } = require('../helper/blobUpload');
 const { toPublicPath } = require('../helper/upload');
 const { paginate, buildRegexSearchFilter, readPagingQuery } = require('../helper/paginate');
 const { resolveWriteBranch } = require('../middleware/access');
-const { scopedBranchFilter } = require('../helper/branchScope');
 
-// Expenses are per branch (categories are shared). Old expenses without a
-// branch belong to the main branch.
+// Expenses of the shop (stamped with the shop's branch id).
 
 // Check if using Vercel Blob storage
 const USE_BLOB_STORAGE = !!process.env.BLOB_READ_WRITE_TOKEN;
@@ -23,7 +21,7 @@ const expenseController = {
         try {
             const { search, category, paymentMethod, isActive, startDate, endDate, minAmount, maxAmount } = req.query;
 
-            const filter = { isDeleted: { $ne: true }, ...(await scopedBranchFilter(req)) };
+            const filter = { isDeleted: { $ne: true } };
             if (category) filter.category = category;
             if (paymentMethod) filter.paymentMethod = paymentMethod;
             if (isActive === 'true') filter.isActive = true;
@@ -69,7 +67,7 @@ const expenseController = {
     getExpenseById: async (req, res) => {
         try {
             const { id } = req.params;
-            const expense = await Expense.findOne({ _id: id, isDeleted: { $ne: true }, ...(await scopedBranchFilter(req)) }).lean();
+            const expense = await Expense.findOne({ _id: id, isDeleted: { $ne: true } }).lean();
 
             if (!expense) {
                 return res.status(404).json({ message: 'Expense not found' });
@@ -119,13 +117,7 @@ const expenseController = {
                 return res.status(400).json({ message: 'Category is required' });
             }
 
-            let branch;
-            try {
-                branch = await resolveWriteBranch(req);
-            } catch (err) {
-                if (err.status) return res.status(err.status).json({ message: err.message });
-                throw err;
-            }
+            const branch = await resolveWriteBranch(req);
 
             // Handle receipt file upload
             let receiptUrl = null;
@@ -171,7 +163,7 @@ const expenseController = {
             const { id } = req.params;
             const { title, amount, category, date, paymentMethod, reference, notes, isActive, removeReceipt } = req.body;
 
-            const expense = await Expense.findOne({ _id: id, isDeleted: { $ne: true }, ...(await scopedBranchFilter(req)) });
+            const expense = await Expense.findOne({ _id: id, isDeleted: { $ne: true } });
             if (!expense) {
                 return res.status(404).json({ message: 'Expense not found' });
             }
@@ -233,7 +225,7 @@ const expenseController = {
         try {
             const { id } = req.params;
 
-            const expense = await Expense.findOne({ _id: id, isDeleted: { $ne: true }, ...(await scopedBranchFilter(req)) });
+            const expense = await Expense.findOne({ _id: id, isDeleted: { $ne: true } });
 
             if (!expense) {
                 return res.status(404).json({ message: 'Expense not found' });
@@ -265,7 +257,7 @@ const expenseController = {
             }
 
             const expense = await Expense.findOneAndUpdate(
-                { _id: id, isDeleted: { $ne: true }, ...(await scopedBranchFilter(req)) },
+                { _id: id, isDeleted: { $ne: true } },
                 { isActive },
                 { new: true }
             );
@@ -289,7 +281,7 @@ const expenseController = {
         try {
             const { startDate, endDate } = req.query;
 
-            const match = { isActive: true, isDeleted: { $ne: true }, ...(await scopedBranchFilter(req)) };
+            const match = { isActive: true, isDeleted: { $ne: true } };
             if (startDate || endDate) {
                 match.date = {};
                 if (startDate) match.date.$gte = new Date(startDate);

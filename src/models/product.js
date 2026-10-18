@@ -1,4 +1,6 @@
-// src/model/product.js
+// src/models/product.js
+// A product of the shop: a single item, or a product with variants (colour /
+// size / any attributes). Stock is counted in pieces (helper/productCodes.js).
 
 const mongoose = require('mongoose');
 
@@ -25,19 +27,18 @@ const batchSchema = new mongoose.Schema(
     expiryDate: { type: Date, default: undefined },
     receivedAt: { type: Date, default: Date.now },
     note: { type: String, trim: true, default: '' },
-    // Branch holding these pieces. Old batches without one belong to the main
-    // branch. The same batchNo/barcode can exist once per branch inside one
-    // unit (a lot split by a stock transfer), so stickers scan everywhere.
+    // The shop (see models/branch.js). Old batches without one belong to it.
     branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', default: undefined },
   },
   { _id: true }
 );
 
-// Pieces of one unit held by one branch. Kept in sync by helper/productCodes.js
-// (syncProductBranchStock) and services/stockService.js — do not edit by hand.
-//   unit with batches:    stock per branch = sum of that branch's batches
+// Pieces of one unit held by the shop (one row: the shop's branch id). Kept in
+// sync by helper/productCodes.js (syncProductBranchStock) and
+// services/stockService.js — do not edit by hand.
+//   unit with batches:    stock = sum of the batches
 //   unit without batches: unit.stock = sum of branchStock
-// Missing/empty on old data = everything is in the main branch.
+// Missing/empty on old data = everything is in the shop.
 const branchStockSchema = new mongoose.Schema(
   {
     branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },
@@ -49,7 +50,7 @@ const branchStockSchema = new mongoose.Schema(
 const variantSchema = new mongoose.Schema(
   {
     variantId: { type: String, required: true, unique: false, trim: true }, // Custom unique ID for variant
-    // color/size kept for the website; any other options (Storage, RAM...) go in `attributes`.
+    // color / size; any other options (Pack, Material...) go in `attributes`.
     color: { type: String, trim: true, default: '' },
     size: { type: String, trim: true, default: '' },
     attributes: { type: Map, of: String, default: undefined },
@@ -58,12 +59,20 @@ const variantSchema = new mongoose.Schema(
     batches: { type: [batchSchema], default: [] },
     branchStock: { type: [branchStockSchema], default: [] },
     price: { type: Number, required: true, min: 0 },
-    websitePrice: { type: Number, min: 0, default: undefined },
     stock: { type: Number, required: true, min: 0 },
     sku: { type: String, trim: true, default: undefined },
+    // Weighted-average landed cost per piece (see services/inventory/costingService.js).
     costPrice: { type: Number, min: 0, default: undefined },
     discountedPrice: { type: Number, min: 0, default: undefined },
-    websiteDiscountedPrice: { type: Number, min: 0, default: undefined },
+    // Receipt history (stamped by stockService.receiveStock `cost`).
+    lastPurchasePrice: { type: Number, min: 0, default: undefined },
+    lastLandedCost: { type: Number, min: 0, default: undefined },
+    lastVendor: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor', default: undefined },
+    lastVendorName: { type: String, trim: true, default: undefined },
+    lastReceivedAt: { type: Date, default: undefined },
+    lastReceivedQty: { type: Number, min: 0, default: undefined },
+    firstPurchasePrice: { type: Number, min: 0, default: undefined },
+    firstReceivedAt: { type: Date, default: undefined },
   },
   { _id: true } // Enable MongoDB _id for variants
 );
@@ -83,15 +92,43 @@ const productSchema = new mongoose.Schema(
     category: { type: String, required: true, trim: true },
     subCategory: { type: String, trim: true, default: undefined },
     price: { type: Number, required: true, min: 0 },
-    websitePrice: { type: Number, min: 0, default: undefined },
     discountedPrice: { type: Number, min: 0, default: undefined },
-    websiteDiscountedPrice: { type: Number, min: 0, default: undefined },
+    // Weighted-average landed cost per piece (purchase price + share of
+    // transport / builty / landing / misc charges). Snapshot into each POS sale line
+    // as cost of goods sold. Kept by stockService.receiveStock `cost`.
     costPrice: { type: Number, min: 0, default: undefined },
     sku: { type: String, trim: true, default: undefined },
-    // TOTAL pieces across all branches (website / reports read this).
+
+    // ----- Purchase / cost history (stamped on every costed receipt) -----
+    lastPurchasePrice: { type: Number, min: 0, default: undefined }, // vendor price, last receipt
+    lastLandedCost: { type: Number, min: 0, default: undefined }, // landed cost, last receipt
+    lastVendor: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor', default: undefined },
+    lastVendorName: { type: String, trim: true, default: undefined },
+    lastReceivedAt: { type: Date, default: undefined },
+    lastReceivedQty: { type: Number, min: 0, default: undefined }, // base of the 25% demand rule
+    firstPurchasePrice: { type: Number, min: 0, default: undefined }, // "where the price started"
+    firstReceivedAt: { type: Date, default: undefined },
+
+    // ----- Demand list (reports) -----
+    // Optional target stock; when set, demand uses it instead of lastReceivedQty.
+    parLevel: { type: Number, min: 0, default: undefined },
+    // Optional per-product threshold % (default: config "demand.thresholdPct" = 25).
+    reorderPct: { type: Number, min: 0, max: 100, default: undefined },
+
+    // ----- Dollar-store price point (models/priceTier.js) -----
+    // When set, the sale price follows the tier's price.
+    priceTier: { type: mongoose.Schema.Types.ObjectId, ref: 'PriceTier', default: null, index: true },
+
+    // ----- Consignment (sale-or-return) -----
+    // Stock belongs to the vendor until sold; we owe consignmentRate per piece sold.
+    isConsignment: { type: Boolean, default: false, index: true },
+    consignmentVendor: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor', default: null },
+    consignmentRate: { type: Number, min: 0, default: undefined },
+
+    // TOTAL pieces (lists / reports read this).
     stock: { type: Number, required: true, min: 0 },
-    // Pieces per branch. Single product: its own stock. Variant product: sum of
-    // the variants' branchStock per branch (kept in sync on every write).
+    // Pieces held by the shop. Single product: its own stock. Variant product:
+    // sum of the variants' branchStock (kept in sync on every write).
     branchStock: { type: [branchStockSchema], default: [] },
 
     // ----- Barcode / packaging (single products; variants carry their own) -----
@@ -112,7 +149,6 @@ const productSchema = new mongoose.Schema(
     bannerUrls: { type: [String], default: [] },
 
     productType: { type: String, enum: ['single', 'variant'], default: 'single', index: true },
-    displayOn: { type: String, enum: ['website', 'pos', 'both'], default: 'both', index: true },
     variants: { type: [variantSchema], default: [] },
 
     // Optional future use: media per color
@@ -130,38 +166,11 @@ const productSchema = new mongoose.Schema(
     // Tags
     tags: { type: [String], default: [] },
 
-    // SEO fields
-    metaTitle: { type: String, trim: true, maxLength: 120, default: undefined },
-    metaDescription: { type: String, trim: true, maxLength: 320, default: undefined },
-    metaKeywords: { type: String, trim: true, default: undefined },
-    metaSchema: { type: String, trim: true, default: undefined },
-
-    // Preorder fields
-    preorderEnabled: { type: Boolean, default: false, index: true },
-    preorderMessage: { type: String, trim: true, default: '' },
-
-    guidelineId: { type: mongoose.Schema.Types.ObjectId, ref: 'Guideline', default: null },
-    showGuidelines: { type: Boolean, default: false },
-
     // Dimensions (L x W x H) and weight
     dimensionLength: { type: String, trim: true, default: undefined },
     dimensionWidth: { type: String, trim: true, default: undefined },
     dimensionHeight: { type: String, trim: true, default: undefined },
     weight: { type: String, trim: true, default: undefined },
-
-    // Compatible Cars (array of car variant IDs)
-    compatibleCars: {
-      type: [mongoose.Schema.Types.ObjectId],
-      ref: 'CarVariant',
-      default: [],
-    },
-
-    // Related Products
-    relatedProducts: {
-      type: [mongoose.Schema.Types.ObjectId],
-      ref: 'Product',
-      default: [],
-    },
   },
   { timestamps: true }
 );
@@ -194,31 +203,12 @@ productSchema.index({ category: 1, status: 1, createdAt: -1 });
 // Stock page queries — low / out of stock
 productSchema.index({ stock: 1 });
 productSchema.index({ status: 1, stock: 1 });
-// Per-branch stock lookups (branchStockQuery / branch stock page)
+// Shop stock lookups (branchStockQuery / POS product list)
 productSchema.index({ 'branchStock.branch': 1, 'branchStock.stock': 1 });
 productSchema.index({ 'variants.branchStock.branch': 1 });
-// displayOn filter (website vs pos vs both)
-productSchema.index({ displayOn: 1, status: 1, createdAt: -1 });
-
-// compatibleCars multikey index — drives /make, /make/:slug, and the car
-// finder. Without this, `compatibleCars: { $in: [...] }` scans the whole
-// Product collection and the stats endpoint becomes O(products × variants).
-productSchema.index({ compatibleCars: 1 });
-// Compound for the exact hot-path query used by the stats aggregations.
-productSchema.index({ compatibleCars: 1, status: 1 });
-
-// Covers /categories/public's productCounts aggregation:
-//   Product.aggregate([{ $match: { status: 'published' } },
-//                      { $group: { _id: '$category', count: { $sum: 1 } } }])
-// Previously this walked the { status, createdAt } index then pulled each doc
-// for its category; the new order lets Mongo run the group straight off the
-// index keys (covered index scan).
+// Product count per category (categories list).
 productSchema.index({ status: 1, category: 1 });
-
-// Covers /api/public/products sort-by-price / sort-by-name paths when the
-// controller falls back to `find().sort({ [sortBy]: ... })` (non-price sort
-// or when admin-specified). The existing { status, createdAt } already covers
-// the default newest-first case.
+// Price / name sorted lists.
 productSchema.index({ status: 1, price: 1 });
 productSchema.index({ status: 1, name: 1 });
 
@@ -234,26 +224,5 @@ if (mongoose.models.Product) {
 }
 
 productSchema.plugin(require('../helper/softDeletePlugin'));
-
-function invalidateProductCache() {
-  try {
-    const { invalidate } = require('../middleware/cache');
-    invalidate('products:featured');
-    invalidate('products:by-make');
-    invalidate('products:by-model');
-    invalidate('categories:featured-with-products');
-    // Product changes can shift the productCount on make/model stat cards
-    // (homepage + /make + /make/:slug). Bust those too.
-    invalidate('car-makes:stats');
-    invalidate('car-models:by-make');
-  } catch (_) { /* noop */ }
-}
-productSchema.post('save', invalidateProductCache);
-productSchema.post('findOneAndUpdate', invalidateProductCache);
-productSchema.post('findOneAndDelete', invalidateProductCache);
-productSchema.post('deleteOne', invalidateProductCache);
-productSchema.post('updateOne', invalidateProductCache); // stock changes from POS sales
-productSchema.post('deleteMany', invalidateProductCache);
-productSchema.post('updateMany', invalidateProductCache);
 
 module.exports = mongoose.model('Product', productSchema);

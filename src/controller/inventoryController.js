@@ -11,22 +11,14 @@ const {
   parseMaybeJSON,
   getMainBranchId,
   withBranchStock,
-  sameBranch,
 } = require('../helper/productCodes');
 const { resolveWriteBranch } = require('../middleware/access');
 
-// Admin view of a product: `stock` = stock in the request's branch (staff: own
-// branch; super admin: picked branch or all) — see productCodes.withBranchStock.
-const branchView = async (req) => {
-  if (!req.access) return { branchId: null, mainBranchId: null, restrict: false, none: true };
-  return {
-    branchId: req.access.branchId || null,
-    mainBranchId: await getMainBranchId(),
-    restrict: !req.access.isSuperAdmin,
-  };
+// The product as the shop sees it: `stock` / batches = the shop's (productCodes.withBranchStock).
+const shopView = async (product) => {
+  const shopId = await getMainBranchId();
+  return withBranchStock(product, shopId, shopId);
 };
-const toView = (product, view) =>
-  view.none ? product : withBranchStock(product, view.branchId, view.mainBranchId, { restrict: view.restrict });
 
 const isValidId = (id) => mongoose.Types.ObjectId.isValid(String(id || ''));
 
@@ -47,15 +39,13 @@ const inventoryController = {
   // POST /products/:id/stock/receive
   // body { variantId?, quantity?, boxes?, loosePieces?, batch?: {batchNo?, barcode?, costPrice?, expiryDate?, note?} }
   // quantity wins; otherwise boxes * piecesPerBox + loosePieces.
-  // Stock goes into the request's branch (resolveWriteBranch: staff -> own
-  // branch, super admin -> picked branch or the main branch).
   receiveStock: async (req, res) => {
     try {
       const { id } = req.params;
       if (!isValidId(id)) return res.status(400).json({ success: false, message: 'Invalid product id' });
       const body = req.body || {};
       const batch = parseMaybeJSON(body.batch);
-      const branchId = req.access ? await resolveWriteBranch(req) : undefined;
+      const branchId = await resolveWriteBranch(req);
 
       const result = await stockService.receiveStock({
         productId: id,
@@ -66,17 +56,14 @@ const inventoryController = {
         batch: batch && typeof batch === 'object' ? batch : undefined,
         branchId,
       });
-      const view = await branchView(req);
-      const branchName = await stockService.branchName(result.branchId);
-
       return res.status(200).json({
         success: true,
-        data: toView(result.product, view),
+        data: await shopView(result.product),
         batch: result.batch, // null when no batch was created (plain stock)
         received: result.quantity,
         variantId: result.variantId,
         branchId: result.branchId,
-        message: `Received ${result.quantity} piece(s)${result.batch ? ` into batch ${result.batch.batchNo}` : ''} in ${branchName}`,
+        message: `Received ${result.quantity} piece(s)${result.batch ? ` into batch ${result.batch.batchNo}` : ''}`,
       });
     } catch (error) {
       console.error('Receive stock error:', error);
@@ -117,23 +104,15 @@ const inventoryController = {
       if (!found) return res.status(404).json({ success: false, message: 'No product uses this code' });
 
       const { product, match: m } = found;
-      const view = await branchView(req);
-      const here = toView(product, view);
+      const shopId = await getMainBranchId();
+      const here = withBranchStock(product, shopId, shopId);
       const unit = m.variant || (product.productType === 'variant' ? null : product);
-      // The same unit as seen from this branch (its batches = this branch's batches).
+      // The same unit as the shop sees it (its batches = the shop's batches).
       const hereUnit = m.variantId
         ? (here.variants || []).find((v) => String(v.variantId) === String(m.variantId))
         : product.productType === 'variant' ? null : here;
-      let batch = null;
-      if (m.batchNo && unit) {
-        const list = (hereUnit && hereUnit.batches) || unit.batches || [];
-        batch = list.find((b) => normalizeCode(b.batchNo) === m.batchNo) || null;
-        // Lot not in this branch: show it anyway (other branch's batch).
-        if (!batch && unit.batches) batch = unit.batches.find((b) => normalizeCode(b.batchNo) === m.batchNo) || null;
-        if (batch && view.branchId && !sameBranch(batch.branch || view.mainBranchId, view.branchId)) {
-          batch = { ...(typeof batch.toObject === 'function' ? batch.toObject() : batch), quantity: 0 };
-        }
-      }
+      const batch =
+        m.batchNo && hereUnit ? (hereUnit.batches || []).find((b) => normalizeCode(b.batchNo) === m.batchNo) || null : null;
       const match = {
         variantId: m.variantId || null,
         batchNo: m.batchNo || null,
@@ -141,12 +120,9 @@ const inventoryController = {
         kind: m.kind,
         code: m.code,
         variantLabel: variantLabel(m.variant),
-        // pieces in the request's branch (all branches for super admin without one)
-        available: unit
-          ? stockService.unitAvailable(unit, view.branchId, view.mainBranchId)
-          : Math.max(0, Number(here.stock) || 0),
+        // pieces in the shop
+        available: unit ? stockService.unitAvailable(unit, shopId, shopId) : Math.max(0, Number(here.stock) || 0),
         batch,
-        branchId: view.branchId,
       };
       return res.status(200).json({ success: true, data: here, match, message: 'Product found' });
     } catch (error) {

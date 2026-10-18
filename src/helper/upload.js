@@ -27,21 +27,9 @@ const ALLOWED_IMAGE_MIME_TYPES = new Set([
   'image/svg+xml',
 ]);
 
-// Allowed media mime types (images + videos)
-const ALLOWED_MEDIA_MIME_TYPES = new Set([
-  ...ALLOWED_IMAGE_MIME_TYPES,
-  'video/mp4',
-  'video/webm',
-  'video/quicktime',
-]);
-
 // File size limit (default 5MB)
 const MAX_FILE_MB = Number(process.env.UPLOAD_MAX_FILE_SIZE_MB || 5);
 const MAX_FILE_BYTES = Math.max(1, MAX_FILE_MB) * 1024 * 1024;
-
-// Larger file size limit for blog hero images (20MB)
-const MAX_HERO_FILE_MB = 20;
-const MAX_HERO_FILE_BYTES = MAX_HERO_FILE_MB * 1024 * 1024;
 
 // Check if Vercel Blob is configured
 const USE_BLOB_STORAGE = !!process.env.BLOB_READ_WRITE_TOKEN;
@@ -69,25 +57,20 @@ const fileFilter = (req, file, cb) => {
 
 const upload = multer({ storage, fileFilter, limits: { fileSize: MAX_FILE_BYTES } });
 
-// Hero upload with larger file size limit
-const heroUpload = multer({ storage, fileFilter, limits: { fileSize: MAX_HERO_FILE_BYTES } });
-
 // Convenience wrappers
 const uploadSingle = (fieldName) => upload.single(fieldName);
 const uploadArray = (fieldName, maxCount) => upload.array(fieldName, maxCount);
 const uploadFields = (fields) => upload.fields(fields);
 
-// Hero upload wrappers
-const heroUploadSingle = (fieldName) => heroUpload.single(fieldName);
-const heroUploadFields = (fields) => heroUpload.fields(fields);
-
-// Media upload (images + videos, 50MB limit)
-const mediaFilter = (req, file, cb) => {
-  if (ALLOWED_MEDIA_MIME_TYPES.has(file.mimetype)) return cb(null, true);
-  cb(new Error('Only image and video files are allowed'));
+// Document upload (images + PDF, e.g. CNIC scans, CVs, signed contracts).
+// Use only on routes that store documents; product/media uploads stay images-only.
+const ALLOWED_DOCUMENT_MIME_TYPES = new Set([...ALLOWED_IMAGE_MIME_TYPES, 'application/pdf']);
+const documentFilter = (req, file, cb) => {
+  if (ALLOWED_DOCUMENT_MIME_TYPES.has(file.mimetype)) return cb(null, true);
+  cb(new Error('Only images or PDF files are allowed'));
 };
-const mediaUpload = multer({ storage, fileFilter: mediaFilter, limits: { fileSize: 50 * 1024 * 1024 } });
-const mediaUploadFields = (fields) => mediaUpload.fields(fields);
+const documentUpload = multer({ storage, fileFilter: documentFilter, limits: { fileSize: MAX_FILE_BYTES } });
+const documentUploadArray = (fieldName, maxCount) => documentUpload.array(fieldName, maxCount);
 
 // Helper to build public URL path (as served by Express static middleware)
 function toPublicPath(filename) {
@@ -100,11 +83,10 @@ module.exports = {
   uploadSingle,
   uploadArray,
   uploadFields,
-  heroUploadSingle,
-  heroUploadFields,
-  mediaUploadFields,
+  documentUploadArray,
   ensureUploadsDir,
   toPublicPath,
   UPLOADS_DIR,
   ALLOWED_IMAGE_MIME_TYPES,
+  ALLOWED_DOCUMENT_MIME_TYPES,
 };

@@ -1,16 +1,16 @@
-// stockService.js — every stock change (sale, return, receiving, branch transfer) goes through here.
+// stockService.js — every stock change (sale, return, receiving, damage...) goes through here.
 //
 // Stock is always counted in pieces. A "unit" is a single product or one variant.
 // If a unit has batches, its stock = sum of the batches' `quantity`, and sales
 // take pieces out of batches (scanned batch first, then earliest expiry /
 // oldest received — see sortBatchesForSale).
 //
-// Branches: every unit has `branchStock: [{ branch, stock }]` and every batch a
-// `branch`. Each function works on ONE branch (`branchId`); a missing branchId
-// means the main branch. Old data without branch info is the main branch's and
-// is converted on the first write (syncUnitBranchStock). Every write keeps the
-// invariants of helper/productCodes.js (unit stock, product total, branchStock,
-// batch.branch) in ONE guarded update.
+// The shop: every unit has `branchStock: [{ branch, stock }]` and every batch a
+// `branch` (the shop = the main branch, see models/branch.js). A missing
+// branchId means the shop. Old data without branch info is converted on the
+// first write (syncUnitBranchStock). Every write keeps the invariants of
+// helper/productCodes.js (unit stock, product total, branchStock, batch.branch)
+// in ONE guarded update.
 //
 // Safe against two counters selling the same item at once WITHOUT transactions
 // (the DB may not be a replica set): optimistic locking on `updatedAt`.
@@ -21,7 +21,6 @@
 
 const mongoose = require('mongoose');
 const Product = require('../models/product');
-const Branch = require('../models/branch');
 const {
   PRODUCT_UNIT,
   normalizeCode,
@@ -42,7 +41,12 @@ const {
 
 const MAX_ATTEMPTS = 5;
 
-const stockError = (message, status = 400, extra = {}) => {
+// Ledger + shelf bookkeeping after each successful write (lazy: avoids a
+// require cycle). See services/inventory/ledgerHooks.js for the `movement`
+// context every function below accepts (`movement: false` = no ledger row).
+const hooks = () => require('./inventory/ledgerHooks');
+
+const stockError =(message, status = 400, extra = {}) => {
   const err = new Error(message);
   err.status = status;
   err.isStockError = true;
@@ -64,34 +68,7 @@ const idStr = (id) => (id === undefined || id === null ? '' : String(id));
  */
 const unitAvailable = (unit, branchId, mainBranchId) => unitBranchStock(unit, branchId || null, mainBranchId);
 
-// ---------- branch names (for error messages), cached 5 min ----------
-const NAME_TTL_MS = 5 * 60 * 1000;
-const nameCache = new Map(); // id -> { at, name }
-
-const branchName = async (branchId) => {
-  const id = toBranchId(branchId);
-  if (!id) return 'this branch';
-  const hit = nameCache.get(id);
-  if (hit && Date.now() - hit.at < NAME_TTL_MS) return hit.name;
-  let name = null;
-  try {
-    let q = Branch.findById(id);
-    if (q && typeof q.setOptions === 'function') q = q.setOptions({ withDeleted: true });
-    if (q && typeof q.select === 'function') q = q.select('name code');
-    if (q && typeof q.lean === 'function') q = q.lean();
-    const b = await q;
-    name = b && b.name ? String(b.name) : null;
-  } catch (_) {
-    /* fall through */
-  }
-  if (!name) return 'this branch';
-  nameCache.set(id, { at: Date.now(), name });
-  return name;
-};
-
-const clearBranchNameCache = () => nameCache.clear();
-
-// Branch to work on: the given one (must be a valid id) or the main branch.
+// Branch to work on: the given one (must be a valid id) or the shop.
 const resolveBranch = async (branchId, label = 'branchId') => {
   if (branchId !== undefined && branchId !== null && branchId !== '') {
     const id = toBranchId(branchId);
@@ -99,7 +76,7 @@ const resolveBranch = async (branchId, label = 'branchId') => {
     return id;
   }
   const main = await getMainBranchId();
-  if (!main) throw stockError('No branch found. Create a branch first.', 400, { code: 'INVALID_BRANCH' });
+  if (!main) throw stockError('Shop not found', 400, { code: 'INVALID_BRANCH' });
   return main;
 };
 
@@ -107,22 +84,6 @@ const loadProduct = (productId, { withDeleted = false } = {}) => {
   let q = Product.findById(productId);
   if (withDeleted && q && typeof q.setOptions === 'function') q = q.setOptions({ withDeleted: true });
   return q && typeof q.lean === 'function' ? q.lean() : q;
-};
-
-const invalidateProductCache = () => {
-  try {
-    const { invalidate } = require('../middleware/cache');
-    [
-      'products:featured',
-      'products:by-make',
-      'products:by-model',
-      'categories:featured-with-products',
-      'car-makes:stats',
-      'car-models:by-make',
-    ].forEach((tag) => Promise.resolve(invalidate(tag)).catch(() => {}));
-  } catch (_) {
-    /* noop */
-  }
 };
 
 // Which unit of `product` is meant. Returns { unit, index, variant } where
@@ -169,8 +130,8 @@ const batchesIn = (unit, branchId) => (unit.batches || []).filter((b) => sameBra
 
 /**
  * The batch of `branchId` that holds the same lot as `template` (same batchNo).
- * Created when missing, with the same batchNo / barcode / cost / expiry, so the
- * printed sticker scans in every branch.
+ * Created when missing (stock put back after the batch was emptied), with the
+ * same batchNo / barcode / cost / expiry, so the printed sticker still scans.
  */
 const branchBatchFor = (unit, template, branchId, note) => {
   const no = normalizeCode(template.batchNo);
@@ -247,7 +208,6 @@ const withOptimisticLock = async (productId, mutate, { withDeleted = false } = {
     const matched = res && (res.matchedCount !== undefined ? res.matchedCount : res.n);
     if (matched > 0) {
       product.updatedAt = nextAt;
-      invalidateProductCache();
       return { ...result, product };
     }
     // Someone else changed this product between our read and write — retry.
@@ -257,31 +217,35 @@ const withOptimisticLock = async (productId, mutate, { withDeleted = false } = {
   });
 };
 
-const insufficient = async (product, variant, branchId, available, requested) =>
-  stockError(
-    `Insufficient stock for ${unitName(product, variant)} in ${await branchName(branchId)}. Available: ${available}, Requested: ${requested}`,
-    400,
-    { code: 'INSUFFICIENT_STOCK', available, requested, branchId: toBranchId(branchId) }
-  );
+const insufficient = (product, variant, branchId, available, requested) =>
+  stockError(`Insufficient stock for ${unitName(product, variant)}. Available: ${available}, Requested: ${requested}`, 400, {
+    code: 'INSUFFICIENT_STOCK',
+    available,
+    requested,
+    branchId: toBranchId(branchId),
+  });
 
 /**
  * Take `quantity` pieces out of a unit in ONE branch (its plain stock or its
  * batches — the scanned batch of that branch first).
  * Returns { allocations: [{batchNo, quantity}], product, branchId }.
  * Throws 400 when the branch has not enough, 404 when product/variant missing.
+ * `movement` (optional): ledger context, default type 'adjustment_out'. Use it
+ * for every non-sale removal too: damage, internal_use, vendor_return,
+ * consignment_return, adjustment_out.
  */
-const deductStock = async ({ productId, variantId, quantity, batchNo, branchId }) => {
+const deductStock = async ({ productId, variantId, quantity, batchNo, branchId, movement }) => {
   const qty = toInt(quantity, 0);
   if (qty <= 0) throw stockError('Quantity must be at least 1', 400);
   const wantedBatch = normalizeCode(batchNo);
   const mainBranchId = await getMainBranchId();
   const branch = await resolveBranch(branchId);
 
-  return withOptimisticLock(productId, async (product) => {
+  const out = await withOptimisticLock(productId, async (product) => {
     const { unit, index, variant } = pickUnit(product, variantId);
     syncUnitBranchStock(unit, { mainBranchId });
     const available = unitBranchStock(unit, branch, mainBranchId);
-    if (available < qty) throw await insufficient(product, variant, branch, available, qty);
+    if (available < qty) throw insufficient(product, variant, branch, available, qty);
 
     const allocations = [];
     if (unit.batches && unit.batches.length) {
@@ -306,6 +270,19 @@ const deductStock = async ({ productId, variantId, quantity, batchNo, branchId }
     recompute(product, unit, { allowRepublish: false, mainBranchId });
     return { set: buildSet(product, index, unit), result: { allocations, branchId: branch } };
   });
+
+  if (movement !== false) {
+    out.movement = await hooks().onOut({
+      product: out.product,
+      variantId,
+      branchId: branch,
+      quantity: qty,
+      allocations: out.allocations,
+      movement: movement || {},
+      defaultType: 'adjustment_out',
+    });
+  }
+  return out;
 };
 
 /**
@@ -316,8 +293,10 @@ const deductStock = async ({ productId, variantId, quantity, batchNo, branchId }
  * first batch); plain stock when the unit has no batches.
  * Works on soft-deleted products too. Returns { product, restored, branchId } or
  * { product: null, restored: 0, skipped: reason } when the unit is gone.
+ * `movement` (optional): ledger context, default type 'adjustment_in'
+ * (sale refunds pass type 'sale_return').
  */
-const restoreStock = async ({ productId, variantId, quantity, allocations, branchId }) => {
+const restoreStock = async ({ productId, variantId, quantity, allocations, branchId, movement }) => {
   const qty = toInt(quantity, 0);
   const allocs = (allocations || [])
     .map((a) => ({ batchNo: normalizeCode(a && a.batchNo), quantity: Math.max(0, toInt(a && a.quantity, 0)) }))
@@ -329,7 +308,7 @@ const restoreStock = async ({ productId, variantId, quantity, allocations, branc
   const branch = await resolveBranch(branchId);
 
   try {
-    return await withOptimisticLock(
+    const out = await withOptimisticLock(
       productId,
       (product) => {
         const picked = pickUnit(product, variantId, { required: false });
@@ -382,6 +361,17 @@ const restoreStock = async ({ productId, variantId, quantity, allocations, branc
       },
       { withDeleted: true }
     );
+    if (movement !== false) {
+      out.movement = await hooks().onIn({
+        product: out.product,
+        variantId,
+        branchId: branch,
+        quantity: total,
+        movement: { batchAllocations: allocs, ...(movement || {}) },
+        defaultType: 'adjustment_in',
+      });
+    }
+    return out;
   } catch (err) {
     if (err.skip || (err.isStockError && err.status === 404)) {
       console.warn('[stock] restore skipped:', err.message);
@@ -400,9 +390,22 @@ const restoreStock = async ({ productId, variantId, quantity, allocations, branc
  * First batch on a unit with plain stock: each branch's pieces become an
  * "Opening stock" batch of that branch.
  * Returns { product (fresh document), batch|null, quantity, variantId, branchId }.
+ *
+ * `cost` (optional, landed costing — purchase orders / consignment):
+ *   { unitCost,        // landed cost per piece of THIS receipt (required to cost)
+ *     purchasePrice,   // vendor price per piece before charges (for history)
+ *     vendorId, vendorName,
+ *     updateAverage }  // default true: unit.costPrice becomes the moving
+ *                      // weighted average (stock across all branches)
+ * Also stamps lastPurchasePrice / lastLandedCost / lastVendor / lastReceivedAt /
+ * lastReceivedQty (+ first* on the first costed receipt) in the same write.
+ * `movement` (optional): ledger context, default type 'receive'
+ * (purchase orders pass 'purchase_receipt', consignment 'consignment_in').
  */
-const receiveStock = async ({ productId, variantId, quantity, boxes, loosePieces, batch, branchId }) => {
+const receiveStock = async ({ productId, variantId, quantity, boxes, loosePieces, batch, branchId, cost, movement }) => {
   const batchInput = batch && typeof batch === 'object' ? batch : null;
+  const costInput =
+    cost && typeof cost === 'object' && Number.isFinite(Number(cost.unitCost)) && Number(cost.unitCost) >= 0 ? cost : null;
   const mainBranchId = await getMainBranchId();
   const branch = await resolveBranch(branchId);
 
@@ -420,6 +423,7 @@ const receiveStock = async ({ productId, variantId, quantity, boxes, loosePieces
   const out = await withOptimisticLock(productId, async (product) => {
     const { unit, index } = pickUnit(product, variantId);
     syncUnitBranchStock(unit, { mainBranchId });
+    const stockBefore = unitTotalStock(unit); // all branches, for the weighted average
     const perBox = Math.max(1, toInt(product.piecesPerBox, 1));
 
     let qty = toInt(quantity, 0) || toInt(batchInput && batchInput.quantity, 0);
@@ -472,7 +476,13 @@ const receiveStock = async ({ productId, variantId, quantity, boxes, loosePieces
       }
 
       const [norm] = normalizeBatches([
-        { ...(batchInput || {}), quantity: qty, initialQuantity: qty, receivedAt: (batchInput && batchInput.receivedAt) || new Date() },
+        {
+          ...(costInput ? { costPrice: Number(costInput.unitCost) } : {}),
+          ...(batchInput || {}),
+          quantity: qty,
+          initialQuantity: qty,
+          receivedAt: (batchInput && batchInput.receivedAt) || new Date(),
+        },
       ]);
       if (norm.batchNo && usedNos.has(norm.batchNo)) {
         throw stockError(`Batch "${norm.batchNo}" already exists on this item`, 409, {
@@ -511,6 +521,8 @@ const receiveStock = async ({ productId, variantId, quantity, boxes, loosePieces
       row.stock = (Number(row.stock) || 0) + qty;
     }
 
+    if (costInput) Object.assign(extra, costFields(product, unit, index, stockBefore, qty, costInput));
+
     recompute(product, unit, { allowRepublish: true, mainBranchId });
     return {
       set: buildSet(product, index, unit, extra),
@@ -520,99 +532,88 @@ const receiveStock = async ({ productId, variantId, quantity, boxes, loosePieces
 
   // Return a full document (what the admin UI expects).
   const fresh = await loadProduct(productId);
-  return { ...out, product: fresh || out.product };
+  const result = { ...out, product: fresh || out.product };
+  if (movement !== false) {
+    const ctx = { ...(movement || {}) };
+    if (costInput) {
+      if (ctx.unitCost === undefined) ctx.unitCost = Number(costInput.unitCost);
+      if (ctx.purchasePrice === undefined) {
+        ctx.purchasePrice = Number.isFinite(Number(costInput.purchasePrice)) ? Number(costInput.purchasePrice) : Number(costInput.unitCost);
+      }
+      if (ctx.vendorId === undefined && costInput.vendorId) ctx.vendorId = costInput.vendorId;
+    }
+    result.movement = await hooks().onIn({
+      product: result.product,
+      variantId: out.variantId || variantId,
+      branchId: branch,
+      quantity: out.quantity,
+      batch: out.batch,
+      movement: ctx,
+      defaultType: 'receive',
+    });
+  }
+  return result;
 };
 
 /**
- * Move `quantity` pieces of one unit from one branch to another, in ONE write.
- * Units with batches: pieces leave the source branch's batches FIFO (earliest
- * expiry, then oldest received) — or only `batchNo` when given — and land in
- * target-branch batches with the SAME batchNo / barcode / cost / expiry
- * (created when missing), so printed stickers keep scanning.
- * Returns { product, allocations: [{batchNo, quantity}], quantity, variantId,
- * fromBranchId, toBranchId }. Totals do not change.
+ * $set fields for a costed receipt of `qty` pieces at cost.unitCost, given
+ * `stockBefore` pieces (all branches) at the unit's current costPrice.
  */
-const transferStock = async ({ productId, variantId, quantity, fromBranchId, toBranchId: toBranch, batchNo }) => {
-  const qty = toInt(quantity, 0);
-  if (qty <= 0) throw stockError('Quantity must be at least 1', 400);
-  const from = toBranchId(fromBranchId);
-  const to = toBranchId(toBranch);
-  if (!from || !to) throw stockError('fromBranchId and toBranchId must be valid branch ids', 400, { code: 'INVALID_BRANCH' });
-  if (from === to) throw stockError('Choose two different branches', 400, { code: 'INVALID_BRANCH' });
-  const wantedBatch = normalizeCode(batchNo);
-  const mainBranchId = await getMainBranchId();
-  const fromName = await branchName(from);
-
-  return withOptimisticLock(productId, async (product) => {
-    const { unit, index, variant } = pickUnit(product, variantId);
-    syncUnitBranchStock(unit, { mainBranchId });
-
-    const allocations = [];
-    if (unit.batches && unit.batches.length) {
-      const here = batchesIn(unit, from);
-      let order;
-      let available;
-      if (wantedBatch) {
-        order = here.filter((b) => normalizeCode(b.batchNo) === wantedBatch);
-        if (!order.length) {
-          throw stockError(`Batch "${wantedBatch}" of ${unitName(product, variant)} is not in ${fromName}`, 404, {
-            code: 'BATCH_NOT_FOUND',
-          });
-        }
-        available = order.reduce((s, b) => s + Math.max(0, Number(b.quantity) || 0), 0);
-      } else {
-        order = sortBatchesForSale(here);
-        available = unitBranchStock(unit, from, mainBranchId);
-      }
-      if (available < qty) throw await insufficient(product, variant, from, available, qty);
-
-      let remaining = qty;
-      for (const b of order) {
-        if (remaining <= 0) break;
-        const have = Math.max(0, Number(b.quantity) || 0);
-        if (!have) continue;
-        const take = Math.min(have, remaining);
-        b.quantity = have - take;
-        remaining -= take;
-        const { batch: target } = branchBatchFor(unit, b, to, `Transfer from ${fromName}`);
-        target.quantity = (Number(target.quantity) || 0) + take;
-        target.initialQuantity = (Number(target.initialQuantity) || 0) + take;
-        allocations.push({ batchNo: b.batchNo, quantity: take });
-      }
-    } else {
-      const available = unitBranchStock(unit, from, mainBranchId);
-      if (available < qty) throw await insufficient(product, variant, from, available, qty);
-      const src = branchRow(unit, from);
-      src.stock = Math.max(0, (Number(src.stock) || 0) - qty);
-      const dst = branchRow(unit, to);
-      dst.stock = (Number(dst.stock) || 0) + qty;
+const costFields = (product, unit, index, stockBefore, qty, cost) => {
+  const { weightedAverage, round4 } = require('./inventory/costingService');
+  const p = (field) => (index === -1 ? field : `variants.${index}.${field}`);
+  const unitCost = round4(Number(cost.unitCost));
+  const purchasePrice =
+    cost.purchasePrice !== undefined && cost.purchasePrice !== null && Number.isFinite(Number(cost.purchasePrice))
+      ? round4(Number(cost.purchasePrice))
+      : unitCost;
+  const now = new Date();
+  const set = {
+    [p('lastPurchasePrice')]: purchasePrice,
+    [p('lastLandedCost')]: unitCost,
+    [p('lastReceivedAt')]: now,
+    [p('lastReceivedQty')]: qty,
+  };
+  if (cost.updateAverage !== false) {
+    const avg = weightedAverage(stockBefore, unit.costPrice, qty, unitCost);
+    set[p('costPrice')] = avg;
+    unit.costPrice = avg;
+  }
+  if (unit.firstPurchasePrice === undefined || unit.firstPurchasePrice === null) {
+    set[p('firstPurchasePrice')] = purchasePrice;
+    set[p('firstReceivedAt')] = now;
+  }
+  const vendorId = toBranchId(cost.vendorId); // same 24-hex id check
+  if (vendorId) {
+    set[p('lastVendor')] = new mongoose.Types.ObjectId(vendorId);
+    set[p('lastVendorName')] = cost.vendorName ? String(cost.vendorName) : '';
+    if (index !== -1) {
+      // Product-level "last vendor" too, for lists.
+      set.lastVendor = set[p('lastVendor')];
+      set.lastVendorName = set[p('lastVendorName')];
+      set.lastReceivedAt = now;
     }
-
-    recompute(product, unit, { allowRepublish: false, mainBranchId });
-    return {
-      set: buildSet(product, index, unit),
-      result: {
-        allocations,
-        quantity: qty,
-        variantId: index === -1 ? null : unit.variantId,
-        fromBranchId: from,
-        toBranchId: to,
-      },
-    };
-  });
+  }
+  return set;
 };
 
-const isStockItem = (item) => item && !item.isLabour && !item.isOutsource && item.product;
+// Every order line is a product line (no service lines in the dollar store).
+const isStockItem = (item) => !!(item && item.product);
 
 const itemProductId = (item) => (item.product && item.product._id ? item.product._id : item.product);
 
 /**
  * Deduct every stock item of an order from ONE branch (opts.branchId, default
- * main). Returns an array aligned with `items` ({allocations} or null for
- * labour/outsource). If one item fails, items already deducted are put back
- * and the error is rethrown.
+ * main). Returns an array aligned with `items` ({allocations} or null for a
+ * line without a product). If one item fails, items already deducted are put
+ * back and the error is rethrown.
+ * `movement` (optional): ledger context for the whole order, e.g.
+ *   { refType: 'POSOrder', refId, refNo: orderNumber, userId }
+ * Each item gets type 'sale' (or 'gift' when item.isGift), unitPrice =
+ * item.price and unitCost = item.costPrice when set. Ledger rows are written
+ * only after EVERY item was deducted (a failed order leaves no rows).
  */
-const deductOrderItems = async (items, { branchId } = {}) => {
+const deductOrderItems = async (items, { branchId, movement } = {}) => {
   const branch = await resolveBranch(branchId);
   const done = [];
   const results = [];
@@ -628,9 +629,29 @@ const deductOrderItems = async (items, { branchId } = {}) => {
         quantity: item.quantity,
         batchNo: item.batchNo,
         branchId: branch,
+        movement: false,
       });
-      done.push({ item, allocations: r.allocations });
+      done.push({ item, allocations: r.allocations, product: r.product });
       results.push({ allocations: r.allocations });
+    }
+    if (movement !== false) {
+      const ctx = movement || {};
+      for (const d of done) {
+        await hooks().onOut({
+          product: d.product,
+          variantId: d.item.variantId,
+          branchId: branch,
+          quantity: toInt(d.item.quantity, 0),
+          allocations: d.allocations,
+          movement: {
+            ...ctx,
+            type: d.item.isGift ? 'gift' : ctx.type || 'sale',
+            unitPrice: d.item.isGift ? 0 : d.item.price,
+            ...(d.item.costPrice !== undefined && d.item.costPrice !== null ? { unitCost: d.item.costPrice } : {}),
+          },
+          defaultType: 'sale',
+        });
+      }
     }
     return results;
   } catch (err) {
@@ -642,6 +663,7 @@ const deductOrderItems = async (items, { branchId } = {}) => {
           quantity: d.item.quantity,
           allocations: d.allocations,
           branchId: branch,
+          movement: false,
         });
       } catch (e) {
         console.error('[stock] rollback failed for', idStr(itemProductId(d.item)), e.message);
@@ -656,8 +678,9 @@ const deductOrderItems = async (items, { branchId } = {}) => {
  * order's branch; default main) using item.batchAllocations.
  * Best effort: one failing item does not stop the others (so stock is never
  * restored twice by a retry). Returns { restored, errors: [{product, message}] }.
+ * `movement` (optional): ledger context, default type 'sale_return'.
  */
-const restoreOrderItems = async (items, { branchId } = {}) => {
+const restoreOrderItems = async (items, { branchId, movement } = {}) => {
   const branch = await resolveBranch(branchId);
   let restored = 0;
   const errors = [];
@@ -670,6 +693,15 @@ const restoreOrderItems = async (items, { branchId } = {}) => {
         quantity: item.quantity,
         allocations: item.batchAllocations,
         branchId: branch,
+        movement:
+          movement === false
+            ? false
+            : {
+                type: 'sale_return',
+                ...(movement || {}),
+                unitPrice: item.isGift ? 0 : item.price,
+                ...(item.costPrice !== undefined && item.costPrice !== null ? { unitCost: item.costPrice } : {}),
+              },
       });
       restored += r.restored || 0;
       if (r.skipped) errors.push({ product: idStr(itemProductId(item)), message: r.skipped });
@@ -687,11 +719,8 @@ module.exports = {
   deductStock,
   restoreStock,
   receiveStock,
-  transferStock,
   deductOrderItems,
   restoreOrderItems,
   unitAvailable,
   pickUnit,
-  branchName,
-  clearBranchNameCache,
 };

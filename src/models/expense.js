@@ -53,6 +53,11 @@ const expenseSchema = new mongoose.Schema({
     },
     // Branch that spent the money. null = old record = main branch.
     branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', index: true, default: null },
+    // Where the expense came from: typed by hand, or posted automatically
+    // (shop_use = items taken from our own stock for the shop, valued at cost).
+    source: { type: String, enum: ['manual', 'shop_use', 'till_payout', 'other'], default: 'manual', index: true },
+    sourceType: { type: String, default: '' }, // e.g. 'ShopUse'
+    sourceRef: { type: mongoose.Schema.Types.ObjectId, default: null },
     isDeleted: { type: Boolean, default: false, index: true },
     deletedAt: { type: Date, default: null },
     deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },

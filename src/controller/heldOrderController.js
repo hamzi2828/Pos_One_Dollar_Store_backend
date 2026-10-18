@@ -1,17 +1,14 @@
 // Held Order Controller
 const HeldOrder = require('../models/heldOrder');
 const { resolveWriteBranch } = require('../middleware/access');
-const { scopedBranchFilter } = require('../helper/branchScope');
 
-// Held orders are per branch: staff only see / retrieve carts parked in their
-// branch. Records from before branches (branch: null) belong to the main branch.
+// Parked POS carts of the shop.
 
 const heldOrderController = {
   getAllHeldOrders: async (req, res) => {
     try {
-      const heldOrders = await HeldOrder.find({ isDeleted: { $ne: true }, ...(await scopedBranchFilter(req)) })
+      const heldOrders = await HeldOrder.find({ isDeleted: { $ne: true } })
         .populate('heldBy', 'firstName lastName email')
-        .populate('branch', 'name code')
         .populate('customer', 'firstName lastName phone')
         .sort({ createdAt: -1 });
       return res.status(200).json({ success: true, message: 'Held orders fetched successfully', data: heldOrders });
@@ -24,7 +21,7 @@ const heldOrderController = {
   getMyHeldOrders: async (req, res) => {
     try {
       const userId = req.user?.id || req.user?._id;
-      const heldOrders = await HeldOrder.find({ heldBy: userId, isDeleted: { $ne: true }, ...(await scopedBranchFilter(req)) })
+      const heldOrders = await HeldOrder.find({ heldBy: userId, isDeleted: { $ne: true } })
         .populate('customer', 'firstName lastName phone')
         .sort({ createdAt: -1 });
       return res.status(200).json({ success: true, message: 'Held orders fetched successfully', data: heldOrders });
@@ -39,10 +36,9 @@ const heldOrderController = {
       const heldOrder = await HeldOrder.findOne({
         _id: req.params.id,
         isDeleted: { $ne: true },
-        ...(await scopedBranchFilter(req)),
       })
         .populate('heldBy', 'firstName lastName email')
-        .populate('customer', 'firstName lastName phone carDetails');
+        .populate('customer', 'firstName lastName phone');
       if (!heldOrder) return res.status(404).json({ success: false, message: 'Held order not found' });
       return res.status(200).json({ success: true, message: 'Held order fetched successfully', data: heldOrder });
     } catch (error) {
@@ -63,22 +59,12 @@ const heldOrderController = {
         return res.status(400).json({ success: false, message: 'Cart is empty or invalid' });
       }
 
-      let branch;
-      try {
-        branch = await resolveWriteBranch(req);
-      } catch (err) {
-        if (err.status) return res.status(err.status).json({ success: false, message: err.message });
-        throw err;
-      }
+      const branch = await resolveWriteBranch(req);
 
       const items = cart.items.map((item) => ({
         product: item.product?._id || null,
-        productName: item.product?.name || item.labourDescription || item.outsourceDescription || 'Unknown Product',
+        productName: item.product?.name || 'Unknown Product',
         productThumbnail: item.product?.thumbnailUrl || null,
-        isLabour: item.isLabour || false,
-        labourDescription: item.labourDescription,
-        isOutsource: item.isOutsource || false,
-        outsourceDescription: item.outsourceDescription,
         costPrice: item.costPrice,
         variantId: item.variantId,
         sku: item.variant?.sku || item.product?.sku || '',
@@ -89,6 +75,9 @@ const heldOrderController = {
         subtotal: item.subtotal,
         size: item.size || item.variant?.size,
         color: item.color || item.variant?.color,
+        isGift: !!item.isGift,
+        giftReason: item.isGift ? item.giftReason || '' : undefined,
+        priceOverride: !!item.priceOverride,
       }));
 
       const heldOrder = await HeldOrder.create({
@@ -134,7 +123,6 @@ const heldOrderController = {
       const heldOrder = await HeldOrder.findOne({
         _id: req.params.id,
         isDeleted: { $ne: true },
-        ...(await scopedBranchFilter(req)),
       });
       if (!heldOrder) return res.status(404).json({ success: false, message: 'Held order not found' });
       heldOrder.isDeleted = true;
@@ -154,7 +142,6 @@ const heldOrderController = {
       const heldOrder = await HeldOrder.findOne({
         _id: req.params.id,
         isDeleted: { $ne: true },
-        ...(await scopedBranchFilter(req)),
       });
       if (!heldOrder) return res.status(404).json({ success: false, message: 'Held order not found' });
       heldOrder.isDeleted = true;
@@ -172,7 +159,7 @@ const heldOrderController = {
     try {
       const userId = req.user?.id || req.user?._id;
       const result = await HeldOrder.updateMany(
-        { heldBy: userId, isDeleted: { $ne: true }, ...(await scopedBranchFilter(req)) },
+        { heldBy: userId, isDeleted: { $ne: true } },
         { isDeleted: true, deletedAt: new Date(), deletedBy: userId }
       );
       return res.status(200).json({

@@ -5,10 +5,6 @@ const heldOrderItemSchema = new mongoose.Schema({
   product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: false },
   productName: { type: String, required: true },
   productThumbnail: { type: String, required: false },
-  isLabour: { type: Boolean, default: false },
-  labourDescription: { type: String, required: false },
-  isOutsource: { type: Boolean, default: false },
-  outsourceDescription: { type: String, required: false },
   costPrice: { type: Number, required: false },
   variantId: { type: String, required: false },
   sku: { type: String, required: false, default: '' },
@@ -19,8 +15,11 @@ const heldOrderItemSchema = new mongoose.Schema({
   subtotal: { type: Number, required: true },
   size: { type: String, required: false },
   color: { type: String, required: false },
-  performedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', required: false },
-  performedByName: { type: String, required: false },
+  // Kept so a parked cart comes back exactly as it was (the server re-checks
+  // permissions and prices when the sale is completed).
+  isGift: { type: Boolean, default: false },
+  giftReason: { type: String, required: false },
+  priceOverride: { type: Boolean, default: false },
 });
 
 const heldOrderSchema = new mongoose.Schema(
@@ -38,7 +37,7 @@ const heldOrderSchema = new mongoose.Schema(
       },
     },
     customerName: { type: String, default: '' },
-    // Branch where the cart was parked. null = old record = main branch.
+    // The shop (null = old record = the shop).
     branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', index: true, default: null },
     items: [heldOrderItemSchema],
     subtotal: { type: Number, required: true },

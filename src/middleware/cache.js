@@ -16,10 +16,10 @@ const { createClient } = require('redis');
 
 const REDIS_URL = process.env.REDIS_URL;
 
-const KEY_PREFIX = 'hkac:cache:';
-const TAG_PREFIX = 'hkac:cache:tag:';
-const TAG_TS_PREFIX = 'hkac:cache:tag-ts:';
-const ALL_TS_KEY = 'hkac:cache:all-ts';
+const KEY_PREFIX = 'pos:cache:';
+const TAG_PREFIX = 'pos:cache:tag:';
+const TAG_TS_PREFIX = 'pos:cache:tag-ts:';
+const ALL_TS_KEY = 'pos:cache:all-ts';
 
 const NO_CLIENT_CACHE = 'no-store';
 
@@ -156,7 +156,7 @@ async function invalidateAll() {
 
   if (redisReady && client) {
     try {
-      for await (const batch of client.scanIterator({ MATCH: 'hkac:cache:*', COUNT: 200 })) {
+      for await (const batch of client.scanIterator({ MATCH: 'pos:cache:*', COUNT: 200 })) {
         const keys = Array.isArray(batch) ? batch : [batch];
         if (keys.length) await client.del(keys);
       }

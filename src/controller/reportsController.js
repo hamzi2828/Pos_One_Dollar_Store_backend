@@ -1,22 +1,15 @@
 // Reports Controller — server-side aggregation for the admin Reports section.
+// Sales come from POS orders (the shop's counter sales).
 //
 // The cash-in-hand report is the critical one. All figures are computed here
 // so the frontend displays a single trusted snapshot. Dates are interpreted in
 // the server's local timezone at the day boundary (start: 00:00:00, end:
 // 23:59:59.999) — the client sends YYYY-MM-DD strings.
 const POSOrder = require('../models/posOrder');
-const Order = require('../models/order');
 const Expense = require('../models/expense');
 const Salary = require('../models/salary');
 const Purchase = require('../models/purchase');
 const Product = require('../models/product');
-const {
-  scopedBranchFilter,
-  branchScope,
-  includesMainOnlyData,
-  byBranchBreakdown,
-  branchStockExpr,
-} = require('../helper/branchScope');
 // Force-register schemas referenced only through populate() so isolated test
 // runs (that don't touch these models directly) don't crash with
 // "Schema hasn't been registered for model X".
@@ -43,12 +36,25 @@ function buildPagination(page, limit, total) {
   };
 }
 
-// ---------------- Branches ----------------
-// Every report is scoped with scopedBranchFilter(req): branch staff -> their
-// branch; super admin -> the picked branch, or all branches when none picked.
-// Old records without a branch count for the main branch. Data that has no
-// branch at all (web/online orders, salaries) is shown only for "all branches"
-// or the main branch.
+// Bills that count as sales (refunded / cancelled / deleted bills do not).
+const SALE_MATCH = {
+  isDeleted: { $ne: true },
+  orderStatus: { $nin: ['refunded', 'cancelled'] },
+  paymentStatus: { $ne: 'refunded' },
+};
+
+// Cost of goods of one bill: each line's cost snapshot (taken at sale time,
+// gifts included) x qty; old lines without a snapshot use the product's
+// current cost (needs items.product populated with costPrice).
+const billCost = (items) =>
+  (items || []).reduce((sum, it) => {
+    const qty = Number(it.quantity) || 0;
+    const snapshot = Number(it.costPrice);
+    if (it.costPrice !== undefined && it.costPrice !== null && Number.isFinite(snapshot)) return sum + snapshot * qty;
+    const prod = it.product && typeof it.product === 'object' ? it.product : null;
+    const current = prod ? Number(prod.costPrice) : NaN;
+    return Number.isFinite(current) && current > 0 ? sum + current * qty : sum;
+  }, 0);
 
 // Parse YYYY-MM-DD → Date set to local start/end of day. Invalid input returns null.
 const toStartOfDay = (s) => {
@@ -108,14 +114,10 @@ const reportsController = {
         });
       }
 
-      const bf = await scopedBranchFilter(req);
-      const scope = await branchScope(req);
-
       // ---------- 1. POS orders in window ----------
       const periodOrders = await POSOrder.find({
         isDeleted: { $ne: true },
         createdAt: { $gte: start, $lte: end },
-        ...bf,
       }).lean();
 
       // Full-paid orders = sales that settled at the register. Their totals go
@@ -135,7 +137,6 @@ const reportsController = {
       const openOrders = await POSOrder.find({
         isDeleted: { $ne: true },
         paymentStatus: { $in: ['pending', 'partial'] },
-        ...bf,
       })
         .select('paymentStatus pendingAmount total')
         .lean();
@@ -158,7 +159,6 @@ const reportsController = {
       const ordersWithHistory = await POSOrder.find({
         isDeleted: { $ne: true },
         'paymentHistory.0': { $exists: true },
-        ...bf,
       })
         .select('total paymentHistory')
         .lean();
@@ -187,7 +187,6 @@ const reportsController = {
       const expenses = await Expense.find({
         isDeleted: { $ne: true },
         date: { $gte: start, $lte: end },
-        ...bf,
       })
         .select('amount paymentMethod')
         .lean();
@@ -205,7 +204,6 @@ const reportsController = {
       const purchases = await Purchase.find({
         isDeleted: { $ne: true },
         'payments.0': { $exists: true },
-        ...bf,
       })
         .select('payments')
         .lean();
@@ -224,15 +222,12 @@ const reportsController = {
       }
 
       // ---------- 5. Salary payments in window ----------
-      // Salaries have no branch: they count for all branches / the main branch.
-      const salaries = includesMainOnlyData(scope)
-        ? await Salary.find({
-            isDeleted: { $ne: true },
-            'payments.0': { $exists: true },
-          })
-            .select('payments remainingBalance')
-            .lean()
-        : [];
+      const salaries = await Salary.find({
+        isDeleted: { $ne: true },
+        'payments.0': { $exists: true },
+      })
+        .select('payments remainingBalance')
+        .lean();
 
       const salarySummary = { totalPaid: 0, cashPaid: 0, bankPaid: 0, totalRemaining: 0 };
       for (const s of salaries) {
@@ -280,8 +275,6 @@ const reportsController = {
             bankBalance,
             totalBalance: cashBalance + bankBalance,
           },
-          branchId: scope.branchId,
-          salariesIncluded: includesMainOnlyData(scope),
         },
         message: 'Cash in hand report generated',
       });
@@ -295,8 +288,8 @@ const reportsController = {
     }
   },
 
-  // GET /api/reports/sales-summary?startDate=&endDate=
-  // Lightweight — just POS orders stats and payment distribution.
+  // GET /api/reports/sales-summary?startDate=&endDate=&page=&limit=
+  // Every POS bill of the window with cost / profit and payment-method totals.
   salesSummary: async (req, res) => {
     try {
       const { startDate, endDate } = req.query;
@@ -306,46 +299,15 @@ const reportsController = {
         return res.status(400).json({ success: false, message: 'startDate and endDate are required' });
       }
 
-      const bf = await scopedBranchFilter(req);
-      const scope = await branchScope(req);
-      // Online (website) orders have no branch: they count for the main branch.
-      const withOnline = includesMainOnlyData(scope);
-
-      // Pull both POS (counter) and Online (ecommerce) orders for the window.
-      const [posOrders, onlineOrders, byBranch] = await Promise.all([
-        POSOrder.find({
-          isDeleted: { $ne: true },
-          createdAt: { $gte: start, $lte: end },
-          ...bf,
-        })
-          .select('orderNumber branch branchCode total paidAmount pendingAmount paymentMethod paymentStatus orderStatus createdAt items customerInfo customer')
-          .populate('customer', 'firstName lastName phone')
-          .populate('branch', 'name code')
-          .populate('items.product', 'name costPrice')
-          .sort({ createdAt: -1 })
-          .lean(),
-        withOnline
-          ? Order.find({
-              isDeleted: { $ne: true },
-              isPOS: { $ne: true },
-              createdAt: { $gte: start, $lte: end },
-            })
-              .select('orderNumber total paymentMethod paymentStatus orderStatus createdAt items user shippingAddress discount tax subtotal')
-              .populate('user', 'firstName lastName email phone')
-              .populate('items.product', 'name costPrice')
-              .sort({ createdAt: -1 })
-              .lean()
-          : Promise.resolve([]),
-        // Super admin, all branches: POS sales per branch (online orders are
-        // not in this list, see summary.onlineSales).
-        scope.allBranches
-          ? byBranchBreakdown(
-              POSOrder,
-              { isDeleted: { $ne: true }, createdAt: { $gte: start, $lte: end } },
-              { mainBranchId: scope.mainBranchId }
-            )
-          : Promise.resolve(undefined),
-      ]);
+      const orders = await POSOrder.find({
+        isDeleted: { $ne: true },
+        createdAt: { $gte: start, $lte: end },
+      })
+        .select('orderNumber total paidAmount pendingAmount paymentMethod paymentStatus orderStatus createdAt items customerInfo customer')
+        .populate('customer', 'firstName lastName phone')
+        .populate('items.product', 'name costPrice')
+        .sort({ createdAt: -1 })
+        .lean();
 
       const summary = {
         totalOrders: 0,
@@ -359,33 +321,10 @@ const reportsController = {
         bankSales: 0,
         itemsSold: 0,
         avgOrderValue: 0,
-        // Source split
-        posOrders: 0,
-        posSales: 0,
-        onlineOrders: 0,
-        onlineSales: 0,
       };
 
-      // Helper: compute order cost from items (handles both POS and Online).
-      const computeCost = (items) => {
-        let cost = 0;
-        for (const it of items || []) {
-          const qty = Number(it.quantity) || 0;
-          if (it.isLabour) continue;
-          if (it.isOutsource) {
-            cost += (Number(it.costPrice) || 0) * qty;
-            continue;
-          }
-          const prod = it.product && typeof it.product === 'object' ? it.product : null;
-          const cp = prod ? Number(prod.costPrice) : NaN;
-          if (!Number.isNaN(cp) && cp > 0) cost += cp * qty;
-        }
-        return cost;
-      };
-
-      // POS orders — already in the POS-specific shape.
-      const enrichedPOS = posOrders.map((o) => {
-        const orderCost = computeCost(o.items);
+      const rows = orders.map((o) => {
+        const orderCost = billCost(o.items);
         const profit = (o.total || 0) - orderCost;
         summary.totalCost += orderCost;
         summary.totalProfit += profit;
@@ -393,107 +332,23 @@ const reportsController = {
         summary.totalPaid += o.paidAmount || 0;
         summary.totalPending += o.pendingAmount || 0;
         summary.itemsSold += (o.items || []).length;
-        summary.posOrders += 1;
-        summary.posSales += o.total || 0;
         const m = normalizePOSMethod(o.paymentMethod);
         if (m === 'cash') summary.cashSales += o.total || 0;
         else if (m === 'card') summary.cardSales += o.total || 0;
         else if (m === 'bank') summary.bankSales += o.total || 0;
-        return { ...o, source: 'pos', costPrice: orderCost, profit };
+        return { ...o, costPrice: orderCost, profit };
       });
 
-      // Online orders — normalize to the same shape as POS orders so the
-      // frontend doesn't need two separate renderers. We map customerInfo
-      // from the shipping address (or user) and card-like methods to the
-      // closest POS method bucket.
-      const mapOnlineMethod = (m) => {
-        const v = String(m || '').toLowerCase();
-        if (v === 'cod') return 'cash';
-        if (v === 'cash') return 'cash';
-        if (v === 'card' || v === 'stripe' || v === 'paypal') return 'card';
-        if (v === 'bank_transfer' || v === 'bank') return 'bank_transfer';
-        return 'card';
-      };
-      const mapOnlinePaymentStatus = (s, orderStatus) => {
-        // Web orders don't track partial/pending the same way POS does.
-        if (s === 'completed') return 'full';
-        if (s === 'refunded' || orderStatus === 'refunded') return 'refunded';
-        if (s === 'failed' || orderStatus === 'cancelled') return 'cancelled';
-        return 'pending';
-      };
-
-      const enrichedOnline = onlineOrders.map((o) => {
-        const orderCost = computeCost(o.items);
-        const profit = (o.total || 0) - orderCost;
-        const isComplete = o.paymentStatus === 'completed';
-        const paid = isComplete ? (o.total || 0) : 0;
-        const pending = isComplete ? 0 : (o.total || 0);
-        summary.totalCost += orderCost;
-        summary.totalProfit += profit;
-        summary.totalSales += o.total || 0;
-        summary.totalPaid += paid;
-        summary.totalPending += pending;
-        summary.itemsSold += (o.items || []).length;
-        summary.onlineOrders += 1;
-        summary.onlineSales += o.total || 0;
-        const m = mapOnlineMethod(o.paymentMethod);
-        if (m === 'cash') summary.cashSales += o.total || 0;
-        else if (m === 'card') summary.cardSales += o.total || 0;
-        else if (m === 'bank_transfer') summary.bankSales += o.total || 0;
-
-        // Build a customerInfo-like shape for consistency.
-        const u = o.user && typeof o.user === 'object' ? o.user : null;
-        const ship = o.shippingAddress || {};
-        const customerInfo = {
-          name:
-            ship.fullName ||
-            (u ? `${u.firstName || ''} ${u.lastName || ''}`.trim() : '') ||
-            '',
-          phone: ship.phone || u?.phone || '',
-        };
-
-        return {
-          _id: o._id,
-          orderNumber: o.orderNumber,
-          total: o.total || 0,
-          paidAmount: paid,
-          pendingAmount: pending,
-          paymentMethod: m,
-          rawPaymentMethod: o.paymentMethod,
-          paymentStatus: mapOnlinePaymentStatus(o.paymentStatus, o.orderStatus),
-          orderStatus: o.orderStatus || 'submitted',
-          createdAt: o.createdAt,
-          items: o.items || [],
-          customer: u
-            ? { firstName: u.firstName, lastName: u.lastName, phone: u.phone }
-            : undefined,
-          customerInfo,
-          source: 'online',
-          costPrice: orderCost,
-          profit,
-        };
-      });
-
-      // Source filter + pagination. Summary is always computed over the
-      // full filtered set; only the rows slice is paginated.
-      const source = String(req.query.source || 'all').toLowerCase();
-      const all = [...enrichedPOS, ...enrichedOnline].sort(
-        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-      );
-      const scoped = all.filter(
-        (o) => source === 'all' || o.source === source,
-      );
-
-      summary.totalOrders = all.length;
+      summary.totalOrders = rows.length;
       summary.avgOrderValue = summary.totalOrders ? summary.totalSales / summary.totalOrders : 0;
 
+      // Summary covers every bill of the window; only the rows are paginated.
       const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 25 });
-      const paged = scoped.slice(skip, skip + limit);
 
       return res.status(200).json({
         success: true,
-        data: { summary, orders: paged, byBranch, branchId: scope.branchId },
-        pagination: buildPagination(page, limit, scoped.length),
+        data: { summary, orders: rows.slice(skip, skip + limit) },
+        pagination: buildPagination(page, limit, rows.length),
         message: 'Sales summary generated',
       });
     } catch (error) {
@@ -515,9 +370,8 @@ const reportsController = {
       const purchases = await Purchase.find({
         isDeleted: { $ne: true },
         purchaseDate: { $gte: start, $lte: end },
-        ...(await scopedBranchFilter(req)),
       })
-        .select('invoiceNumber branch vendorName vendorId purchaseDate total paidAmount pendingAmount paymentStatus items payments')
+        .select('invoiceNumber vendorName vendorId purchaseDate total paidAmount pendingAmount paymentStatus items payments')
         .sort({ purchaseDate: -1 })
         .lean();
 
@@ -558,10 +412,6 @@ const reportsController = {
     }
   },
 
-  // GET /api/reports/labour-revenue?startDate=&endDate=
-  // All POS order items flagged as labour, grouped by description, for the
-  // window. Helps the shop see which services earn the most.
-
   // GET /api/reports/stock?filter=all|low|out&threshold=10
   // Snapshot of current product inventory. Not date-filtered — stock is a
   // balance, not a flow.
@@ -578,14 +428,6 @@ const reportsController = {
         const rx = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
         baseQuery.$or = [{ name: rx }, { category: rx }, { slug: rx }];
       }
-      // One branch picked (or branch staff): use that branch's stock.
-      const scope = await branchScope(req);
-      if (!scope.allBranches) {
-        return reportsController.branchStockReport(req, res, {
-          scope, filter, threshold, baseQuery, page, limit, skip,
-        });
-      }
-
       const stockFilteredQuery = { ...baseQuery };
       if (filter === 'out') stockFilteredQuery.stock = { $lte: 0 };
       else if (filter === 'low') stockFilteredQuery.stock = { $gt: 0, $lte: threshold };
@@ -628,7 +470,7 @@ const reportsController = {
         ]),
         Product.countDocuments(stockFilteredQuery),
         Product.find(stockFilteredQuery)
-          .select('name slug category status productType stock variants price costPrice discountedPrice thumbnailUrl displayOn updatedAt')
+          .select('name slug category status productType stock variants price costPrice discountedPrice thumbnailUrl updatedAt')
           .sort({ category: 1, name: 1 })
           .skip(skip)
           .limit(limit)
@@ -655,7 +497,6 @@ const reportsController = {
           costPrice,
           discountedPrice: p.discountedPrice ?? null,
           thumbnailUrl: p.thumbnailUrl || null,
-          displayOn: p.displayOn,
           inventoryValue,
           stockStatus,
           updatedAt: p.updatedAt,
@@ -683,92 +524,6 @@ const reportsController = {
     }
   },
 
-  // Stock report for one branch (not a route; called by `stock`). Same response
-  // shape; `stock` = pieces in this branch, `totalStock` = all branches.
-  branchStockReport: async (req, res, { scope, filter, threshold, baseQuery, page, limit, skip }) => {
-    const qty = branchStockExpr(scope.branchId, scope.isMain);
-    let stockMatch = {};
-    if (filter === 'out') stockMatch = { _branchStock: { $lte: 0 } };
-    else if (filter === 'low') stockMatch = { _branchStock: { $gt: 0, $lte: threshold } };
-    const [agg] = await Product.aggregate([
-      { $match: baseQuery },
-      { $addFields: { _branchStock: qty } },
-      {
-        $facet: {
-          summary: [
-            {
-              $group: {
-                _id: null,
-                totalProducts: { $sum: 1 },
-                totalInStock: { $sum: { $cond: [{ $gt: ['$_branchStock', threshold] }, 1, 0] } },
-                totalLowStock: {
-                  $sum: {
-                    $cond: [{ $and: [{ $gt: ['$_branchStock', 0] }, { $lte: ['$_branchStock', threshold] }] }, 1, 0],
-                  },
-                },
-                totalOutOfStock: { $sum: { $cond: [{ $lte: ['$_branchStock', 0] }, 1, 0] } },
-                totalUnits: { $sum: '$_branchStock' },
-                totalInventoryValue: { $sum: { $multiply: ['$_branchStock', { $ifNull: ['$costPrice', 0] }] } },
-              },
-            },
-          ],
-          count: [{ $match: stockMatch }, { $count: 'n' }],
-          rows: [
-            { $match: stockMatch },
-            { $sort: { category: 1, name: 1 } },
-            { $skip: skip },
-            { $limit: limit },
-            {
-              $project: {
-                name: 1, slug: 1, category: 1, status: 1, productType: 1, stock: 1, _branchStock: 1,
-                variantCount: { $size: { $ifNull: ['$variants', []] } },
-                price: 1, costPrice: 1, discountedPrice: 1, thumbnailUrl: 1, displayOn: 1, updatedAt: 1,
-              },
-            },
-          ],
-        },
-      },
-    ]);
-    const out = agg || {};
-    const rows = (out.rows || []).map((p) => {
-      const stock = Number(p._branchStock) || 0;
-      const costPrice = Number(p.costPrice) || 0;
-      let stockStatus = 'in_stock';
-      if (stock <= 0) stockStatus = 'out_of_stock';
-      else if (stock <= threshold) stockStatus = 'low_stock';
-      return {
-        _id: p._id,
-        name: p.name,
-        slug: p.slug,
-        category: p.category,
-        status: p.status,
-        productType: p.productType,
-        stock,
-        totalStock: Number(p.stock) || 0,
-        variantCount: p.variantCount || 0,
-        price: Number(p.price) || 0,
-        costPrice,
-        discountedPrice: p.discountedPrice ?? null,
-        thumbnailUrl: p.thumbnailUrl || null,
-        displayOn: p.displayOn,
-        inventoryValue: stock * costPrice,
-        stockStatus,
-        updatedAt: p.updatedAt,
-      };
-    });
-    const sa = { ...((out.summary || [])[0] || {
-      totalProducts: 0, totalInStock: 0, totalLowStock: 0, totalOutOfStock: 0, totalUnits: 0, totalInventoryValue: 0,
-    }) };
-    delete sa._id;
-    const total = ((out.count || [])[0] || {}).n || 0;
-    return res.status(200).json({
-      success: true,
-      data: { summary: { ...sa, threshold }, products: rows, branchId: scope.branchId },
-      pagination: buildPagination(page, limit, total),
-      message: 'Stock report generated',
-    });
-  },
-
   // GET /api/reports/expenses?startDate=&endDate=&category=&method=
   expensesReport: async (req, res) => {
     try {
@@ -779,7 +534,7 @@ const reportsController = {
         return res.status(400).json({ success: false, message: 'startDate and endDate are required' });
       }
 
-      const query = { isDeleted: { $ne: true }, date: { $gte: start, $lte: end }, ...(await scopedBranchFilter(req)) };
+      const query = { isDeleted: { $ne: true }, date: { $gte: start, $lte: end } };
       if (category && category !== 'all') query.category = category;
       if (method && method !== 'all') query.paymentMethod = method;
       if (search && String(search).trim()) {
@@ -871,7 +626,7 @@ const reportsController = {
 
       // Pull all non-deleted purchases (not just ones with payments) so the
       // page can also surface unpaid invoices as outstanding obligations.
-      const query = { isDeleted: { $ne: true }, ...(await scopedBranchFilter(req)) };
+      const query = { isDeleted: { $ne: true } };
       if (vendorId) query.vendorId = vendorId;
 
       const purchases = await Purchase.find(query)
@@ -1052,14 +807,8 @@ const reportsController = {
     }
   },
 
-  // GET /api/reports/salary?month=1-12&year=YYYY|&startDate=&endDate=
-  // Can filter by a specific month+year OR a date range that covers the
-  // salary records. Returns salary records + payment flow within the window.
-
-
   // GET /api/reports/cost-analysis?startDate=&endDate=
-  // Revenue (sales), COGS approximation (outsource cost + labour excluded),
-  // expenses, profit estimate.
+  // Revenue (sales), cost of goods sold, expenses and profit for the window.
   costAnalysis: async (req, res) => {
     try {
       const { startDate, endDate } = req.query;
@@ -1069,47 +818,28 @@ const reportsController = {
         return res.status(400).json({ success: false, message: 'startDate and endDate are required' });
       }
 
-      const bf = await scopedBranchFilter(req);
-      const orders = await POSOrder.find({
-        isDeleted: { $ne: true },
-        createdAt: { $gte: start, $lte: end },
-        orderStatus: { $ne: 'cancelled' },
-        ...bf,
-      })
+      const orders = await POSOrder.find({ ...SALE_MATCH, createdAt: { $gte: start, $lte: end } })
         .select('total items')
-        .populate('items.product', 'price costPrice discountedPrice')
+        .populate('items.product', 'costPrice')
         .lean();
 
       let revenue = 0;
-      let outsourceCost = 0;
-      let estimatedProductCost = 0;
+      let cogs = 0;
       let itemCount = 0;
       for (const o of orders) {
         revenue += o.total || 0;
-        for (const it of o.items || []) {
-          itemCount += it.quantity || 0;
-          if (it.isOutsource) {
-            outsourceCost += (Number(it.costPrice) || 0) * (Number(it.quantity) || 1);
-          } else if (!it.isLabour && it.product && typeof it.product === 'object') {
-            // Use product.costPrice if available, otherwise skip.
-            const cp = Number(it.product.costPrice);
-            if (!Number.isNaN(cp) && cp > 0) {
-              estimatedProductCost += cp * (Number(it.quantity) || 1);
-            }
-          }
-        }
+        cogs += billCost(o.items);
+        for (const it of o.items || []) itemCount += Number(it.quantity) || 0;
       }
 
       const expenses = await Expense.find({
         isDeleted: { $ne: true },
         date: { $gte: start, $lte: end },
-        ...bf,
       })
         .select('amount')
         .lean();
       const totalExpenses = expenses.reduce((s, e) => s + (Number(e.amount) || 0), 0);
 
-      const cogs = outsourceCost + estimatedProductCost;
       const grossProfit = revenue - cogs;
       const netProfit = grossProfit - totalExpenses;
 
@@ -1118,11 +848,10 @@ const reportsController = {
         data: {
           revenue,
           cogs,
-          outsourceCost,
-          estimatedProductCost,
           totalExpenses,
           grossProfit,
           netProfit,
+          orderCount: orders.length,
           itemCount,
           grossMargin: revenue ? (grossProfit / revenue) * 100 : 0,
           netMargin: revenue ? (netProfit / revenue) * 100 : 0,

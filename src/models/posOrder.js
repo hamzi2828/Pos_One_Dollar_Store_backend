@@ -1,13 +1,8 @@
-// POS Order Model — dedicated to counter sales so it stays independent of
-// the web ecommerce Order schema (which requires shipping addresses etc).
+// POS Order Model — one bill rung at the shop counter.
 const mongoose = require('mongoose');
 
 const posOrderItemSchema = new mongoose.Schema({
   product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: false },
-  isLabour: { type: Boolean, default: false },
-  labourDescription: { type: String, required: false },
-  isOutsource: { type: Boolean, default: false },
-  outsourceDescription: { type: String, required: false },
   costPrice: { type: Number, required: false },
   variantId: { type: String, required: false },
   sku: { type: String, required: false, default: '' },
@@ -28,25 +23,24 @@ const posOrderItemSchema = new mongoose.Schema({
       quantity: { type: Number },
     },
   ],
-  // Technician/employee credited for a labour or outsource item. Drives the
-  // "by employee" grouping in the Labour Revenue report.
-  performedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', required: false },
-  performedByName: { type: String, required: false },
+  // Free gift: sold at 0, its cost (costPrice * quantity) goes to cost of sales.
+  isGift: { type: Boolean, default: false },
+  giftReason: { type: String, required: false },
+  // Product category at sale time (category performance reports).
+  category: { type: String, required: false },
 });
 
 const posOrderSchema = new mongoose.Schema(
   {
     orderNumber: { type: String, required: true, unique: true, index: true },
-    // Branch that made the sale (stock was taken from it). null = old order
-    // from before branches = main branch.
+    // The shop (stock was taken from it). null = old order = the shop.
     branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', index: true, default: null },
-    // Branch code at sale time (e.g. "B1"), denormalized for receipts.
+    // Shop code at sale time, denormalized for receipts.
     branchCode: { type: String, default: '' },
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: false },
     customerInfo: {
       name: { type: String },
       phone: { type: String },
-      vehicleName: { type: String },
       customerType: { type: String, enum: ['online', 'walk-in'] },
       source: { type: String, enum: ['facebook', 'tiktok', 'instagram', 'word-of-mouth', ''] },
     },
@@ -64,6 +58,22 @@ const posOrderSchema = new mongoose.Schema(
     discount: { type: Number, default: 0 },
     discountType: { type: String, enum: ['fixed', 'percentage', null], default: null },
     discountReason: { type: String, default: '' },
+    // Bill discount rules applied by the server (models/discountRule.js).
+    appliedDiscounts: [
+      {
+        _id: false,
+        rule: { type: mongoose.Schema.Types.ObjectId, ref: 'DiscountRule' },
+        name: { type: String },
+        kind: { type: String }, // 'overall' | 'threshold' | 'manual'
+        valueType: { type: String }, // 'percentage' | 'fixed'
+        value: { type: Number },
+        amount: { type: Number },
+      },
+    ],
+    // Cost of goods sold for this bill (sum of costPrice * qty, gifts included).
+    cogs: { type: Number, default: 0 },
+    // Cost of the gift lines only (part of cogs).
+    giftCost: { type: Number, default: 0 },
     total: { type: Number, required: true },
     paymentMethod: {
       type: String,
@@ -97,6 +107,11 @@ const posOrderSchema = new mongoose.Schema(
       },
     ],
     cashier: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    // Till session / sale counter the bill was rung on (models/cashSession.js, models/saleCounter.js).
+    cashSession: { type: mongoose.Schema.Types.ObjectId, ref: 'CashSession', default: null, index: true },
+    counter: { type: mongoose.Schema.Types.ObjectId, ref: 'SaleCounter', default: null },
+    // WhatsApp group receipt slip (services/notificationService.js).
+    whatsappStatus: { type: String, enum: ['none', 'queued', 'sent', 'failed', 'skipped'], default: 'none' },
     orderStatus: {
       type: String,
       enum: ['completed', 'pending', 'refunded', 'cancelled'],
@@ -111,6 +126,8 @@ const posOrderSchema = new mongoose.Schema(
     notes: { type: String },
     completedAt: { type: Date, default: Date.now },
     refundedAt: { type: Date },
+    // Who gave the refund (cash leaves THEIR till session, not the original cashier's).
+    refundedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     cancelledAt: { type: Date },
     // True once this order's pieces were put back into stock (delete/refund),
     // so stock is never restored twice.
@@ -128,6 +145,10 @@ posOrderSchema.index({ branch: 1, paymentStatus: 1, createdAt: -1 });
 posOrderSchema.index({ cashier: 1, createdAt: -1 });
 posOrderSchema.index({ paymentStatus: 1, customer: 1 });
 posOrderSchema.index({ customer: 1, paymentStatus: 1 });
+// Till closing: cash a cashier received during a session (incl. later credit payments).
+posOrderSchema.index({ 'paymentHistory.receivedBy': 1, 'paymentHistory.paidAt': -1 });
+// Refunds given by a user in a time window (till closing).
+posOrderSchema.index({ refundedBy: 1, refundedAt: -1 });
 
 posOrderSchema.statics.generateOrderNumber = async function () {
   const count = await this.countDocuments();
