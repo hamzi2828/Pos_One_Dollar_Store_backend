@@ -10,7 +10,6 @@ const Expense = require('../models/expense');
 const Salary = require('../models/salary');
 const Purchase = require('../models/purchase');
 const Product = require('../models/product');
-const CarMake = require('../models/carMake');
 const {
   scopedBranchFilter,
   branchScope,
@@ -42,37 +41,6 @@ function buildPagination(page, limit, total) {
     total,
     pages: Math.max(1, Math.ceil(total / limit)),
   };
-}
-
-// Resolve a brand name (first word of a vehicle label) to its logo URL by
-// scanning the CarMake catalog. Returns a lowercase-keyed map.
-async function loadCarMakeLogoMap() {
-  try {
-    const makes = await CarMake.find({ isDeleted: { $ne: true } })
-      .select('name logoUrl')
-      .lean();
-    const map = new Map();
-    for (const m of makes) {
-      if (m.name) map.set(String(m.name).toLowerCase(), m.logoUrl || '');
-    }
-    return map;
-  } catch {
-    return new Map();
-  }
-}
-
-// "Toyota Corolla 1.6" → { brand: 'Toyota', logoUrl: '...' }
-function resolveBrand(vehicleName, logoMap) {
-  const v = String(vehicleName || '').trim();
-  if (!v) return { brand: '', logoUrl: '' };
-  // Try longest-prefix match first so multi-word brands ("Land Rover", "Mercedes Benz") work.
-  const parts = v.split(/\s+/);
-  for (let take = Math.min(parts.length, 3); take > 0; take--) {
-    const candidate = parts.slice(0, take).join(' ');
-    const hit = logoMap.get(candidate.toLowerCase());
-    if (hit !== undefined) return { brand: candidate, logoUrl: hit };
-  }
-  return { brand: parts[0] || '', logoUrl: '' };
 }
 
 // ---------------- Branches ----------------
@@ -482,7 +450,6 @@ const reportsController = {
             (u ? `${u.firstName || ''} ${u.lastName || ''}`.trim() : '') ||
             '',
           phone: ship.phone || u?.phone || '',
-          vehicleName: '',
         };
 
         return {
@@ -802,12 +769,6 @@ const reportsController = {
     });
   },
 
-  // GET /api/reports/vehicle-history?vehicle=...&customerId=...
-  // Every POS order tagged to a vehicle. Supports two access modes:
-  //  - vehicle=<substring> — free-text match against customerInfo.vehicleName
-  //  - customerId — lists every vehicle and job history for that customer
-  // Without either param, returns a directory of distinct vehicles seen in
-  // orders with an aggregate job count.
   // GET /api/reports/expenses?startDate=&endDate=&category=&method=
   expensesReport: async (req, res) => {
     try {

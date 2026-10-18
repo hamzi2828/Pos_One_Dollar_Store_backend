@@ -29,7 +29,6 @@ const PERMISSION_SECTIONS = [
             { key: 'report_cost_analysis', label: 'Cost Analysis', actions: ['view', 'export'] },
             { key: 'report_labour_revenue', label: 'Labour Revenue', actions: ['view', 'export'] },
             { key: 'report_stock', label: 'Stock', actions: ['view', 'export'] },
-            { key: 'report_vehicle_history', label: 'Vehicle History', actions: ['view', 'export'] },
             { key: 'report_expenses', label: 'Expenses', actions: ['view', 'export'] },
             { key: 'report_vendor_payments', label: 'Vendor Payments', actions: ['view', 'export'] },
             { key: 'report_salary', label: 'Salary', actions: ['view', 'export'] },

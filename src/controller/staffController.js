@@ -33,7 +33,7 @@ const User = require('../models/user');
 const Role = require('../models/role');
 const Branch = require('../models/branch');
 const { clearAccessCache } = require('../middleware/access');
-const { buildAllPermissions } = require('../constants/rolePermissions');
+const { buildAllPermissions, sanitizePermissions } = require('../constants/rolePermissions');
 const { paginate, buildRegexSearchFilter } = require('../helper/paginate');
 
 const MIN_PASSWORD = 8;
@@ -144,7 +144,9 @@ async function loadBranch(branchId) {
  */
 function roleEscalationReason(access, role) {
   if (!role) return null;
-  const perms = plainPermissions(role.permissions);
+  // Only catalogue keys count — stale keys left on old roles (e.g. a removed
+  // report) must not block assigning the role.
+  const perms = sanitizePermissions(plainPermissions(role.permissions));
   const bad = ESCALATION_KEYS.filter((k) => Array.isArray(perms[k]) && perms[k].length);
   if (bad.length) return `Only the super admin can assign a role with ${bad.join(', ')} permission`;
   if (role.isSystem) return 'Only the super admin can assign the system Admin role';
