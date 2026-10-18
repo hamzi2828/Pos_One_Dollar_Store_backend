@@ -620,6 +620,16 @@ async function reviewSession(req, id, { action, note } = {}) {
   ).lean();
   if (!updated) throw httpError(409, 'This till was just changed by someone else. Refresh.');
 
+  // Payroll hook: a verified short closing becomes a till-shortage deduction for
+  // the cashier (one per session; never blocks verifying).
+  if (status === 'verified' && Number(updated.variance) < 0) {
+    try {
+      await require('./hr/payrollService').recordTillShortage(updated, { userId: access.userId });
+    } catch (err) {
+      console.error('[till] till-shortage deduction failed:', err && err.message);
+    }
+  }
+
   await notificationService.notify({
     type: action === 'verify' ? 'till_verified' : 'till_disputed',
     level: action === 'verify' ? 'info' : 'warning',

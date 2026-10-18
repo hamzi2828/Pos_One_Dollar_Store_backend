@@ -16,6 +16,12 @@ const {
 const { paginate, buildRegexSearchFilter, readPagingQuery } = require('../helper/paginate');
 
 const ROLE_SORTABLE = ['createdAt', 'name'];
+
+// Every permission key in today's catalogue.
+const ALL_KEYS = () => PERMISSION_GROUPS.map((g) => g.key);
+// Keys added with HR time & pay (Oct 2026). Roles saved before then have no
+// knownPermissionKeys; for them these count as "new".
+const KEYS_ADDED_AFTER_LAUNCH = ['shifts', 'hr_policies', 'attendance', 'attendance_kiosk', 'payroll'];
 const ROLE_SEARCH_FIELDS = ['name', 'description'];
 
 /**
@@ -123,6 +129,7 @@ async function createRoleRecord({ name, description, permissions } = {}) {
         description: typeof description === 'string' ? description.trim() : '',
         permissions: sanitizePermissions(permissions),
         isSystem: false,
+        knownPermissionKeys: ALL_KEYS(),
     });
 }
 
@@ -133,15 +140,51 @@ async function createRoleRecord({ name, description, permissions } = {}) {
 async function createDefaultRoles() {
     const created = [];
     const skipped = [];
+    const updated = []; // [{ name, keys }] existing roles that received NEW permissions
+    const all = ALL_KEYS();
+
     for (const def of DEFAULT_ROLES) {
-        if (await findRoleByName(def.name)) {
-            skipped.push(def.name);
+        const existing = await findRoleByName(def.name);
+        if (!existing) {
+            await createRoleRecord(def);
+            created.push(def.name);
             continue;
         }
-        await createRoleRecord(def);
-        created.push(def.name);
+        // Give an existing default role only the permissions that did not exist
+        // when it was last saved — never re-adds what the owner removed.
+        const role = await Role.findById(existing._id);
+        const known = new Set(
+            Array.isArray(role.knownPermissionKeys) && role.knownPermissionKeys.length
+                ? role.knownPermissionKeys
+                : all.filter((k) => !KEYS_ADDED_AFTER_LAUNCH.includes(k))
+        );
+        // Plain { key: [actions] } copy (role.permissions is a Mongoose Map of arrays).
+        const current = {};
+        for (const [k, v] of role.permissions instanceof Map ? role.permissions.entries() : Object.entries(role.permissions || {})) {
+            current[k] = Array.isArray(v) ? [...v] : v;
+        }
+        const added = [];
+        for (const key of all) {
+            if (known.has(key) || current[key] || !def.permissions[key]) continue;
+            current[key] = def.permissions[key];
+            added.push(key);
+        }
+        role.permissions = sanitizePermissions(current);
+        role.knownPermissionKeys = all;
+        await role.save();
+        if (added.length) updated.push({ name: role.name, keys: added });
+        else skipped.push(def.name);
     }
-    return { created, skipped };
+
+    // The built-in Admin role always has every permission, new ones included.
+    const admin = await Role.findOne({ isSystem: true, isDeleted: { $ne: true } });
+    if (admin) {
+        admin.permissions = buildAllPermissions();
+        admin.knownPermissionKeys = all;
+        await admin.save();
+    }
+    if (updated.length || admin) clearAccessCache();
+    return { created, skipped, updated };
 }
 
 /** Live number of (not deleted) users per staff role, for the given role ids. */
@@ -323,6 +366,7 @@ const roleController = {
             }
 
             role.permissions = sanitizePermissions(permissions);
+            role.knownPermissionKeys = ALL_KEYS(); // the owner has now seen every key
             await role.save();
             clearAccessCache(); // every user with this role must see the change now
 

@@ -8,7 +8,8 @@
 //
 // Prefixes in use: PO, GRN, VP (vendor payment), VR (vendor return),
 // CN (consignment), CS (consignment settlement), DMG (damage), SU (shop use),
-// ADJ (stock adjustment), TILL (till session), EMP (employee code), AST (asset code).
+// ADJ (stock adjustment), TILL (till session), EMP (employee code), AST (asset code),
+// ADV (salary advance), PAY (payroll run), PSL (payslip).
 // The counter restarts every year.
 const mongoose = require('mongoose');
 

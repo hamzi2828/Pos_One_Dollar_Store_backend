@@ -17,6 +17,11 @@ const MODULES = [
   'analyticsRoutes',
   'stockOpsRoutes',
   'hrRoutes',
+  'shiftsRoutes',
+  'attendanceRoutes',
+  'payrollRoutes',
+  'investmentsRoutes',
+  'desktopRoutes',
 ];
 
 for (const name of MODULES) {

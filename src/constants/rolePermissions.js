@@ -108,6 +108,8 @@ const PERMISSION_SECTIONS = [
             { key: 'banks', label: 'Banks', actions: ['view', 'create', 'edit', 'delete'] },
             { key: 'expenses', label: 'Expenses', actions: ['view', 'create', 'edit', 'delete'] },
             { key: 'assets', label: 'Assets', actions: ['view', 'create', 'edit', 'delete', 'export'] },
+            // Money put into the shop (setup / growth bills) and the total invested.
+            { key: 'investments', label: 'Investment', actions: ['view', 'create', 'edit', 'delete', 'export'] },
         ],
     },
     {
@@ -116,6 +118,16 @@ const PERMISSION_SECTIONS = [
         iconKey: 'hr',
         groups: [
             { key: 'employees', label: 'Employees', actions: ['view', 'create', 'edit', 'delete'] },
+            // Shift types, holidays and the weekly roster (who works when).
+            { key: 'shifts', label: 'Shifts & Roster', actions: ['view', 'create', 'edit', 'delete'] },
+            // Attendance & pay rules (grace, late cuts, overtime, leave quotas...).
+            { key: 'hr_policies', label: 'HR Policies', actions: ['view', 'create', 'edit', 'delete'] },
+            // create = manual punch, edit = correct times / approve overtime.
+            { key: 'attendance', label: 'Attendance', actions: ['view', 'create', 'edit', 'export'] },
+            // Sign in the DOLLAR & Co Attendance desktop app (fingerprint clock-in on the counter PC).
+            { key: 'attendance_kiosk', label: 'Attendance desktop app', actions: ['view', 'create'] },
+            // Payroll, advances and deductions; edit = approve / pay.
+            { key: 'payroll', label: 'Payroll & Advances', actions: ['view', 'create', 'edit', 'delete', 'export'] },
             // Which employees look after which product category (drives Category Performance).
             { key: 'category_assignments', label: 'Category Staff', actions: ['view', 'edit'] },
         ],
@@ -196,6 +208,8 @@ const DEFAULT_ROLES = [
             products: VCE, product_categories: VCE, product_attributes: VCE, product_stock: VCE, stock_receive: VC, discounts: ['view', 'create', 'edit', 'delete'],
             price_tiers: VCE, customers: VCE, banks: V, expenses: VCE, assets: VCE, employees: VCE, category_assignments: VE,
             staff: VCE, roles: V, activity_log: V, notifications: V,
+            shifts: ['view', 'create', 'edit', 'delete'], hr_policies: V, attendance: ['view', 'create', 'edit', 'export'],
+            attendance_kiosk: VC, payroll: ['view', 'create', 'export'],
         },
     },
     {

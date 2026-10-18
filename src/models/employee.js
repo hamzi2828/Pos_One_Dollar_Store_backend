@@ -102,11 +102,22 @@ const employeeSchema = new mongoose.Schema({
     probationEndDate: { type: Date, default: null },
     contractStartDate: { type: Date, default: null },
     contractEndDate: { type: Date, default: null },
+    // Old free-text shift times (used only when no defaultShift is set).
     shift: {
         start: { type: String, default: null }, // "10:00"
         end: { type: String, default: null }, // "22:00"
     },
     weeklyOff: [{ type: String, enum: DAYS }],
+
+    // ----- Time & attendance (services/hr/scheduleService.js, attendanceCore.js) -----
+    // Planned shift on days the roster says nothing (weekly off days excepted).
+    defaultShift: { type: ObjectId, ref: 'Shift', default: null },
+    // Attendance & pay rules; null = the default HR policy.
+    hrPolicy: { type: ObjectId, ref: 'HrPolicy', default: null },
+    // monthly = salary per month; daily = dailyRate per day worked (helpers).
+    payType: { type: String, enum: ['monthly', 'daily'], default: 'monthly' },
+    dailyRate: { type: Number, min: 0, default: 0 },
+    // Clock-in is by fingerprint only (models/employeeFingerprint.js, desktop app).
 
     // ----- Salary (PKR / month) -----
     salary: { type: Number, required: true, default: 0, min: 0 }, // gross

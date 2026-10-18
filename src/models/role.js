@@ -22,6 +22,10 @@ const roleSchema = new mongoose.Schema(
 
         // System roles (e.g. Admin) cannot be edited/deleted from the UI.
         isSystem: { type: Boolean, default: false, index: true },
+        // Permission keys that existed when this role was last saved. Keys added to
+        // the catalogue later are "new" for this role, so "Add default roles" can
+        // give default roles their new permissions without undoing the owner's edits.
+        knownPermissionKeys: { type: [String], default: undefined },
 
         userCount: { type: Number, default: 0 },
 

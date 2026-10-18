@@ -301,3 +301,50 @@ All under `/api`, permission-gated per §5.
 
 Deployment notes: set `CRON_SECRET` in Vercel (cron `/api/counters/check-cutoffs`); Vercel Hobby
 allows daily crons only. `MONGO_URI` → `pos_mirpur_dollar_shop`.
+
+---
+
+## 10. HR time & pay (shifts, roster, attendance, payroll) — Oct 2026
+
+**Attendance is marked ONLY by fingerprint on the DOLLAR & Co Attendance desktop app** (`pos_desktop`,
+`/api/desktop/*`, punch `source: 'device'`); no PIN, no web kiosk, no manual punch. A manager fixes a
+forgotten punch with a logged **correction** (reason required) in HR → Attendance. The counter PC is
+signed in once by an account with `attendance_kiosk` ("Attendance desktop app").
+Owner's rules (default policy):
+grace 10 min · 3 lates = 1 day cut · absent = 1 day (salary ÷ 30) · overtime at the normal hourly
+rate after manager approval · till shortage cut from the cashier after manager approval.
+All rules are **HR Policies** the shop creates (HR → Policies) and assigns per employee.
+
+**Foundation (done, shared — do not change signatures):**
+- Models: `shift` (start/end HH:mm, night shifts end next day, breakMinutes), `holiday` (date
+  'YYYY-MM-DD'), `rosterEntry` (employee + date → shift | off | leave paid/unpaid/sick),
+  `attendanceRecord` (one per employee per shop day: punches, checkIn/out, computed status,
+  late/early/worked/overtime minutes, overtimeApproved, corrections, locked), `hrPolicy`,
+  `payrollDeduction` (till_shortage | damage | other; pending → approved | waived → applied).
+- Employee: `defaultShift`, `hrPolicy`, `payType` monthly|daily, `dailyRate`; existing `weeklyOff`.
+  Fingerprints: `models/employeeFingerprint.js` (desktop app; `employee`, `finger`, `template`, `deletedAt`).
+- `services/hr/policyService.js`: `getDefault()`, `getPolicy(id)`, `policyFor(employee)`,
+  `policiesFor(list)`, `clearCache()` (call after saving a policy).
+- `services/hr/scheduleService.js`: `planFor(employees, fromKey, toKey)` → Map id → plans;
+  `planForDay(employee, key)`. Order: not employed → roster cell → holiday → weekly off →
+  defaultShift → legacy shift times → none.
+- `services/hr/attendanceCore.js`: `evaluate(plan, record, policy, now)` (pure rules),
+  `punch({ employeeId, at, source, photo, userId, note })`, `recomputeDay`, `recomputeRange`
+  (call after roster / policy / holiday / correction changes), `dayView({ dateKey })`,
+  `monthSummary(month, { employeeIds, includeDays, now })` → per employee: scheduled days,
+  present, lates, half days, absents, missing-outs, offs, holidays, leave (paid/sick within
+  quota, unpaidTotal), overtime approved/pending, `daysWorked`, and `cuts` in DAYS
+  (`lateCutDays`, `lateCutMinutes`, `absentCutDays`, `halfDayCutDays`, `unpaidLeaveCutDays`).
+- Permissions: `shifts`, `hr_policies`, `attendance` (edit = corrections / overtime approval),
+  `attendance_kiosk` ("Attendance desktop app" sign-in), `payroll` (edit = approve / pay).
+- Payroll approval locks every day of the month (days without a record get a locked placeholder,
+  note "Payroll lock"); reopen (super admin, nothing paid) removes them.
+- Pages (sidebar already links them): `/admin/hr/roster`, `/admin/hr/policies`,
+  `/admin/hr/attendance`, `/admin/hr/payroll`, `/admin/hr/advances`; desktop app in `pos_desktop`.
+
+| Module | Backend | Frontend |
+|---|---|---|
+| **R. Shifts, roster & policies** | `routes/modules/shiftsRoutes.js`, `controller/store/{shift,holiday,roster,hrPolicy,timeSettings}*.js`, `services/hr/rosterService.js` | `admin/hr/roster/**`, `admin/hr/policies/**`, "Time & pay" card + PIN on `admin/hr/employees/**` |
+| **A. Attendance** | `routes/modules/attendanceRoutes.js`, `controller/store/attendance*.js`, `services/hr/attendanceService.js` | `admin/hr/attendance/**` |
+| **D. Desktop app** | `routes/modules/desktopRoutes.js`, `controller/store/desktop*.js`, `services/hr/desktopService.js`, `models/employeeFingerprint.js` | `pos_desktop/` (C# WinForms) |
+| **P. Payroll** | `routes/modules/payrollRoutes.js`, `controller/store/payroll*.js`, `controller/store/salaryAdvance*.js`, `models/payrollRun.js`, `models/salaryAdvance.js`, `services/hr/payrollService.js`, minimal hook in `services/tillService.js` (verify → till-shortage deduction) | `admin/hr/payroll/**`, `admin/hr/advances/**` |

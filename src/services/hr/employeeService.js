@@ -18,7 +18,7 @@ const fullName = (e) => `${e.firstName || ''} ${e.lastName || ''}`.trim();
 
 // ---------- output ----------
 
-const SENSITIVE = ['salary', 'salaryBreakdown', 'salaryPayDay', 'salaryPaymentMethod', 'bankDetails', 'cnic', 'cnicExpiry'];
+const SENSITIVE = ['salary', 'salaryBreakdown', 'salaryPayDay', 'salaryPaymentMethod', 'dailyRate', 'bankDetails', 'cnic', 'cnicExpiry'];
 const CNIC_DOCS = ['cnic_front', 'cnic_back'];
 
 /** Plain object for the API; strips salary / bank / CNIC for view-only users. */
