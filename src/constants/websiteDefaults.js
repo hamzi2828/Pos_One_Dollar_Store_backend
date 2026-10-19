@@ -20,8 +20,8 @@ const WEBSITE_DEFAULTS = {
   },
   hero: {
     heading: 'Everyday things at clear, fixed prices',
-    subheading: 'Kitchen, home, cleaning, stationery, toys, beauty and gifts, all at a few simple prices from Rs 99 to Rs 999.',
-    imageUrl: '/images/storefront.png',
+    subheading: 'Kitchen, home, cleaning, stationery, toys, beauty and gifts. Every single item is Rs 300.',
+    imageUrl: '/images/storefront-shop.jpg',
     videoUrl: '',
     primaryCta: { label: 'Visit the shop', url: '#visit' },
     secondaryCta: { label: 'Follow us on Facebook', url: '' },
@@ -40,7 +40,7 @@ const WEBSITE_DEFAULTS = {
     intro: 'A bright, tidy shop full of useful things, sorted so they are easy to find.',
     items: [
       { icon: 'store', title: 'Everyday essentials', text: 'Kitchen, home, bath and cleaning items you use every day, all under one roof.' },
-      { icon: 'tag', title: 'A few simple prices', text: 'Items are grouped at fixed price points, from Rs 99 to Rs 999.' },
+      { icon: 'tag', title: 'One price: Rs 300', text: 'Every item in the shop costs the same: Rs 300. No guessing, no bargaining.' },
       { icon: 'package', title: 'New stock regularly', text: 'We bring in new items often, so there is always something new on the racks.' },
       { icon: 'gift', title: 'Gifts and little extras', text: 'Small gifts, toys and seasonal items for birthdays, festivals and everyday treats.' },
     ],
@@ -60,16 +60,9 @@ const WEBSITE_DEFAULTS = {
   },
   prices: {
     show: true,
-    heading: 'Simple prices',
-    intro: 'Our items are sorted into a few fixed prices, so shopping is quick and easy.',
-    items: [
-      { price: 99, label: '', note: '' },
-      { price: 150, label: '', note: '' },
-      { price: 199, label: '', note: '' },
-      { price: 280, label: '', note: '' },
-      { price: 499, label: '', note: '' },
-      { price: 999, label: '', note: '' },
-    ],
+    heading: 'One simple price',
+    intro: 'One price for everything. Pick anything you like, it is Rs 300.',
+    items: [{ price: 300, label: 'Everything', note: 'Every item, one price' }],
   },
   categories: {
     show: true,
@@ -112,7 +105,7 @@ const WEBSITE_DEFAULTS = {
     heading: 'Questions',
     items: [
       { q: 'Are all prices fixed?', a: 'Yes. Every item has a clear fixed price, so you know what you will pay before you reach the counter.' },
-      { q: 'What are your prices?', a: 'Our fixed prices are Rs 99, 150, 199, 280, 499 and 999.' },
+      { q: 'What are your prices?', a: 'Everything is Rs 300. One fixed price for every item.' },
       { q: 'Do you have new stock?', a: "Yes, we add new stock regularly. Follow our Facebook page to see what's new." },
       { q: 'Do I get a bill?', a: 'Yes, every purchase comes with a bill from our till.' },
       { q: 'Do you have offers?', a: "We run offers from time to time, like 10% off on bigger shopping. Ask in store for today's offers." },
@@ -139,11 +132,11 @@ const WEBSITE_DEFAULTS = {
     showFacebookFeed: true,
   },
   seo: {
-    title: 'DOLLAR & Co | Fixed-price store',
+    title: 'DOLLAR & Co | Everything Rs 300',
     description:
-      'DOLLAR & Co is a modern fixed-price store for kitchen, home, cleaning, stationery, toys, beauty and gifts. Clear prices from Rs 99 to Rs 999.',
+      'DOLLAR & Co is a modern fixed-price store for kitchen, home, cleaning, stationery, toys, beauty and gifts. One fixed price: everything is Rs 300.',
     ogImageUrl: '/images/og.jpg',
-    keywords: 'dollar store, fixed price store, household items, kitchen, home decor, gifts, toys, stationery, Pakistan',
+    keywords: 'Rs 300 store, everything Rs 300, Mirpur, dollar store, fixed price store, household items, kitchen, home decor, gifts, toys, stationery, Pakistan',
   },
   siteUrl: '',
 };
