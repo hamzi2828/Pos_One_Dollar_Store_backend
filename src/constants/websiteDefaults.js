@@ -19,12 +19,12 @@ const WEBSITE_DEFAULTS = {
     tagline: "Everything you need, at prices you'll love",
   },
   hero: {
-    heading: 'Everyday things at clear, fixed prices',
-    subheading: 'Kitchen, home, cleaning, stationery, toys, beauty and gifts. Every single item is Rs 300.',
+    heading: 'Everything for your home. Everything Rs 300.',
+    subheading: 'Kitchen, home decor, storage, cleaning, bath, stationery, toys, beauty and gifts — one fixed price for every item, no bargaining.',
     imageUrl: '/images/storefront-shop.jpg',
     videoUrl: '',
     primaryCta: { label: 'Visit the shop', url: '#visit' },
-    secondaryCta: { label: 'Follow us on Facebook', url: '' },
+    secondaryCta: { label: "What you'll find", url: '#categories' },
   },
   about: {
     show: true,
