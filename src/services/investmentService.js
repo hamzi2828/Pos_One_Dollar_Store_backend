@@ -47,6 +47,13 @@ function parseDate(v) {
   return d;
 }
 
+/** A payment date: not after today (shop time). */
+function paymentDate(v) {
+  const d = parseDate(v);
+  if (d >= T.dayStart(T.addDays(T.dayKey(new Date()), 1))) throw httpError(400, 'The payment date cannot be in the future');
+  return d;
+}
+
 // ---------------------------------------------------------------- partners
 
 /** Partners A-Z with what each has paid in, still has to pay, and their share. */
@@ -256,16 +263,47 @@ async function create(body, { userId, attachments = [] }) {
   return get(doc._id);
 }
 
-/** Edit the bill. Payments are not changed here (use pay / remove payment). */
+/**
+ * Edit the bill. `paidAmount` (optional) = what is paid on it, for a bill with
+ * at most one payment (the "paid now" from Add): that payment is changed,
+ * added or removed. A bill paid in parts changes its payments one by one
+ * (pay / edit / remove payment); then the total cannot go below what is paid.
+ */
 async function update(id, body, { userId, attachments = [] }) {
   const current = await get(id);
   const set = { ...(await clean(body, { partial: true })), updatedBy: userId || null };
-  if (set.amount !== undefined) {
-    if (set.amount < current.paidAmount) {
-      throw httpError(400, `${rs(current.paidAmount)} is already paid on this bill, so the total cannot be less. Remove a payment first.`);
+  const total = set.amount !== undefined ? set.amount : current.amount;
+  const billDate = set.date || current.date;
+  let payments = null; // new payments list, when it changes
+  let paid = current.paidAmount;
+
+  if (body.paidAmount !== undefined && body.paidAmount !== null && body.paidAmount !== '') {
+    const want = round2(Number(body.paidAmount));
+    if (!Number.isFinite(want) || want < 0) throw httpError(400, 'Paid cannot be less than 0');
+    if (want > total) throw httpError(400, `Paid (${rs(want)}) is more than the bill total (${rs(total)})`);
+    if (want !== current.paidAmount) {
+      const n = current.payments.length;
+      if (n > 1) throw httpError(400, `This bill has ${n} payments. Change them in its payment history.`);
+      const first = current.payments[0];
+      payments = want > 0 ? [first ? { ...first, amount: want } : { amount: want, date: billDate, createdBy: userId || null }] : [];
+      paid = want;
     }
-    set.balance = round2(set.amount - current.paidAmount);
   }
+  if (total < paid) {
+    throw httpError(400, `${rs(paid)} is already paid on this bill, so the total cannot be less. Remove or change a payment first.`);
+  }
+  // A lone payment made on the bill date moves with the bill date.
+  if (set.date && current.payments.length === 1) {
+    const p = (payments || current.payments)[0];
+    if (p && new Date(current.payments[0].date).getTime() === new Date(current.date).getTime()) {
+      payments = [{ ...p, date: set.date }];
+    }
+  }
+  if (payments) {
+    set.payments = payments;
+    set.paidAmount = paid;
+  }
+  set.balance = round2(total - paid);
   // Keep the bills the user did not remove (`keepAttachments` = JSON array of urls).
   let keep = null;
   if (body.keepAttachments !== undefined) {
@@ -278,9 +316,11 @@ async function update(id, body, { userId, attachments = [] }) {
   const files = current.attachments || [];
   const kept = keep ? files.filter((u) => keep.includes(u)) : files;
   set.attachments = [...kept, ...attachments];
-  // A new total: only if no payment came in meanwhile (the balance is worked out from it).
-  const filter = set.amount !== undefined ? { _id: current._id, paidAmount: current.paidAmount } : { _id: current._id };
-  const res = await Investment.updateOne(filter, { $set: set });
+  // Only if no payment changed meanwhile (the balance is worked out from them).
+  const res = await Investment.updateOne(
+    { _id: current._id, paidAmount: current.paidAmount, payments: { $size: current.payments.length } },
+    { $set: set }
+  );
   if (!res.matchedCount) throw httpError(409, CHANGED);
   return get(id);
 }
@@ -300,9 +340,7 @@ async function addPayment(id, body = {}, { userId }) {
   const amount = round2(Number(body.amount));
   if (!Number.isFinite(amount) || amount <= 0) throw httpError(400, 'Enter an amount more than 0');
   if (amount > bill.balance) throw httpError(400, `Only ${rs(bill.balance)} is left to pay on this bill`);
-  const date = parseDate(body.date);
-  const endOfToday = T.dayStart(T.addDays(T.dayKey(new Date()), 1));
-  if (date >= endOfToday) throw httpError(400, 'The payment date cannot be in the future');
+  const date = paymentDate(body.date);
   const paidAmount = round2(bill.paidAmount + amount);
   const res = await Investment.updateOne(
     { _id: bill._id, amount: bill.amount, paidAmount: bill.paidAmount },
@@ -312,6 +350,34 @@ async function addPayment(id, body = {}, { userId }) {
     }
   );
   if (!res.modifiedCount) throw httpError(409, CHANGED);
+  return get(id);
+}
+
+/** Fix a payment: { amount?, date?, note? }. Paid can never go above the bill total. */
+async function editPayment(id, paymentId, body = {}, { userId }) {
+  const bill = await get(id);
+  const payment = isId(paymentId) && bill.payments.find((p) => String(p._id) === String(paymentId));
+  if (!payment) throw httpError(404, 'Payment not found');
+  const set = { updatedBy: userId || null };
+  let paidAmount = bill.paidAmount;
+  if (body.amount !== undefined) {
+    const amount = round2(Number(body.amount));
+    if (!Number.isFinite(amount) || amount <= 0) throw httpError(400, 'Enter an amount more than 0');
+    paidAmount = round2(bill.paidAmount - payment.amount + amount);
+    if (paidAmount > bill.amount) {
+      throw httpError(400, `That makes ${rs(paidAmount)} paid on a ${rs(bill.amount)} bill. At most ${rs(bill.amount - bill.paidAmount + payment.amount)} for this payment.`);
+    }
+    set['payments.$.amount'] = amount;
+    set.paidAmount = paidAmount;
+    set.balance = round2(bill.amount - paidAmount);
+  }
+  if (body.date !== undefined) set['payments.$.date'] = paymentDate(body.date);
+  if (body.note !== undefined) set['payments.$.note'] = str(body.note, 300);
+  const res = await Investment.updateOne(
+    { _id: bill._id, amount: bill.amount, paidAmount: bill.paidAmount, 'payments._id': payment._id },
+    { $set: set }
+  );
+  if (!res.matchedCount) throw httpError(409, CHANGED);
   return get(id);
 }
 
@@ -356,6 +422,6 @@ async function exportCsv(query = {}) {
 
 module.exports = {
   list, get, create, update, remove, exportCsv,
-  addPayment, removePayment,
+  addPayment, editPayment, removePayment,
   listPartners, createPartner, updatePartner, removePartner,
 };
