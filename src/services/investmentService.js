@@ -1,30 +1,86 @@
 // src/services/investmentService.js
-// Investment = money put into the shop, one entry per bill. Simple list + total.
+// Investment = money put into the shop, one entry per bill, each put in by a
+// partner. Simple list + total, and each partner's total and share.
 const mongoose = require('mongoose');
 const Investment = require('../models/investment');
+const Partner = require('../models/investmentPartner');
 const T = require('./analytics/time');
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const str = (v, max = 200) => (v === undefined || v === null ? '' : String(v).trim().slice(0, max));
 const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const isId = (v) => mongoose.Types.ObjectId.isValid(String(v)) && /^[a-f\d]{24}$/i.test(String(v));
 
-// Suggestions for the category box (the shop can type anything).
-const SUGGESTED_CATEGORIES = [
-  'Renovation',
-  'Racks & fixtures',
-  'Equipment',
-  'Electronics & IT',
-  'Signboard & branding',
-  'Opening stock',
-  'Rent advance / security',
-  'Furniture',
-  'Licences & fees',
-  'Other',
-];
+// ---------------------------------------------------------------- partners
+
+/** Partners A-Z with what each has put in and their share of the total. */
+async function listPartners() {
+  const [partners, sums] = await Promise.all([
+    Partner.find({}).sort({ name: 1 }).lean(),
+    Investment.aggregate([{ $group: { _id: '$partner', amount: { $sum: '$amount' }, count: { $sum: 1 } } }]),
+  ]);
+  const byId = new Map(sums.map((s) => [String(s._id), s]));
+  const total = sums.reduce((t, s) => t + s.amount, 0);
+  return partners.map((p) => {
+    const s = byId.get(String(p._id)) || { amount: 0, count: 0 };
+    return {
+      ...p,
+      invested: round2(s.amount),
+      bills: s.count,
+      share: total > 0 ? Math.round((s.amount / total) * 1000) / 10 : 0, // % with 1 decimal
+    };
+  });
+}
+
+function cleanPartner(body = {}) {
+  const name = str(body.name, 120).replace(/\s+/g, ' ');
+  if (!name) throw httpError(400, "Write the partner's name");
+  return { name, phone: str(body.phone, 40), note: str(body.note, 500) };
+}
+
+async function assertUniqueName(name, exceptId = null) {
+  const f = { name: new RegExp(`^${escapeRegex(name)}$`, 'i') };
+  if (exceptId) f._id = { $ne: exceptId };
+  if (await Partner.exists(f)) throw httpError(409, `A partner called "${name}" already exists`);
+}
+
+async function getPartner(id) {
+  if (!isId(id)) throw httpError(400, 'Invalid partner');
+  const p = await Partner.findById(id).lean();
+  if (!p) throw httpError(404, 'Partner not found');
+  return p;
+}
+
+async function createPartner(body, { userId }) {
+  const data = cleanPartner(body);
+  await assertUniqueName(data.name);
+  const doc = await Partner.create({ ...data, createdBy: userId || null });
+  return doc.toObject();
+}
+
+async function updatePartner(id, body, { userId }) {
+  await getPartner(id);
+  const data = cleanPartner(body);
+  await assertUniqueName(data.name, id);
+  return Partner.findByIdAndUpdate(id, { $set: { ...data, updatedBy: userId || null } }, { new: true }).lean();
+}
+
+/** Only a partner with no bills can be removed (their bills would lose their owner). */
+async function removePartner(id, { userId }) {
+  const p = await getPartner(id);
+  const bills = await Investment.countDocuments({ partner: p._id });
+  if (bills) {
+    throw httpError(409, `${p.name} has ${bills} investment bill${bills === 1 ? '' : 's'}. Move or delete them first.`);
+  }
+  await Partner.softDeleteById(id, userId);
+  return { id: String(id) };
+}
+
+// ---------------------------------------------------------------- investments
 
 /** Validate + clean a create / update body. `partial` for updates. */
-function clean(body = {}, { partial = false } = {}) {
+async function clean(body = {}, { partial = false } = {}) {
   const out = {};
   if (!partial || body.title !== undefined) {
     out.title = str(body.title);
@@ -40,15 +96,23 @@ function clean(body = {}, { partial = false } = {}) {
     if (Number.isNaN(d.getTime())) throw httpError(400, 'Invalid date');
     out.date = d;
   }
-  for (const [k, max] of [['category', 80], ['billNo', 80], ['paidTo', 120], ['note', 1000]]) {
+  if (!partial || body.partner !== undefined) {
+    if (!body.partner) throw httpError(400, 'Pick the partner who put this money in');
+    out.partner = (await getPartner(body.partner))._id;
+  }
+  for (const [k, max] of [['billNo', 80], ['paidTo', 120], ['note', 1000]]) {
     if (!partial || body[k] !== undefined) out[k] = str(body[k], max);
   }
   return out;
 }
 
-function listFilter(query = {}) {
+async function listFilter(query = {}) {
   const f = {};
-  if (query.category) f.category = String(query.category);
+  if (query.partner) {
+    if (query.partner === 'none') f.partner = null;
+    else if (isId(query.partner)) f.partner = new mongoose.Types.ObjectId(String(query.partner));
+    else throw httpError(400, 'Invalid partner');
+  }
   const range = {};
   if (query.from && T.isDayKey(String(query.from))) range.$gte = T.dayStart(String(query.from));
   if (query.to && T.isDayKey(String(query.to))) range.$lt = new Date(T.dayStart(String(query.to)).getTime() + T.DAY_MS);
@@ -56,29 +120,31 @@ function listFilter(query = {}) {
   const q = str(query.search, 100);
   if (q) {
     const rx = new RegExp(escapeRegex(q), 'i');
-    f.$or = [{ title: rx }, { billNo: rx }, { paidTo: rx }, { category: rx }, { note: rx }];
+    const partnerIds = await Partner.distinct('_id', { name: rx });
+    f.$or = [{ title: rx }, { billNo: rx }, { paidTo: rx }, { note: rx }, { partner: { $in: partnerIds } }];
   }
   return f;
 }
 
-/** List (newest first) + totals for the current filter and overall. */
+const PARTNER_FIELDS = 'name phone';
+
+/** List (newest first) + totals for the current filter and overall, and the partners. */
 async function list(query = {}) {
   const page = Math.max(1, parseInt(query.page, 10) || 1);
   const limit = Math.min(200, Math.max(1, parseInt(query.limit, 10) || 50));
-  const filter = listFilter(query);
+  const filter = await listFilter(query);
   const monthStart = T.monthStart(T.monthKey(new Date()));
-  const [rows, total, filtered, overall, byCategory, thisMonth] = await Promise.all([
-    Investment.find(filter).sort({ date: -1, createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+  const [rows, total, filtered, overall, thisMonth, partners] = await Promise.all([
+    Investment.find(filter).sort({ date: -1, createdAt: -1 }).skip((page - 1) * limit).limit(limit)
+      .populate({ path: 'partner', select: PARTNER_FIELDS, options: { withDeleted: true } }).lean(),
     Investment.countDocuments(filter),
     Investment.aggregate([{ $match: filter }, { $group: { _id: null, amount: { $sum: '$amount' } } }]),
     Investment.aggregate([{ $group: { _id: null, amount: { $sum: '$amount' }, count: { $sum: 1 }, first: { $min: '$date' } } }]),
-    Investment.aggregate([
-      { $group: { _id: '$category', amount: { $sum: '$amount' }, count: { $sum: 1 } } },
-      { $sort: { amount: -1 } },
-    ]),
     Investment.aggregate([{ $match: { date: { $gte: monthStart } } }, { $group: { _id: null, amount: { $sum: '$amount' } } }]),
+    listPartners(),
   ]);
   const all = overall[0] || { amount: 0, count: 0, first: null };
+  const assigned = partners.reduce((t, p) => t + p.invested, 0);
   return {
     data: rows,
     meta: {
@@ -92,28 +158,29 @@ async function list(query = {}) {
         since: all.first,
         thisMonth: round2(thisMonth[0] ? thisMonth[0].amount : 0),
         filteredTotal: round2(filtered[0] ? filtered[0].amount : 0),
-        byCategory: byCategory.map((c) => ({ category: c._id || 'Uncategorised', amount: round2(c.amount), count: c.count })),
+        // Bills saved before partners existed: shown so they can be given one.
+        noPartner: round2(all.amount - assigned),
       },
-      categories: [...new Set([...SUGGESTED_CATEGORIES, ...byCategory.map((c) => c._id).filter(Boolean)])],
+      partners,
     },
   };
 }
 
 async function get(id) {
-  if (!mongoose.Types.ObjectId.isValid(String(id))) throw httpError(400, 'Invalid id');
-  const row = await Investment.findById(id).lean();
+  if (!isId(id)) throw httpError(400, 'Invalid id');
+  const row = await Investment.findById(id).populate({ path: 'partner', select: PARTNER_FIELDS, options: { withDeleted: true } }).lean();
   if (!row) throw httpError(404, 'Investment not found');
   return row;
 }
 
 async function create(body, { userId, attachments = [] }) {
-  const doc = await Investment.create({ ...clean(body), attachments, createdBy: userId || null });
-  return doc.toObject();
+  const doc = await Investment.create({ ...(await clean(body)), attachments, createdBy: userId || null });
+  return get(doc._id);
 }
 
 async function update(id, body, { userId, attachments = [] }) {
   await get(id);
-  const set = { ...clean(body, { partial: true }), updatedBy: userId || null };
+  const set = { ...(await clean(body, { partial: true })), updatedBy: userId || null };
   // Keep the bills the user did not remove (`keepAttachments` = JSON array of urls).
   let keep = null;
   if (body.keepAttachments !== undefined) {
@@ -126,7 +193,8 @@ async function update(id, body, { userId, attachments = [] }) {
   const current = await Investment.findById(id).select('attachments').lean();
   const kept = keep ? (current.attachments || []).filter((u) => keep.includes(u)) : current.attachments || [];
   set.attachments = [...kept, ...attachments];
-  return Investment.findByIdAndUpdate(id, { $set: set }, { new: true }).lean();
+  await Investment.updateOne({ _id: id }, { $set: set });
+  return get(id);
 }
 
 async function remove(id, { userId }) {
@@ -137,16 +205,20 @@ async function remove(id, { userId }) {
 
 function toCsv(rows) {
   const esc = (v) => `"${String(v === undefined || v === null ? '' : v).replace(/"/g, '""')}"`;
-  const lines = [['Date', 'What', 'Category', 'Amount (Rs)', 'Bill no', 'Paid to', 'Note'].map(esc).join(',')];
+  const lines = [['Date', 'What', 'Partner', 'Amount (Rs)', 'Bill no', 'Paid to', 'Note'].map(esc).join(',')];
   for (const r of rows) {
-    lines.push([T.dayKey(r.date), r.title, r.category, r.amount, r.billNo, r.paidTo, r.note].map(esc).join(','));
+    lines.push([T.dayKey(r.date), r.title, r.partner ? r.partner.name : '', r.amount, r.billNo, r.paidTo, r.note].map(esc).join(','));
   }
   return lines.join('\n');
 }
 
 async function exportCsv(query = {}) {
-  const rows = await Investment.find(listFilter(query)).sort({ date: -1 }).lean();
+  const rows = await Investment.find(await listFilter(query)).sort({ date: -1 })
+    .populate({ path: 'partner', select: 'name', options: { withDeleted: true } }).lean();
   return toCsv(rows);
 }
 
-module.exports = { list, get, create, update, remove, exportCsv, SUGGESTED_CATEGORIES };
+module.exports = {
+  list, get, create, update, remove, exportCsv,
+  listPartners, createPartner, updatePartner, removePartner,
+};

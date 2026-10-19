@@ -283,7 +283,7 @@ All under `/api`, permission-gated per §5.
 | H. HR & Assets | `employees` (+ `:id/status`, `:id/photo`, `:id/documents` (images or PDF), `:id/contract`, `:id/contract/issue`, `:id/login` (create / unlink the staff login), linkable users); `contract-templates`; `assets` (+ summary, export, maintenance, dispose, photos); `asset-categories` |
 | HR time & pay | `shifts`, `holidays` (+ `pakistan`), `roster` (+ `cells`, `copy-week`), `hr-policies` (+ `employees`, `:id/assign`, `:id/default`, `:id/duplicate`), `hr/employees/:id/time-settings` (fingers on file in `fingerprint.list`); `attendance` (board, month sheet, records, `corrections`, overtime approve/reject, fix-before-payroll); `payroll/runs` (+ `:id/regenerate`, `:id/lines/:lineId`, `:id/approve`, `:id/reopen`, `:id/pay`, `:id/export`, `:id/lines/:lineId/payslip`), `payroll/employees`, `salary-advances` (+ `:id/cancel`), `payroll-deductions` (+ `:id/approve`, `:id/waive`) |
 | Desktop attendance app | `desktop/session` (+ `renew`), `desktop/employees`, `desktop/fingerprints` (`?updatedSince=`; `POST :employeeId` enrol, `DELETE :employeeId/:finger` remove — also from the employee profile), `desktop/punch` (fingerprint only, offline `at` ≤ 48 h, `clientId` idempotent), `desktop/board` |
-| Finance | `investments` (+ `:id`, `export`; the list returns the total and by-category; bills = images / PDF) |
+| Finance | `investment-partners` (list with each partner's total + share, create, edit, delete only without bills); `investments` (+ `:id`, `export`; partner required; `?partner=<id>|none`; list returns the total and `partners`; bills = images / PDF) |
 
 ## 9. Settings (AppConfig keys, `services/configService.js`)
 

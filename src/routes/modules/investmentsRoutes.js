@@ -1,5 +1,6 @@
-// Investment: money put into the shop, one entry per bill, with the running total.
-// (/api/investments). Permission `investments` (owner by default).
+// Investment: money put into the shop, one entry per bill, each by a partner,
+// with the running total (/api/investments, /api/investment-partners).
+// Permission `investments` (owner by default).
 const express = require('express');
 const { staff, can, handle } = require('./_access');
 const { documentUploadArray } = require('../../helper/upload');
@@ -12,6 +13,24 @@ const router = express.Router();
 const upload = (mw) => (req, res, next) =>
   mw(req, res, (err) => (err ? res.status(400).json({ success: false, message: err.message }) : next()));
 
+// ---- Partners (who put the money in) ----
+router.get('/investment-partners', ...staff, can('investments', 'view'), handle(async (req, res) => {
+  res.json({ success: true, data: await svc.listPartners() });
+}));
+
+router.post('/investment-partners', ...staff, can('investments', 'create'), handle(async (req, res) => {
+  res.status(201).json({ success: true, data: await svc.createPartner(req.body || {}, { userId: req.access.userId }), message: 'Partner added' });
+}));
+
+router.put('/investment-partners/:id', ...staff, can('investments', 'edit'), handle(async (req, res) => {
+  res.json({ success: true, data: await svc.updatePartner(req.params.id, req.body || {}, { userId: req.access.userId }), message: 'Partner saved' });
+}));
+
+router.delete('/investment-partners/:id', ...staff, can('investments', 'delete'), handle(async (req, res) => {
+  res.json({ success: true, data: await svc.removePartner(req.params.id, { userId: req.access.userId }), message: 'Partner removed' });
+}));
+
+// ---- Investment bills ----
 router.get('/investments', ...staff, can('investments', 'view'), handle(async (req, res) => {
   res.json({ success: true, ...(await svc.list(req.query)) });
 }));
