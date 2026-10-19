@@ -81,19 +81,11 @@ const WEBSITE_DEFAULTS = {
       { name: 'Seasonal', text: 'Items for the season and for festivals.', imageUrl: '' },
     ],
   },
+  // Not shown on the website (owner removed the Offers section).
   offers: {
-    show: true,
+    show: false,
     heading: 'Offers',
-    items: [
-      {
-        title: 'Save on bigger shopping',
-        text: 'Offers like 10% off on bigger shopping. See in store for details.',
-        imageUrl: '',
-        active: true,
-        startsOn: '',
-        endsOn: '',
-      },
-    ],
+    items: [],
   },
   gallery: {
     show: true,
