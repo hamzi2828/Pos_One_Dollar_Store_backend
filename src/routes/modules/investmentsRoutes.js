@@ -1,5 +1,5 @@
 // Investment: money put into the shop, one entry per bill, each by a partner,
-// with the running total (/api/investments, /api/investment-partners).
+// paid in parts, with the running total (/api/investments, /api/investment-partners).
 // Permission `investments` (owner by default).
 const express = require('express');
 const { staff, can, handle } = require('./_access');
@@ -57,6 +57,17 @@ router.put('/investments/:id', ...staff, can('investments', 'edit'), upload(docu
 
 router.delete('/investments/:id', ...staff, can('investments', 'delete'), handle(async (req, res) => {
   res.json({ success: true, data: await svc.remove(req.params.id, { userId: req.access.userId }) });
+}));
+
+// ---- Part payments on a bill (pay what is left in parts; undo a wrong one) ----
+router.post('/investments/:id/payments', ...staff, can('investments', 'edit'), handle(async (req, res) => {
+  const data = await svc.addPayment(req.params.id, req.body || {}, { userId: req.access.userId });
+  res.status(201).json({ success: true, data, message: 'Payment saved' });
+}));
+
+router.delete('/investments/:id/payments/:paymentId', ...staff, can('investments', 'delete'), handle(async (req, res) => {
+  const data = await svc.removePayment(req.params.id, req.params.paymentId, { userId: req.access.userId });
+  res.json({ success: true, data, message: 'Payment removed' });
 }));
 
 module.exports = router;
