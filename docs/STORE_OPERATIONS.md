@@ -281,6 +281,9 @@ All under `/api`, permission-gated per §5.
 | F. Reports | `analytics/demand` (+ `settings`, `export`), `analytics/trends` (+ `product`), `analytics/slow-moving` (+ `settings`), `analytics/expenses`, `analytics/footfall` (+ `entries`), `analytics/category-performance`, `analytics/filters`; `category-assignments` (+ `employees`, `categories`) — every report has `/export` (CSV) |
 | G. Stock ops | `stock-ops/lookup/:code`, `stock-ops/products`; `damages` (+ `daily`, `daily/export`, `settings`, `:id/approve`, `:id/reject`); `shop-use` (+ `:id/void`); `stock-adjustments` (+ `:id/apply`, `:id/cancel`); `stock-movements` (+ `export`, `timeline/:productId`); `product-insights/:productId` |
 | H. HR & Assets | `employees` (+ `:id/status`, `:id/photo`, `:id/documents` (images or PDF), `:id/contract`, `:id/contract/issue`, `:id/login` (create / unlink the staff login), linkable users); `contract-templates`; `assets` (+ summary, export, maintenance, dispose, photos); `asset-categories` |
+| HR time & pay | `shifts`, `holidays` (+ `pakistan`), `roster` (+ `cells`, `copy-week`), `hr-policies` (+ `employees`, `:id/assign`, `:id/default`, `:id/duplicate`), `hr/employees/:id/time-settings` (fingers on file in `fingerprint.list`); `attendance` (board, month sheet, records, `corrections`, overtime approve/reject, fix-before-payroll); `payroll/runs` (+ `:id/regenerate`, `:id/lines/:lineId`, `:id/approve`, `:id/reopen`, `:id/pay`, `:id/export`, `:id/lines/:lineId/payslip`), `payroll/employees`, `salary-advances` (+ `:id/cancel`), `payroll-deductions` (+ `:id/approve`, `:id/waive`) |
+| Desktop attendance app | `desktop/session` (+ `renew`), `desktop/employees`, `desktop/fingerprints` (`?updatedSince=`; `POST :employeeId` enrol, `DELETE :employeeId/:finger` remove — also from the employee profile), `desktop/punch` (fingerprint only, offline `at` ≤ 48 h, `clientId` idempotent), `desktop/board` |
+| Finance | `investments` (+ `:id`, `export`; the list returns the total and by-category; bills = images / PDF) |
 
 ## 9. Settings (AppConfig keys, `services/configService.js`)
 
@@ -344,7 +347,7 @@ All rules are **HR Policies** the shop creates (HR → Policies) and assigns per
 
 | Module | Backend | Frontend |
 |---|---|---|
-| **R. Shifts, roster & policies** | `routes/modules/shiftsRoutes.js`, `controller/store/{shift,holiday,roster,hrPolicy,timeSettings}*.js`, `services/hr/rosterService.js` | `admin/hr/roster/**`, `admin/hr/policies/**`, "Time & pay" card + PIN on `admin/hr/employees/**` |
+| **R. Shifts, roster & policies** | `routes/modules/shiftsRoutes.js`, `controller/store/{shift,holiday,roster,hrPolicy,timeSettings}*.js`, `services/hr/rosterService.js` | `admin/hr/roster/**`, `admin/hr/policies/**`, "Time & pay" card (fingerprint status + Remove) on `admin/hr/employees/**` |
 | **A. Attendance** | `routes/modules/attendanceRoutes.js`, `controller/store/attendance*.js`, `services/hr/attendanceService.js` | `admin/hr/attendance/**` |
 | **D. Desktop app** | `routes/modules/desktopRoutes.js`, `controller/store/desktop*.js`, `services/hr/desktopService.js`, `models/employeeFingerprint.js` | `pos_desktop/` (C# WinForms) |
 | **P. Payroll** | `routes/modules/payrollRoutes.js`, `controller/store/payroll*.js`, `controller/store/salaryAdvance*.js`, `models/payrollRun.js`, `models/salaryAdvance.js`, `services/hr/payrollService.js`, minimal hook in `services/tillService.js` (verify → till-shortage deduction) | `admin/hr/payroll/**`, `admin/hr/advances/**` |

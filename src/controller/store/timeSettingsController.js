@@ -34,14 +34,15 @@ function fingerprintModel() {
   }
 }
 
-/** { enrolled, fingers, lastEnrolledAt } for one employee. */
+/** { enrolled, fingers, lastEnrolledAt, list: [{ finger, enrolledAt }] } for one employee. */
 async function fingerprintOf(employeeId) {
   const Model = fingerprintModel();
-  if (!Model) return { enrolled: false, fingers: 0, lastEnrolledAt: null };
-  const rows = await Model.find({ employee: employeeId, deletedAt: null }) // removed fingers keep their row with deletedAt.select('finger enrolledAt createdAt').lean();
-  const fingers = new Set(rows.map((r, i) => (r.finger !== undefined && r.finger !== null ? String(r.finger) : `#${i}`))).size;
-  const times = rows.map((r) => new Date(r.enrolledAt || r.createdAt || 0).getTime()).filter((t) => t > 0);
-  return { enrolled: fingers > 0, fingers, lastEnrolledAt: times.length ? new Date(Math.max(...times)) : null };
+  if (!Model) return { enrolled: false, fingers: 0, lastEnrolledAt: null, list: [] };
+  // Removed fingers keep their row with deletedAt set.
+  const rows = await Model.find({ employee: employeeId, deletedAt: null }).select('finger enrolledAt createdAt').lean();
+  const list = rows.map((r) => ({ finger: String(r.finger), enrolledAt: r.enrolledAt || r.createdAt || null }));
+  const times = list.map((r) => new Date(r.enrolledAt || 0).getTime()).filter((t) => t > 0);
+  return { enrolled: list.length > 0, fingers: list.length, lastEnrolledAt: times.length ? new Date(Math.max(...times)) : null, list };
 }
 
 const policyOption = (p) => ({ _id: String(p._id), name: p.name, isDefault: !!p.isDefault, summary: rules.summarize(p) });
