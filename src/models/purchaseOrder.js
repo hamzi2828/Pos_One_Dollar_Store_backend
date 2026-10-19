@@ -6,9 +6,9 @@
 // builty freight, loading / unloading, labour, misc) go in `charges[]` and are
 // spread over the goods as landed cost (services/purchasing/costing.js).
 //
-//   open      → buyer adds bills, items, charges
-//   closed    → builty submitted; bills posted to the vendor ledger; a goods
-//               receipt (GRN) waits for the receiver
+//   open      → buyer adds bills (bill amount, boxes, paid now; items optional), charges
+//   closed    → "sent to warehouse" (builty optional); bills + market payments
+//               posted to the vendor ledger; a goods receipt (GRN) waits
 //   receiving → receiver started verifying the GRN
 //   received  → GRN completed, stock is in the branch warehouse
 //   cancelled → open PO dropped, or closed PO cancelled before receiving
@@ -54,12 +54,21 @@ const billSchema = new mongoose.Schema({
   vendorName: { type: String, default: '' },
   billNo: { type: String, default: '', trim: true },
   billDate: { type: Date, default: null },
-  cartons: { type: Number, min: 0, default: 0 },
+  cartons: { type: Number, min: 0, default: 0 }, // boxes bought from this vendor (UI: "Boxes")
   photos: { type: [String], default: [] },
-  items: { type: [itemSchema], default: [] },
-  subtotal: { type: Number, min: 0, default: 0 }, // sum of lineTotal
+  // Total written on the vendor's paper bill. When > 0 it IS the bill total
+  // (items are optional: they can be entered while unpacking).
+  billAmount: { type: Number, min: 0, default: 0 },
+  items: { type: [itemSchema], default: [] }, // optional "expected items"
+  subtotal: { type: Number, min: 0, default: 0 }, // sum of lineTotal (items typed)
   discount: { type: Number, min: 0, default: 0 }, // bill discount (Rs)
-  billTotal: { type: Number, min: 0, default: 0 }, // subtotal - discount = what we owe
+  // What we owe: billAmount > 0 ? billAmount : subtotal - discount (costing.recalcBill)
+  billTotal: { type: Number, min: 0, default: 0 },
+  // Paid to the vendor at the market; recorded as a VendorPayment when the trip is sent.
+  paidNow: { type: Number, min: 0, default: 0 },
+  paidMethod: { type: String, default: 'cash' }, // VendorPayment.METHODS
+  paidBank: { type: ObjectId, ref: 'Bank', default: null },
+  payment: { type: ObjectId, ref: 'VendorPayment', default: null }, // set on send, cleared on reopen / cancel
   notes: { type: String, default: '' },
   ledgerEntry: { type: ObjectId, ref: 'VendorLedgerEntry', default: null }, // set on close
   createdBy: { type: ObjectId, ref: 'User', default: null },

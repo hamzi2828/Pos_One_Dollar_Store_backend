@@ -22,6 +22,7 @@ const MODULES = [
   'payrollRoutes',
   'investmentsRoutes',
   'desktopRoutes',
+  'websiteRoutes',
 ];
 
 for (const name of MODULES) {

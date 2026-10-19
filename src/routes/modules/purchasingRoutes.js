@@ -5,7 +5,7 @@
 // `goods_receiving` (view / edit). Every query is branch scoped (req.access).
 // Permission checks run BEFORE the upload middleware.
 const express = require('express');
-const { staff, can, handle } = require('./_access');
+const { staff, can, superAdmin, handle } = require('./_access');
 const { uploadArray } = require('../../helper/upload');
 const po = require('../../controller/store/purchaseOrderController');
 const grn = require('../../controller/store/receivingController');
@@ -17,6 +17,9 @@ const GRN = 'goods_receiving';
 
 // ----- Purchase orders (static paths before /:id)
 router.get('/purchase-orders/meta', ...staff, can(PO, 'view'), handle(po.meta));
+// Owner-only rules (e.g. someone other than the buyer must receive the goods).
+router.get('/purchase-orders/settings', ...staff, can([PO, GRN], 'view'), handle(po.settings));
+router.put('/purchase-orders/settings', ...staff, superAdmin, handle(po.updateSettings));
 router.get('/purchase-orders/product-search', ...staff, can(PO, 'view'), handle(po.productSearch));
 router.get('/purchase-orders', ...staff, can(PO, 'view'), handle(po.list));
 router.post('/purchase-orders', ...staff, can(PO, 'create'), handle(po.create));
@@ -51,5 +54,11 @@ router.put('/receiving/:id/lines', ...staff, can(GRN, 'edit'), handle(grn.saveCo
 router.post('/receiving/:id/scan', ...staff, can(GRN, 'edit'), handle(grn.scan));
 router.post('/receiving/:id/photos', ...staff, can(GRN, 'edit'), uploadArray('photos', 5), handle(grn.addPhotos));
 router.post('/receiving/:id/complete', ...staff, can(GRN, 'edit'), handle(grn.complete));
+// Simple buying flow: check boxes → enter goods (stock in per entry, shelf optional) → finish
+router.post('/receiving/:id/boxes', ...staff, can(GRN, 'edit'), handle(grn.checkBoxes));
+router.get('/receiving/:id/lookup', ...staff, can(GRN, 'edit'), handle(grn.lookup));
+router.post('/receiving/:id/new-product', ...staff, can(GRN, 'edit'), handle(grn.newProduct));
+router.post('/receiving/:id/entries', ...staff, can(GRN, 'edit'), handle(grn.addEntry));
+router.delete('/receiving/:id/entries/:entryId', ...staff, can(GRN, 'edit'), handle(grn.undoEntry));
 
 module.exports = router;

@@ -171,14 +171,20 @@ const slugify = (s) =>
  * GRN). Reuses the normal product create service, so short code, SKU and scan
  * codes are generated exactly as on the product form.
  */
-async function createProductForLine(input, { branchId }) {
+async function createProductForLine(input, { branchId, defaultCategory = '' }) {
   const name = toText(input.name, 200);
-  const category = toText(input.category, 100);
+  const category = toText(input.category, 100) || defaultCategory;
   if (!name) throw httpError('Product name is required');
   if (!category) throw httpError('Category is required');
   const price = toAmount(input.salePrice ?? input.price, 'Sale price');
   if (!(price > 0)) throw httpError('Sale price must be more than 0');
   const piecesPerBox = toAmount(input.piecesPerBox, 'Pieces per box', { int: true, fallback: 1, min: 1 });
+  // Optional maker's barcode printed on the item (must not belong to another product).
+  const barcode = normalizeCode(input.barcode);
+  if (barcode) {
+    const taken = await Product.exists({ scanCodes: barcode }).setOptions({ withDeleted: true });
+    if (taken) throw httpError(`Barcode ${barcode} is already used by another product. Scan it to find that product.`, 409, 'DUPLICATE_CODE');
+  }
 
   const createProductService = require('../products/createProductService');
   const random = Math.random().toString(36).slice(2, 7);
@@ -190,6 +196,7 @@ async function createProductForLine(input, { branchId }) {
       price,
       stock: 0,
       piecesPerBox,
+      ...(barcode ? { barcodes: [{ code: barcode, qty: 1 }] } : {}),
       // 0 stock: receiving the GRN republishes it automatically
       status: 'out_of_stock',
     },

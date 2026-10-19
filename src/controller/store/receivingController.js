@@ -26,6 +26,29 @@ module.exports = {
 
   complete: async (req, res) => {
     const grn = await service.complete(req, req.params.id, req.body);
-    ok(res, grn, { alreadyCompleted: !!grn.alreadyCompleted });
+    ok(res, grn, { alreadyCompleted: !!grn.alreadyCompleted, warnings: grn.warnings || [] });
   },
+
+  // ----- simple buying flow (docs/BUYING_FLOW.md)
+
+  // POST /receiving/:id/boxes { boxes: [{ bill, received }], note? } -> data: GRN, warnings
+  checkBoxes: async (req, res) => {
+    const { grn, warnings } = await service.checkBoxes(req, req.params.id, req.body);
+    ok(res, grn, { warnings });
+  },
+
+  // GET /receiving/:id/lookup?code=&bill= -> data: units[]
+  lookup: async (req, res) => ok(res, await service.lookup(req, req.params.id, req.query)),
+
+  // POST /receiving/:id/new-product -> data: unit (same shape as lookup)
+  newProduct: async (req, res) => res.status(201).json({ success: true, data: await service.newProduct(req, req.params.id, req.body) }),
+
+  // POST /receiving/:id/entries -> data: { entry, grn, tags, warnings }
+  addEntry: async (req, res) => {
+    const out = await service.addEntry(req, req.params.id, req.body);
+    res.status(out.repeated ? 200 : 201).json({ success: true, data: out });
+  },
+
+  // DELETE /receiving/:id/entries/:entryId -> data: { entry, grn }
+  undoEntry: async (req, res) => ok(res, await service.undoEntry(req, req.params.id, req.params.entryId)),
 };

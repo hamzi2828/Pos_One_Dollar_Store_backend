@@ -11,6 +11,9 @@ Money is PKR. Stock is always counted in **pieces**.
 
 ## 1. The flow of goods (and the documents for each step)
 
+> The shop's day-to-day buying steps (buy → send → check boxes → unpack & enter with tags → shelf now or later)
+> are described in `docs/BUYING_FLOW.md`; stock now goes into the warehouse per entry while unpacking.
+
 ```
 Vendor bill(s) ──► Purchase Order (multi-vendor, cartons, bill photos, charges)
                         │ close + submit builty (transport receipt)
@@ -274,7 +277,7 @@ All under `/api`, permission-gated per §5.
 | Module | Endpoints |
 |---|---|
 | A. Racks | `racks` (list, get, create, update, delete), `racks/generate`, `racks/labels`, `racks/:id/shelves`, `racks/shelves/:id`; `locations/shelves`, `locations/shelves/:id`, `locations/scan/:code`, `locations/products`, `locations/products/:id`, `locations/warehouse`, `locations/activity`, `locations/putaway` (+ `/bulk`), `locations/move`, `locations/home-shelf` |
-| B. Purchasing | `purchase-orders` (+ `meta`, `product-search`, `:id/costing`, `:id/bills`, `:id/bills/:billId/items`, `:id/bills/:billId/new-product`, `:id/charges`, `:id/close`, `:id/reopen`, `:id/cancel`); `receiving` (+ `:id/start`, `:id/lines`, `:id/scan`, `:id/photos`, `:id/complete`) |
+| B. Purchasing | `purchase-orders` (+ `meta`, `product-search`, `:id/costing`, `:id/bills`, `:id/bills/:billId/items`, `:id/bills/:billId/new-product`, `:id/charges`, `:id/close`, `:id/reopen`, `:id/cancel`); `receiving` (+ `:id/boxes` (check boxes), `:id/lookup`, `:id/new-product`, `:id/entries` (+ `:entryId` DELETE = undo), `:id/complete` (finish + claims); old counting: `:id/start`, `:id/lines`, `:id/scan`, `:id/photos`) — simple buying flow: see `docs/BUYING_FLOW.md` |
 | C. Vendors | `vendors` (+ `:id/status`, `:id/ledger`, `:id/ledger/export`, `:id/ledger/:entryId/void`, `:id/adjustments`, `:id/products`), `vendor-products/search`; `vendor-payments` (+ `banks`, `:id/void`); `vendor-returns` (+ `:id/complete`, `:id/cancel`); `consignments` (+ `summary`, `vendors/:id/stock`, `returns`, `:id/post`, `settlements`, `settlements/:id/void`) |
 | D. POS & Pricing | `pos/quote`, `pos/orders` (+ `:id/payment`, `:id/refund`, `:id/whatsapp`), `pos/held-orders`; `discount-rules` (+ `preview`, `:id/active`); `price-tiers` (+ `candidates`, `product/:id`, `:id/assign`, `unassign`) |
 | E. Cash & Notifications | `counters` (+ `staff-options`, `check-cutoffs` cron); `till-sessions` (+ `my`, `my/history`, `open`, `:id/close`, `:id/verify`, `:id/dispute`, `report`, `report/export`); `notifications` (+ `unread-count`, `:id/read`, `read-all`); `whatsapp/settings`, `whatsapp/test`, `whatsapp/outbox` (+ retry), `whatsapp/orders/:id/resend` |

@@ -1,13 +1,20 @@
 // src/models/goodsReceipt.js
 // Goods receipt note (GRN). OWNER: Purchasing module.
 //
-// Created when a purchase order is closed (builty submitted). The receiver —
-// who may be a different person than the buyer — counts every line:
-//   received = pieces that arrived, damaged = arrived broken (not stocked),
-//   short    = expected − received, accepted = received − damaged.
-// Completing the GRN puts the accepted pieces into the branch WAREHOUSE at
-// their landed cost (all PO charges spread over the accepted pieces) and
-// claims short + damaged pieces back from each vendor with a debit note.
+// Created when a purchase order is sent to the warehouse (closed).
+//
+// New flow (docs/BUYING_FLOW.md):
+//   1. check boxes  — boxes[] per vendor bill (expected vs received)
+//   2. enter goods  — entries[]: each saved entry puts its good pieces into the
+//                     WAREHOUSE at once (landed cost = costPrice × (1 + chargeRate))
+//                     and may put some on a shelf; typed items (lines[]) are just
+//                     a checklist that entries tick off
+//   3. finish       — per bill: billTotal − entered value is claimed back from
+//                     the vendor (debit note) when the receiver says so
+//
+// Old flow (still works for GRNs counted line by line, no entries): the receiver
+// counts every line (received / damaged / short); completing puts the accepted
+// pieces in at landed cost and claims short + damaged pieces with a debit note.
 //
 //   pending → in_progress → completed      (cancelled: PO cancelled before start)
 const mongoose = require('mongoose');
@@ -73,10 +80,71 @@ const claimSchema = new mongoose.Schema(
     shortQty: { type: Number, default: 0 },
     damagedQty: { type: Number, default: 0 },
     amount: { type: Number, default: 0 },
+    // new flow: bill total vs value entered (good pieces × vendor price)
+    billTotal: { type: Number, default: 0 },
+    entered: { type: Number, default: 0 },
     ledgerEntry: { type: ObjectId, ref: 'VendorLedgerEntry', default: null },
   },
   { _id: false }
 );
+
+// Boxes per vendor bill, checked when the goods reach the warehouse.
+const boxSchema = new mongoose.Schema(
+  {
+    bill: { type: ObjectId, required: true }, // PurchaseOrder.bills._id
+    vendor: { type: ObjectId, ref: 'Vendor', default: null },
+    vendorName: { type: String, default: '' },
+    billNo: { type: String, default: '' },
+    billTotal: { type: Number, default: 0 }, // frozen at send (what we owe on this bill)
+    expected: { type: Number, min: 0, default: 0 }, // bill cartons
+    received: { type: Number, min: 0, default: 0 },
+  },
+  { _id: false }
+);
+
+// One unpacked product: its good pieces go into the warehouse when it is saved.
+const entrySchema = new mongoose.Schema({
+  entryNo: { type: Number, required: true },
+  requestId: { type: String, default: '' }, // optional client key: a resent request returns this entry
+  bill: { type: ObjectId, required: true },
+  vendor: { type: ObjectId, ref: 'Vendor', default: null },
+  vendorName: { type: String, default: '' },
+  billNo: { type: String, default: '' },
+
+  product: { type: ObjectId, ref: 'Product', required: true },
+  variantId: { type: String, default: null },
+  productName: { type: String, default: '' },
+  code: { type: String, default: '' }, // short code
+  salePrice: { type: Number, default: 0 },
+
+  qty: { type: Number, min: 1, required: true }, // pieces taken out of the boxes
+  damagedQty: { type: Number, min: 0, default: 0 }, // not stocked
+  stockQty: { type: Number, min: 0, default: 0 }, // qty − damaged = pieces into the warehouse
+  costPrice: { type: Number, min: 0, required: true }, // vendor price per piece
+  landedUnitCost: { type: Number, min: 0, default: 0 }, // costPrice × (1 + chargeRate)
+  value: { type: Number, min: 0, default: 0 }, // qty × costPrice
+
+  // Expected (typed) line ticked off by this entry, and by how much
+  line: { type: ObjectId, default: null },
+  lineQty: { type: Number, min: 0, default: 0 },
+  lineDamaged: { type: Number, min: 0, default: 0 },
+
+  posted: { type: Boolean, default: false }, // stock received (never twice)
+  postedAt: { type: Date, default: null },
+  movement: { type: ObjectId, ref: 'StockMovement', default: null },
+  shelved: { type: Number, min: 0, default: 0 }, // put on a shelf in the same step
+  shelf: { type: ObjectId, ref: 'Shelf', default: null },
+  shelfCode: { type: String, default: '' },
+
+  createdBy: { type: ObjectId, ref: 'User', default: null },
+  createdByName: { type: String, default: '' },
+  createdAt: { type: Date, default: Date.now },
+  undone: { type: Boolean, default: false },
+  undoneAt: { type: Date, default: null },
+  undoneBy: { type: ObjectId, ref: 'User', default: null },
+  undoneByName: { type: String, default: '' },
+  undoMovement: { type: ObjectId, ref: 'StockMovement', default: null },
+});
 
 const goodsReceiptSchema = new mongoose.Schema(
   {
@@ -101,9 +169,19 @@ const goodsReceiptSchema = new mongoose.Schema(
     },
     allocationMethod: { type: String, enum: ['value', 'quantity', 'carton'], default: 'value' },
     chargesTotal: { type: Number, default: 0 },
+    goodsTotal: { type: Number, default: 0 }, // Σ bill totals at send
+    // chargesTotal / goodsTotal, frozen at send (4 decimals). null = older GRN (filled on first entry).
+    chargeRate: { type: Number, default: null },
     expectedCartons: { type: Number, default: 0 },
 
-    lines: { type: [lineSchema], default: [] },
+    boxes: { type: [boxSchema], default: [] },
+    boxesCheckedAt: { type: Date, default: null },
+    boxesCheckedBy: { type: ObjectId, ref: 'User', default: null },
+    boxesNote: { type: String, default: '' },
+
+    lines: { type: [lineSchema], default: [] }, // expected items (typed on the trip; may be empty)
+    entries: { type: [entrySchema], default: [] },
+    entrySeq: { type: Number, default: 0 }, // last entryNo used
     cartonsReceived: { type: Number, min: 0, default: 0 },
     photos: { type: [String], default: [] },
     notes: { type: String, default: '' },
@@ -119,6 +197,12 @@ const goodsReceiptSchema = new mongoose.Schema(
       accepted: { type: Number, default: 0 },
       stockValue: { type: Number, default: 0 }, // landed value put into stock
       claimed: { type: Number, default: 0 }, // debit notes total
+      // new flow
+      boxesExpected: { type: Number, default: 0 },
+      boxesReceived: { type: Number, default: 0 },
+      pieces: { type: Number, default: 0 }, // pieces entered (incl. damaged)
+      entered: { type: Number, default: 0 }, // value entered (good pieces × vendor price)
+      billTotal: { type: Number, default: 0 },
     },
 
     startedAt: { type: Date, default: null },

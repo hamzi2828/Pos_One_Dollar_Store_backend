@@ -10,6 +10,8 @@ const ok = (res, data, extra = {}, status = 200) => res.status(status).json({ su
 
 module.exports = {
   meta: async (req, res) => ok(res, await service.meta()),
+  settings: async (req, res) => ok(res, await service.settings()),
+  updateSettings: async (req, res) => ok(res, await service.updateSettings(req, req.body || {})),
 
   // GET /purchase-orders/product-search?search=&ids=a,b
   productSearch: async (req, res) =>

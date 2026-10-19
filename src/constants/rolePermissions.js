@@ -149,6 +149,15 @@ const PERMISSION_SECTIONS = [
             { key: 'whatsapp', label: 'WhatsApp', actions: ['view', 'edit'] },
         ],
     },
+    {
+        key: 'website',
+        label: 'Website',
+        iconKey: 'website',
+        groups: [
+            // Public marketing website content (/admin/website). Owner only by default.
+            { key: 'website', label: 'Website', actions: ['view', 'edit'] },
+        ],
+    },
 ];
 
 /** Flat list of every permission group across every section. */

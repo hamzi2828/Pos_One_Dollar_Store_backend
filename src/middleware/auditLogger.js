@@ -57,7 +57,8 @@ const SEVERITY_MAP = {
 };
 
 // Routes to completely skip (health, static, audit logs themselves)
-const SKIP_PREFIXES = ['/uploads', '/health', '/admin/audit-logs', '/favicon'];
+// '/api/public': anonymous reads by the public marketing website (would flood the log).
+const SKIP_PREFIXES = ['/uploads', '/health', '/admin/audit-logs', '/favicon', '/api/public'];
 
 const AUTH_ACTIONS = new Set(['login']);
 const SENSITIVE_QUERY_KEYS = new Set(['password', 'token', 'secret', 'apikey', 'api_key', 'authorization']);

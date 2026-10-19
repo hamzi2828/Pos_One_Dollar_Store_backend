@@ -33,6 +33,20 @@ const settings = () =>
     requireDifferentReceiver: c['purchasing.requireDifferentReceiver'] === true || c['purchasing.requireDifferentReceiver'] === 'true',
   }));
 
+/** Owner-only purchasing rules (super admin route). */
+async function updateSettings(req, body = {}) {
+  const userId = h.userId(req);
+  if (body.requireDifferentReceiver !== undefined) {
+    await config.set('purchasing.requireDifferentReceiver', h.toBool(body.requireDifferentReceiver, false), userId);
+  }
+  if (body.minMarginPct !== undefined) {
+    const pct = Number(body.minMarginPct);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) throw httpError('Minimum margin must be between 0 and 100');
+    await config.set('purchasing.minMarginPct', pct, userId);
+  }
+  return settings();
+}
+
 const safeNotify = async (payload) => {
   try {
     await notificationService.notify(payload);
@@ -153,16 +167,60 @@ async function addItemsToBill(bill, inputs, branchId) {
   return added;
 }
 
-function applyBillFields(bill, body, vendor) {
+// UI words → VendorPayment.METHODS
+const METHOD_ALIASES = { bank_transfer: 'bank', transfer: 'bank', online: 'bank' };
+
+function paymentMethodOf(value) {
+  const VendorPayment = require('../../models/vendorPayment');
+  const raw = String(value || '').trim().toLowerCase() || 'cash';
+  const method = METHOD_ALIASES[raw] || raw;
+  if (!VendorPayment.METHODS.includes(method)) {
+    throw httpError(`Payment method must be one of: cash, bank_transfer, cheque, easypaisa, jazzcash, other`);
+  }
+  return method;
+}
+
+/** Bank id for the "paid now" payment (null = none). Checked here so sending the trip never fails on it. */
+async function loadPaidBank(value) {
+  if (!h.has(value)) return null;
+  if (!h.isId(value)) throw httpError('Choose a valid bank account');
+  const Bank = require('../../models/bank');
+  const bank = await Bank.findOne({ _id: value, isDeleted: { $ne: true } }).select('_id').lean();
+  if (!bank) throw httpError('Bank account not found', 404);
+  return bank._id;
+}
+
+/** Parse bill money fields once (outside the save-retry loop). */
+async function parseBillMoney(body) {
+  const out = {};
+  if (body.billAmount !== undefined) out.billAmount = h.toAmount(body.billAmount, 'Bill amount');
+  if (body.paidNow !== undefined) out.paidNow = h.toAmount(body.paidNow, 'Paid now');
+  if (body.paidMethod !== undefined) out.paidMethod = paymentMethodOf(body.paidMethod);
+  if (body.paidBank !== undefined) out.paidBank = await loadPaidBank(body.paidBank);
+  return out;
+}
+
+function applyBillFields(bill, body, vendor, money = {}) {
   if (vendor) {
     bill.vendor = vendor._id;
     bill.vendorName = vendor.name;
   }
   if (body.billNo !== undefined) bill.billNo = h.toText(body.billNo, 60);
   if (body.billDate !== undefined) bill.billDate = h.toDate(body.billDate, 'Bill date');
-  if (body.cartons !== undefined) bill.cartons = h.toAmount(body.cartons, 'Cartons', { int: true });
+  if (body.cartons !== undefined) bill.cartons = h.toAmount(body.cartons, 'Boxes', { int: true });
   if (body.discount !== undefined) bill.discount = h.toAmount(body.discount, 'Bill discount');
   if (body.notes !== undefined) bill.notes = h.toText(body.notes, 500);
+  Object.assign(bill, money);
+}
+
+/** Paid now can never be more than what the bill says we owe. */
+function assertPaidFits(bill) {
+  costing.recalcBill(bill);
+  if (bill.paidNow > 0 && bill.paidNow > bill.billTotal) {
+    throw httpError(
+      `Paid now (Rs ${bill.paidNow}) on the bill from ${bill.vendorName} is more than the bill total (Rs ${bill.billTotal}). Enter the bill amount first.`
+    );
+  }
 }
 
 const assertUniqueBillNo = (po, bill) => {
@@ -240,7 +298,16 @@ async function list(req) {
   const data = rows.map((po) => ({
     ...po,
     vendors: [...new Set((po.bills || []).map((b) => b.vendorName).filter(Boolean))],
-    bills: (po.bills || []).map((b) => ({ _id: b._id, vendor: b.vendor, vendorName: b.vendorName, billNo: b.billNo, cartons: b.cartons, billTotal: b.billTotal })),
+    bills: (po.bills || []).map((b) => ({
+      _id: b._id,
+      vendor: b.vendor,
+      vendorName: b.vendorName,
+      billNo: b.billNo,
+      cartons: b.cartons,
+      billAmount: b.billAmount || 0,
+      billTotal: b.billTotal,
+      paidNow: b.paidNow || 0,
+    })),
   }));
   return {
     data,
@@ -316,12 +383,14 @@ async function updateHeader(req, id, body = {}) {
 async function addBill(req, id, body = {}, photos = []) {
   const vendor = await loadVendor(body.vendorId || body.vendor);
   const items = h.toList(body.items);
+  const money = await parseBillMoney(body);
   const { po, result } = await mutateOpen(req, id, async (doc) => {
     doc.bills.push({ vendor: vendor._id, vendorName: vendor.name, photos, createdBy: h.userId(req) });
     const bill = doc.bills[doc.bills.length - 1];
-    applyBillFields(bill, body, null);
+    applyBillFields(bill, body, null, money);
     assertUniqueBillNo(doc, bill);
     await addItemsToBill(bill, items, doc.branch);
+    assertPaidFits(bill);
     doc.history.push(h.historyEntry(req, 'bill_added', `${vendor.name}${bill.billNo ? ` bill ${bill.billNo}` : ''}`));
     return bill._id;
   });
@@ -332,10 +401,12 @@ async function updateBill(req, id, billId, body = {}, photos = []) {
   const vendorId = body.vendorId || body.vendor;
   const vendor = vendorId ? await loadVendor(vendorId) : null;
   const remove = new Set(h.toList(body.removePhotos).map(String));
+  const money = await parseBillMoney(body);
   const { po } = await mutateOpen(req, id, async (doc) => {
     const bill = findBill(doc, billId);
-    applyBillFields(bill, body, vendor);
+    applyBillFields(bill, body, vendor, money);
     assertUniqueBillNo(doc, bill);
+    assertPaidFits(bill);
     if (remove.size) bill.photos = bill.photos.filter((p) => !remove.has(p));
     if (photos.length) bill.photos.push(...photos);
     if (bill.photos.length > 10) throw httpError('A bill can have at most 10 photos');
@@ -474,10 +545,72 @@ function grnLinesFrom(po) {
  * and create the goods receipt. Idempotent (unique ledger rows, one GRN per
  * PO), so a retry after a failure finishes the job without duplicates.
  */
+/** Reference of the "paid at the market" payment of a bill (also how a retry finds it). */
+const marketPaymentRef = (po, bill, index) => `${po.poNumber} bill ${bill.billNo || `#${index + 1}`}`;
+
+/**
+ * Record `bill.paidNow` as a vendor payment once (bill.payment set right after;
+ * a payment with the same reference is reused if we crashed in between).
+ */
+async function postMarketPayment(req, po, bill, index) {
+  if (!(bill.paidNow > 0) || bill.payment) return;
+  const VendorPayment = require('../../models/vendorPayment');
+  const paymentService = require('../vendors/paymentService');
+  const reference = marketPaymentRef(po, bill, index);
+  let payment = await VendorPayment.findOne({ vendor: bill.vendor, reference, status: 'active' }).select('_id').lean();
+  if (!payment) {
+    payment = await paymentService.recordPayment({
+      vendorId: bill.vendor,
+      branchId: po.branch,
+      amount: bill.paidNow,
+      method: bill.paidMethod || 'cash',
+      bankId: bill.paidBank || null,
+      reference,
+      date: bill.billDate || po.closedAt || new Date(),
+      notes: `Paid at the market · ${po.poNumber}`,
+      userId: h.userId(req),
+    });
+  }
+  bill.payment = payment._id;
+  await PurchaseOrder.updateOne({ _id: po._id, 'bills._id': bill._id }, { $set: { 'bills.$.payment': payment._id } });
+}
+
+/** Void the market payment of a bill (reopen / cancel). Already voided is fine. */
+async function voidMarketPayment(req, po, bill, index, reason) {
+  const VendorPayment = require('../../models/vendorPayment');
+  const paymentService = require('../vendors/paymentService');
+  const ids = new Set(bill.payment ? [String(bill.payment)] : []);
+  const found = await VendorPayment.find({ vendor: bill.vendor, reference: marketPaymentRef(po, bill, index), status: 'active' })
+    .select('_id')
+    .lean();
+  found.forEach((p) => ids.add(String(p._id)));
+  for (const id of ids) {
+    try {
+      await paymentService.voidPayment(req, id, { reason });
+    } catch (err) {
+      if (err.code !== 'ALREADY_VOIDED' && err.status !== 404) throw err;
+    }
+  }
+  bill.payment = null;
+}
+
+/** GRN boxes checklist: one row per vendor bill. */
+const grnBoxesFrom = (po) =>
+  po.bills.map((b) => ({
+    bill: b._id,
+    vendor: b.vendor,
+    vendorName: b.vendorName,
+    billNo: b.billNo,
+    billTotal: b.billTotal,
+    expected: b.cartons || 0,
+    received: 0,
+  }));
+
 async function finalizeClose(req, po) {
   const refNo = po.poNumber;
-  for (const bill of po.bills) {
+  for (const [index, bill] of po.bills.entries()) {
     if (!(bill.billTotal > 0)) continue;
+    const what = bill.items.length ? `${bill.items.length} items, ${bill.cartons || 0} boxes` : `${bill.cartons || 0} boxes`;
     const entry = await vendorLedger.post({
       vendorId: bill.vendor,
       type: 'bill',
@@ -489,11 +622,12 @@ async function finalizeClose(req, po) {
       refType: 'PurchaseOrder',
       refId: bill._id,
       refNo,
-      description: `Purchase ${po.poNumber}${bill.billNo ? ` · bill ${bill.billNo}` : ''} · ${bill.items.length} items, ${bill.cartons || 0} cartons`,
+      description: `Purchase ${po.poNumber}${bill.billNo ? ` · bill ${bill.billNo}` : ''} · ${what}`,
       userId: h.userId(req),
       unique: true,
     });
     bill.ledgerEntry = entry._id;
+    await postMarketPayment(req, po, bill, index);
   }
 
   let grn = await GoodsReceipt.findOne({ purchaseOrder: po._id });
@@ -516,7 +650,10 @@ async function finalizeClose(req, po) {
         },
         allocationMethod: po.allocationMethod,
         chargesTotal: po.totals.charges,
+        goodsTotal: po.totals.goods,
+        chargeRate: costing.chargeRateOf(po.totals.charges, po.totals.goods),
         expectedCartons: po.builty.cartons || po.totals.cartons,
+        boxes: grnBoxesFrom(po),
         lines: grnLinesFrom(po),
         createdBy: h.userId(req),
         history: [h.historyEntry(req, 'created', `From ${po.poNumber}`)],
@@ -536,7 +673,7 @@ async function finalizeClose(req, po) {
     await safeNotify({
       type: 'goods_receiving',
       title: `Goods to receive: ${grn.grnNumber}`,
-      message: `${po.builty.cartons || po.totals.cartons} cartons (${po.totals.pieces} pcs) from ${vendors}. Builty ${po.builty.builtyNo || '—'}. Please verify and receive.`,
+      message: `${po.builty.cartons || po.totals.cartons} boxes from ${vendors}.${po.builty.builtyNo ? ` Builty ${po.builty.builtyNo}.` : ''} Please check the boxes and enter the goods.`,
       level: 'info',
       link: `/admin/purchasing/receiving/${grn._id}`,
       branchId: po.branch,
@@ -559,15 +696,23 @@ async function close(req, id, body = {}, photos = []) {
   try {
     if (po.status === 'open') {
       // Validate the trip
-      if (!po.bills.length) throw httpError('Add at least one vendor bill before closing');
-      const empty = po.bills.find((b) => !b.items.length);
-      if (empty) throw httpError(`Bill from ${empty.vendorName} has no items. Add items or remove the bill.`);
+      if (!po.bills.length) throw httpError('Add at least one vendor bill before sending to the warehouse');
+      costing.recalcPO(po);
+      const empty = po.bills.find((b) => !(b.billTotal > 0));
+      if (empty) {
+        throw httpError(`Bill from ${empty.vendorName} has no items and no bill amount. Enter the bill total (or add items), or remove the bill.`);
+      }
+      const overpaid = po.bills.find((b) => b.paidNow > b.billTotal);
+      if (overpaid) {
+        throw httpError(`Paid now (Rs ${overpaid.paidNow}) on the bill from ${overpaid.vendorName} is more than the bill total (Rs ${overpaid.billTotal}).`);
+      }
 
+      // Builty is optional (number, transporter, photo, freight).
       const builtyNo = body.builtyNo !== undefined ? h.toText(body.builtyNo, 60) : po.builty.builtyNo;
       const builtyPhotos = [...(po.builty.photos || []), ...photos].slice(0, 10);
-      if (!builtyNo && !builtyPhotos.length) throw httpError('Enter the builty number or upload the builty photo');
-      const cartons = h.has(body.cartons) ? h.toAmount(body.cartons, 'Cartons', { int: true }) : po.builty.cartons;
-      if (!(cartons > 0)) throw httpError('Enter how many cartons are on the builty');
+      // Boxes: typed on the send screen, else the boxes on the bills.
+      const cartons = h.has(body.cartons) ? h.toAmount(body.cartons, 'Boxes', { int: true }) : po.builty.cartons || po.totals.cartons;
+      if (!(cartons > 0)) throw httpError('Enter how many boxes (cartons) are coming to the warehouse');
       const freight = h.has(body.freight) ? h.toAmount(body.freight, 'Freight') : po.builty.freight || 0;
 
       po.builty = {
@@ -594,12 +739,13 @@ async function close(req, id, body = {}, photos = []) {
       }
       costing.recalcPO(po);
       if (po.totals.cartons && po.totals.cartons !== cartons) {
-        warnings.push(`Builty says ${cartons} cartons but the bills add up to ${po.totals.cartons}.`);
+        warnings.push(`${cartons} boxes sent but the bills add up to ${po.totals.cartons} boxes.`);
       }
       po.status = 'closed';
       po.closedAt = new Date();
       po.closedBy = h.userId(req);
-      po.history.push(h.historyEntry(req, 'closed', [`Builty ${builtyNo || '(photo)'}, ${cartons} cartons`, ...warnings].join(' ')));
+      const builtyNote = builtyNo ? `Builty ${builtyNo}` : builtyPhotos.length ? 'Builty (photo)' : 'No builty';
+      po.history.push(h.historyEntry(req, 'closed', [`Sent to warehouse: ${cartons} boxes. ${builtyNote}.`, ...warnings].join(' ')));
       try {
         await po.save();
       } catch (err) {
@@ -635,12 +781,12 @@ async function undoClose(req, po, mode, reason) {
       }
     }
   }
-  for (const bill of po.bills) {
-    await vendorLedger.voidByRef('PurchaseOrder', bill._id, {
-      userId: h.userId(req),
-      reason: `${po.poNumber} ${mode === 'reopen' ? 'reopened' : 'cancelled'}${reason ? `: ${reason}` : ''}`,
-    });
+  const why = `${po.poNumber} ${mode === 'reopen' ? 'reopened' : 'cancelled'}${reason ? `: ${reason}` : ''}`;
+  for (const [index, bill] of po.bills.entries()) {
+    await vendorLedger.voidByRef('PurchaseOrder', bill._id, { userId: h.userId(req), reason: why });
     bill.ledgerEntry = null;
+    // Money paid at the market is voided too; it is posted again when the trip is sent again.
+    await voidMarketPayment(req, po, bill, index, why);
   }
 }
 
@@ -697,6 +843,7 @@ async function reopen(req, id, body = {}) {
 module.exports = {
   CHARGE_LABELS,
   settings,
+  updateSettings,
   safeNotify,
   meta,
   list,

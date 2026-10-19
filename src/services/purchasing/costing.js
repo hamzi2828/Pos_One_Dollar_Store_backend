@@ -2,7 +2,10 @@
 // Money math for purchase orders and goods receipts (pure — no database).
 //
 //   line total   = qty × unit price − line discount
-//   bill total   = Σ line totals − bill discount           (what we owe the vendor)
+//   bill total   = bill amount (paper bill) when typed,
+//                  else Σ line totals − bill discount      (what we owe the vendor)
+//   charge rate  = trip charges / Σ bill totals            (frozen on the GRN at send)
+//   entry landed = cost price × (1 + charge rate)          (simple flow, per entry)
 //   net price    = (line total − its share of the bill discount) / qty
 //   landed cost  = net price + share of the PO charges     (car rent, builty, landing…)
 //
@@ -42,9 +45,24 @@ function recalcBill(bill) {
   }
   bill.subtotal = round2(subtotal);
   bill.discount = Math.min(round2(bill.discount), bill.subtotal);
-  bill.billTotal = round2(bill.subtotal - bill.discount);
+  bill.billTotal = billTotalOf(bill);
   return bill;
 }
+
+/** What we owe on a bill: the paper bill amount when typed, else the typed items (subtotal − discount). */
+function billTotalOf(bill) {
+  const amount = round2(num(bill.billAmount));
+  return amount > 0 ? amount : round2(num(bill.subtotal) - num(bill.discount));
+}
+
+/** Trip charges as a share of the goods (frozen on the GRN at send): 2500 / 26920 = 0.0929. */
+function chargeRateOf(chargesTotal, goodsTotal) {
+  const goods = num(goodsTotal);
+  return goods > 0 ? round4(num(chargesTotal) / goods) : 0;
+}
+
+/** Landed cost per piece of a goods entry: vendor price + its share of the trip charges. */
+const landedFrom = (costPrice, chargeRate) => round2(num(costPrice) * (1 + num(chargeRate)));
 
 /** Recompute every bill and the PO totals (mutates). */
 function recalcPO(po) {
@@ -172,6 +190,9 @@ function previewCosting(po, units, { minMarginPct = 15 } = {}) {
       marginPct: saleValue > 0 ? round2(((saleValue - landed) / saleValue) * 100) : 0,
       pieces: rows.reduce((s, r) => s + r.qty, 0),
       warnings,
+      // simple flow: every entered piece costs costPrice × (1 + chargeRate)
+      billsTotal: po.totals.goods,
+      chargeRate: chargeRateOf(po.totals.charges, po.totals.goods),
     },
   };
 }
@@ -282,4 +303,17 @@ function has(v) {
   return v !== undefined && v !== null && v !== '';
 }
 
-module.exports = { spread, recalcBill, recalcPO, netLines, previewCosting, receiptCosting, unitKey, round2, round4 };
+module.exports = {
+  spread,
+  recalcBill,
+  recalcPO,
+  billTotalOf,
+  chargeRateOf,
+  landedFrom,
+  netLines,
+  previewCosting,
+  receiptCosting,
+  unitKey,
+  round2,
+  round4,
+};
