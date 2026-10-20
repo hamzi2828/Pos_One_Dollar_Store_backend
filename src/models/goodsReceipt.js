@@ -131,6 +131,7 @@ const entrySchema = new mongoose.Schema({
 
   qty: { type: Number, min: 1, required: true }, // pieces taken out of the boxes
   boxNo: { type: Number, min: 0, default: 0 }, // which box of this bill it came out of (1..n); 0 = not said
+  piecesPerSale: { type: Number, min: 1, default: 1 }, // pieces in one sale (qty is in sales); one tag per piece
   damagedQty: { type: Number, min: 0, default: 0 }, // not stocked
   stockQty: { type: Number, min: 0, default: 0 }, // qty − damaged = pieces into the warehouse
   costPrice: { type: Number, min: 0, required: true }, // vendor price per piece

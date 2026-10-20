@@ -240,7 +240,7 @@ const buildEntries = (product, opts) => {
       name: product.name,
       variant: vLabel,
       price: sellPrice(unit),
-      extra: !variant && pps > 1 ? [`${pps} pcs`] : [],
+      extra: !variant && pps > 1 ? [`${pps} pcs · scan once`] : [],
     };
     const stock = unitBranchStock(unit, opts.branchId || null, opts.mainBranchId);
     const mainCode = unitMainCode(unit);
@@ -261,7 +261,8 @@ const buildEntries = (product, opts) => {
         }
         entries.push({ ...base, kind: 'box', code: mainCode, extra: [`Box/pack of ${variant ? ppb : ppb * pps}`], defaultCopies: atLeastOne(ceilDiv(stock, ppb)) });
       } else {
-        entries.push({ ...base, kind: 'unit', code: mainCode, defaultCopies: atLeastOne(stock) });
+        // Sold in sets: a tag on every piece (stock is in sets).
+        entries.push({ ...base, kind: 'unit', code: mainCode, defaultCopies: atLeastOne(stock * (variant ? 1 : pps)) });
       }
       continue;
     }
@@ -580,7 +581,8 @@ const labelController = {
             };
           }),
           suggested: {
-            unit: atLeastOne(stock),
+            // Sold in sets: a tag on every piece (stock is counted in sets).
+            unit: atLeastOne(stock * (variant ? 1 : Math.max(1, Math.floor(Number(product.piecesPerSale) || 1)))),
             box: ppb > 1 ? atLeastOne(ceilDiv(stock, ppb)) : null,
             fullBox: fb ? atLeastOne(ceilDiv(stock, ppb)) : null,
           },
@@ -648,7 +650,7 @@ const labelController = {
         capped: state.capped,
         ctx: {
           ...settings,
-          showPrice: parseBool(q.showPrice, true),
+          showPrice: false, // the shop never prints prices on stickers
           showShop: parseBool(q.showShop, true),
           autoPrint: parseBool(q.autoPrint, false),
         },
@@ -731,7 +733,7 @@ const labelController = {
         capped: state.capped,
         ctx: {
           ...settings,
-          showPrice: parseBool(body.showPrice, true),
+          showPrice: false, // the shop never prints prices on stickers
           showShop: parseBool(body.showShop, true),
           autoPrint: parseBool(body.autoPrint, false),
         },

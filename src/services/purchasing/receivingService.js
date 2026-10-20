@@ -840,6 +840,7 @@ async function addEntry(req, id, body = {}) {
       salePrice: unit.salePrice,
       qty,
       boxNo,
+      piecesPerSale: Math.max(1, Math.floor(Number(unit.piecesPerSale) || 1)),
       damagedQty,
       stockQty,
       costPrice,
@@ -900,7 +901,16 @@ async function entryResult(req, id, grn, entry, { repeated = false, warnings = [
   return {
     entry: e,
     grn: await getOne(req, id),
-    tags: { productId: e.product, variantId: e.variantId || null, copies: e.undone ? 0 : e.stockQty, productName: e.productName, code: e.code, salePrice: e.salePrice },
+    // One tag on every piece (a sale of 2 plates = 2 tags; any of them sells the set).
+    tags: {
+      productId: e.product,
+      variantId: e.variantId || null,
+      copies: e.undone ? 0 : e.stockQty * Math.max(1, e.piecesPerSale || 1),
+      piecesPerSale: Math.max(1, e.piecesPerSale || 1),
+      productName: e.productName,
+      code: e.code,
+      salePrice: e.salePrice,
+    },
     warnings,
     ...(repeated ? { repeated: true } : {}),
   };
