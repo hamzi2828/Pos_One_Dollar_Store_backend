@@ -78,7 +78,7 @@ const assertCounting = (grn) => {
 
 /** Entries may be added: boxes checked (in progress), not finishing, not counted the old way. */
 const assertEntering = (grn) => {
-  if (grn.status === 'pending') throw httpError('Check the boxes first, then enter the goods.', 409, 'NOT_STARTED');
+  if (grn.status === 'pending') throw httpError('Check the boxes/packs first, then enter the goods.', 409, 'NOT_STARTED');
   if (grn.status !== 'in_progress') throw httpError(`This goods receipt is ${grn.status}`, 409, 'GRN_LOCKED');
   if (h.isLocked(grn)) throw httpError('This goods receipt is being finished right now. Try again in a moment.', 409, 'GRN_BUSY');
   if (modeOf(grn) === 'lines') {
@@ -489,10 +489,10 @@ async function checkBoxes(req, id, body = {}) {
   await assertMayVerify(req, grn);
   if (!['pending', 'in_progress'].includes(grn.status)) throw httpError(`This goods receipt is ${grn.status}`, 409, 'GRN_LOCKED');
   if (grn.status === 'in_progress' && liveEntries(grn).length) {
-    throw httpError('Goods are already being entered, so the box count can no longer be changed.', 409, 'BOXES_LOCKED');
+    throw httpError('Goods are already being entered, so the box/pack count can no longer be changed.', 409, 'BOXES_LOCKED');
   }
   const inputs = h.toList(body.boxes);
-  if (!inputs.length) throw httpError('Enter how many boxes arrived for each vendor bill');
+  if (!inputs.length) throw httpError('Enter how many boxes/packs arrived for each vendor bill');
 
   const po = await loadPO(grn);
   const boxes = billsOf(grn, po).map((b) => ({
@@ -515,8 +515,8 @@ async function checkBoxes(req, id, body = {}) {
     .filter((b) => b.received !== b.expected)
     .map((b) =>
       b.received < b.expected
-        ? `${b.vendorName}: ${b.expected - b.received} box(es) missing (${b.received} of ${b.expected}).`
-        : `${b.vendorName}: ${b.received - b.expected} extra box(es) (${b.received}, bill says ${b.expected}).`
+        ? `${b.vendorName}: ${b.expected - b.received} box(es)/pack(s) missing (${b.received} of ${b.expected}).`
+        : `${b.vendorName}: ${b.received - b.expected} extra box(es)/pack(s) (${b.received}, bill says ${b.expected}).`
     );
   const now = new Date();
   const set = {
@@ -547,7 +547,7 @@ async function checkBoxes(req, id, body = {}) {
       { _id: grn._id, status: 'in_progress', entries: { $not: { $elemMatch: { undone: { $ne: true } } } } },
       { $set: set, $push: { history }, $inc: { __v: 1 } }
     );
-    if (!res.modifiedCount) throw httpError('Goods are already being entered, so the box count can no longer be changed.', 409, 'BOXES_LOCKED');
+    if (!res.modifiedCount) throw httpError('Goods are already being entered, so the box/pack count can no longer be changed.', 409, 'BOXES_LOCKED');
   }
   return { grn: await getOne(req, id), warnings };
 }
@@ -720,9 +720,9 @@ function boxCountOf(grn, billId) {
 function boxNoFor(grn, bill, value) {
   if (!h.has(value) || value === 0 || value === '0') return 0;
   const n = Number(value);
-  if (!Number.isInteger(n) || n < 1) throw httpError('Box number must be 1 or more');
+  if (!Number.isInteger(n) || n < 1) throw httpError('Box/pack number must be 1 or more');
   const count = boxCountOf(grn, bill.bill);
-  if (count && n > count) throw httpError(`Only ${count} box${count === 1 ? '' : 'es'} came from ${bill.vendorName || 'this vendor'}`);
+  if (count && n > count) throw httpError(`Only ${count} box${count === 1 ? '/pack' : 'es/packs'} came from ${bill.vendorName || 'this vendor'}`);
   return n;
 }
 
@@ -738,7 +738,7 @@ async function markBox(req, id, body = {}) {
   const bill = bills.find((b) => h.sameId(b.bill, body.bill || body.billId));
   if (!bill) throw httpError('Vendor bill not found on this goods receipt', 404);
   const boxNo = boxNoFor(first, bill, body.boxNo);
-  if (!boxNo) throw httpError('Choose the box');
+  if (!boxNo) throw httpError('Choose the box/pack');
   const done = body.done === undefined ? true : body.done === true || body.done === 'true';
   for (let attempt = 1; ; attempt++) {
     const grn = await findGRN(req, id);
@@ -782,7 +782,7 @@ async function addEntry(req, id, body = {}) {
   }
 
   const qty = h.toAmount(body.qty, 'Pieces', { int: true });
-  if (!(qty >= 1)) throw httpError('Enter how many pieces you took out of the box');
+  if (!(qty >= 1)) throw httpError('Enter how many pieces you took out of the box/pack');
   const damagedQty = h.toAmount(body.damagedQty, 'Damaged pieces', { int: true });
   if (damagedQty > qty) throw httpError(`Damaged pieces (${damagedQty}) cannot be more than the pieces entered (${qty})`);
   const costPrice = h.toPrice(body.costPrice, 'Cost price');
@@ -1006,7 +1006,7 @@ async function complete(req, id, body = {}) {
   }
   await assertMayVerify(req, grn);
   if (grn.status !== 'in_progress') {
-    throw httpError(grn.status === 'pending' ? 'Check the boxes first (or press "Start receiving")' : `This goods receipt is ${grn.status}`, 409);
+    throw httpError(grn.status === 'pending' ? 'Check the boxes/packs first (or press "Start receiving")' : `This goods receipt is ${grn.status}`, 409);
   }
   // Old screens send line counts; GRNs counted line by line finish the old way.
   const oldCounts = h.toList(body.lines).length > 0 || h.has(body.cartonsReceived) || body.claimFromVendor !== undefined;

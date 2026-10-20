@@ -432,7 +432,7 @@ const receiveStock = async ({ productId, variantId, quantity, boxes, loosePieces
       const loose = Math.max(0, toInt(loosePieces, 0));
       qty = b * perBox + loose;
     }
-    if (!(qty > 0)) throw stockError('Enter a quantity, or a number of boxes / loose pieces greater than 0', 400);
+    if (!(qty > 0)) throw stockError('Enter a quantity, or a number of boxes/packs / loose pieces greater than 0', 400);
 
     const extra = {};
     let newBatch = null;

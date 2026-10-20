@@ -673,7 +673,7 @@ async function finalizeClose(req, po) {
     await safeNotify({
       type: 'goods_receiving',
       title: `Goods to receive: ${grn.grnNumber}`,
-      message: `${po.builty.cartons || po.totals.cartons} boxes from ${vendors}.${po.builty.builtyNo ? ` Builty ${po.builty.builtyNo}.` : ''} Please check the boxes and enter the goods.`,
+      message: `${po.builty.cartons || po.totals.cartons} boxes/packs from ${vendors}.${po.builty.builtyNo ? ` Builty ${po.builty.builtyNo}.` : ''} Please check the boxes/packs and enter the goods.`,
       level: 'info',
       link: `/admin/purchasing/receiving/${grn._id}`,
       branchId: po.branch,
@@ -712,7 +712,7 @@ async function close(req, id, body = {}, photos = []) {
       const builtyPhotos = [...(po.builty.photos || []), ...photos].slice(0, 10);
       // Boxes: typed on the send screen, else the boxes on the bills.
       const cartons = h.has(body.cartons) ? h.toAmount(body.cartons, 'Boxes', { int: true }) : po.builty.cartons || po.totals.cartons;
-      if (!(cartons > 0)) throw httpError('Enter how many boxes (cartons) are coming to the warehouse');
+      if (!(cartons > 0)) throw httpError('Enter how many boxes/packs (cartons) are coming to the warehouse');
       const freight = h.has(body.freight) ? h.toAmount(body.freight, 'Freight') : po.builty.freight || 0;
 
       po.builty = {
@@ -739,7 +739,7 @@ async function close(req, id, body = {}, photos = []) {
       }
       costing.recalcPO(po);
       if (po.totals.cartons && po.totals.cartons !== cartons) {
-        warnings.push(`${cartons} boxes sent but the bills add up to ${po.totals.cartons} boxes.`);
+        warnings.push(`${cartons} boxes/packs sent but the bills add up to ${po.totals.cartons} boxes/packs.`);
       }
       po.status = 'closed';
       po.closedAt = new Date();
