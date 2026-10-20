@@ -503,10 +503,11 @@ async function listShelves({ branchId, search, rackId, includeInactive, limit } 
   const shelves = await Shelf.find(filter).sort({ code: 1 }).collation(NATURAL).limit(lim).lean();
   const rackIds = [...new Set(shelves.map((s) => String(s.rack)))];
   const [racks, totals] = await Promise.all([
-    Rack.find({ _id: { $in: rackIds } }).select('name code').lean(),
+    Rack.find({ _id: { $in: rackIds } }).select('name code zone').lean(),
     shelfStockTotals(branch, shelves.map((s) => s._id)),
   ]);
   const rackName = new Map(racks.map((r) => [String(r._id), r.name || '']));
+  const rackZone = new Map(racks.map((r) => [String(r._id), r.zone || '']));
   return shelves.map((s) => {
     const t = totals.get(String(s._id)) || { pieces: 0, products: 0 };
     return {
@@ -517,6 +518,8 @@ async function listShelves({ branchId, search, rackId, includeInactive, limit } 
       level: s.level,
       name: s.name || '',
       rackName: rackName.get(String(s.rack)) || '',
+      // Zone of the rack (A, B, C...) for the zone -> rack -> shelf pickers
+      zone: rackZone.get(String(s.rack)) || String(s.rackCode || '').replace(/\d+$/, ''),
       capacity: s.capacity ?? null,
       isActive: s.isActive !== false,
       pieces: t.pieces,
