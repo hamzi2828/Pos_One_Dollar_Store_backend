@@ -56,6 +56,7 @@ router.post('/receiving/:id/photos', ...staff, can(GRN, 'edit'), uploadArray('ph
 router.post('/receiving/:id/complete', ...staff, can(GRN, 'edit'), handle(grn.complete));
 // Simple buying flow: check boxes → enter goods (stock in per entry, shelf optional) → finish
 router.post('/receiving/:id/boxes', ...staff, can(GRN, 'edit'), handle(grn.checkBoxes));
+router.post('/receiving/:id/boxes/done', ...staff, can(GRN, 'edit'), handle(grn.markBox));
 router.get('/receiving/:id/lookup', ...staff, can(GRN, 'edit'), handle(grn.lookup));
 router.post('/receiving/:id/new-product', ...staff, can(GRN, 'edit'), handle(grn.newProduct));
 router.post('/receiving/:id/entries', ...staff, can(GRN, 'edit'), handle(grn.addEntry));

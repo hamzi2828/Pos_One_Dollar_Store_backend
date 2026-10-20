@@ -710,6 +710,51 @@ async function dropUnpostedEntry(req, id, entryId) {
 
 const plainEntry = (e) => (e && e.toObject ? e.toObject() : e);
 
+/** Boxes of a bill that arrived (or were expected, if not counted). */
+function boxCountOf(grn, billId) {
+  const b = (grn.boxes || []).find((x) => h.sameId(x.bill, billId));
+  return b ? b.received || b.expected || 0 : 0;
+}
+
+/** Optional box number (1..boxes of the bill); empty = 0 (not said). */
+function boxNoFor(grn, bill, value) {
+  if (!h.has(value) || value === 0 || value === '0') return 0;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1) throw httpError('Box number must be 1 or more');
+  const count = boxCountOf(grn, bill.bill);
+  if (count && n > count) throw httpError(`Only ${count} box${count === 1 ? '' : 'es'} came from ${bill.vendorName || 'this vendor'}`);
+  return n;
+}
+
+/**
+ * POST /receiving/:id/boxes/done { bill, boxNo, done = true } — mark a box as
+ * fully unpacked (or open it again). Only a note for the screen; stock is not touched.
+ */
+async function markBox(req, id, body = {}) {
+  const first = await findGRN(req, id);
+  await assertMayVerify(req, first);
+  assertEntering(first);
+  const bills = billsOf(first, await loadPO(first));
+  const bill = bills.find((b) => h.sameId(b.bill, body.bill || body.billId));
+  if (!bill) throw httpError('Vendor bill not found on this goods receipt', 404);
+  const boxNo = boxNoFor(first, bill, body.boxNo);
+  if (!boxNo) throw httpError('Choose the box');
+  const done = body.done === undefined ? true : body.done === true || body.done === 'true';
+  for (let attempt = 1; ; attempt++) {
+    const grn = await findGRN(req, id);
+    const rest = (grn.boxesDone || []).filter((x) => !(h.sameId(x.bill, bill.bill) && x.boxNo === boxNo));
+    grn.boxesDone = done ? [...rest, { bill: bill.bill, boxNo, at: new Date(), by: h.userId(req), byName: h.userName(req) }] : rest;
+    try {
+      await grn.save();
+      break;
+    } catch (err) {
+      if (err && err.name === 'VersionError' && attempt < 5) continue;
+      throw h.friendlyDbError(err);
+    }
+  }
+  return getOne(req, id);
+}
+
 /**
  * POST /receiving/:id/entries
  * { bill, productId, variantId?, qty, costPrice, damagedQty?, shelfId?, shelfQty?, requestId? }
@@ -744,6 +789,7 @@ async function addEntry(req, id, body = {}) {
   if (!(costPrice > 0)) throw httpError('Enter the cost price (what the vendor charged per piece)');
   const unit = await products.loadUnit(body.productId || body.product, body.variantId || null, { branchId: first.branch });
   const stockQty = qty - damagedQty;
+  const boxNo = boxNoFor(first, bill, body.boxNo);
 
   let shelf = null;
   let shelfQty = 0;
@@ -792,6 +838,7 @@ async function addEntry(req, id, body = {}) {
       code: unit.code,
       salePrice: unit.salePrice,
       qty,
+      boxNo,
       damagedQty,
       stockQty,
       costPrice,
@@ -1236,4 +1283,4 @@ async function completeLines(req, id, body, current) {
   }
 }
 
-module.exports = { list, getOne, start, saveCounts, scan, addPhotos, checkBoxes, lookup, newProduct, addEntry, undoEntry, complete };
+module.exports = { list, getOne, start, saveCounts, scan, addPhotos, checkBoxes, lookup, newProduct, addEntry, undoEntry, markBox, complete };

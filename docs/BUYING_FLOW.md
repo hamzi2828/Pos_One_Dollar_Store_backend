@@ -183,3 +183,13 @@ Clarifications:
 - Finish with nothing entered claims the whole bill by default (send `claim: false` to keep owing it).
 - `GET /receiving` rows add `entryCount`, `enteredPieces`, `boxesCheckedAt`; `vendors` also come from boxes.
 - GRNs created before this change get `boxes` and `chargeRate` derived on read; `chargeRate` is stored on the first entry.
+
+## Box by box (Oct 2026)
+
+Unpacking goes vendor → box → items. Each entry can carry `boxNo` (1..boxes
+that came for that bill; 0 / missing = not said). `POST /api/receiving/:id/boxes/done`
+`{ bill, boxNo, done = true }` marks a box fully unpacked (`done: false` opens it
+again); the receipt returns `boxesDone: [{ bill, boxNo, at, byName }]`. It is only
+a note for the screen — stock is never touched by it.
+On the screen "New product" opens the full product form (Products → Create) in a
+popup with no stock fields; once saved the product is picked for the open box.

@@ -102,6 +102,18 @@ const boxSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// A box of a vendor bill that was fully unpacked ("Box 3 done").
+const boxDoneSchema = new mongoose.Schema(
+  {
+    bill: { type: ObjectId, required: true },
+    boxNo: { type: Number, min: 1, required: true },
+    at: { type: Date, default: Date.now },
+    by: { type: ObjectId, ref: 'User', default: null },
+    byName: { type: String, default: '' },
+  },
+  { _id: false }
+);
+
 // One unpacked product: its good pieces go into the warehouse when it is saved.
 const entrySchema = new mongoose.Schema({
   entryNo: { type: Number, required: true },
@@ -118,6 +130,7 @@ const entrySchema = new mongoose.Schema({
   salePrice: { type: Number, default: 0 },
 
   qty: { type: Number, min: 1, required: true }, // pieces taken out of the boxes
+  boxNo: { type: Number, min: 0, default: 0 }, // which box of this bill it came out of (1..n); 0 = not said
   damagedQty: { type: Number, min: 0, default: 0 }, // not stocked
   stockQty: { type: Number, min: 0, default: 0 }, // qty − damaged = pieces into the warehouse
   costPrice: { type: Number, min: 0, required: true }, // vendor price per piece
@@ -178,6 +191,7 @@ const goodsReceiptSchema = new mongoose.Schema(
     boxesCheckedAt: { type: Date, default: null },
     boxesCheckedBy: { type: ObjectId, ref: 'User', default: null },
     boxesNote: { type: String, default: '' },
+    boxesDone: { type: [boxDoneSchema], default: [] }, // boxes fully unpacked, per bill
 
     lines: { type: [lineSchema], default: [] }, // expected items (typed on the trip; may be empty)
     entries: { type: [entrySchema], default: [] },
