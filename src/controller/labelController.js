@@ -224,7 +224,9 @@ const pickUnits = (product, variantId) => {
  */
 const buildEntries = (product, opts) => {
   const type = opts.type || 'unit';
-  const ppb = Math.max(1, Math.floor(Number(product.piecesPerBox) || 1));
+  const ppb = Math.max(1, Math.floor(Number(product.piecesPerBox) || 1)); // sales in one box/pack
+  // Pieces in one sale (e.g. 2 plates for one price); variants are sold one by one.
+  const pps = Math.max(1, Math.floor(Number(product.piecesPerSale) || 1));
   const { units, specific } = pickUnits(product, opts.variantId);
   const entries = [];
   const skipped = [];
@@ -238,7 +240,7 @@ const buildEntries = (product, opts) => {
       name: product.name,
       variant: vLabel,
       price: sellPrice(unit),
-      extra: [],
+      extra: !variant && pps > 1 ? [`${pps} pcs`] : [],
     };
     const stock = unitBranchStock(unit, opts.branchId || null, opts.mainBranchId);
     const mainCode = unitMainCode(unit);
@@ -257,7 +259,7 @@ const buildEntries = (product, opts) => {
           fail('box labels need "pieces per box" greater than 1');
           continue;
         }
-        entries.push({ ...base, kind: 'box', code: mainCode, extra: [`Box of ${ppb}`], defaultCopies: atLeastOne(ceilDiv(stock, ppb)) });
+        entries.push({ ...base, kind: 'box', code: mainCode, extra: [`Box/pack of ${variant ? ppb : ppb * pps}`], defaultCopies: atLeastOne(ceilDiv(stock, ppb)) });
       } else {
         entries.push({ ...base, kind: 'unit', code: mainCode, defaultCopies: atLeastOne(stock) });
       }
@@ -278,7 +280,7 @@ const buildEntries = (product, opts) => {
         ...base,
         kind: 'full-box',
         code: normalizeCode(fb.code),
-        extra: [`Full box/pack · ${ppb} pcs`],
+        extra: [`Full box/pack · ${variant ? ppb : ppb * pps} pcs`],
         // price of the whole box, since one scan sells ppb pieces
         price: base.price * ppb,
         defaultCopies: atLeastOne(ceilDiv(stock, ppb)),
