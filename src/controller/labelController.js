@@ -278,7 +278,7 @@ const buildEntries = (product, opts) => {
         ...base,
         kind: 'full-box',
         code: normalizeCode(fb.code),
-        extra: [`Full box · ${ppb} pcs`],
+        extra: [`Full box/pack · ${ppb} pcs`],
         // price of the whole box, since one scan sells ppb pieces
         price: base.price * ppb,
         defaultCopies: atLeastOne(ceilDiv(stock, ppb)),
@@ -336,7 +336,7 @@ const buildEntries = (product, opts) => {
       const bc = (unit.barcodes || []).find((b) => b && normalizeCode(b.code) === want);
       if (bc) {
         qty = Math.max(1, Number(bc.qty) || 1);
-        if (isFullBoxCode(unit, want)) extra = [`Full box · ${qty} pcs`];
+        if (isFullBoxCode(unit, want)) extra = [`Full box/pack · ${qty} pcs`];
         else if (qty > 1) extra = [`Pack of ${qty}`];
       }
       const batch = (unit.batches || []).find((b) => b && normalizeCode(b.barcode) === want);

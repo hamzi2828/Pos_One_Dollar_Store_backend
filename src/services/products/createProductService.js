@@ -206,6 +206,7 @@ const createProductService = {
       barcodes,
       batches,
       piecesPerBox,
+      piecesPerSale,
       addFullBoxBarcode,
       boxes,
       loosePieces,
@@ -213,6 +214,7 @@ const createProductService = {
 
     // Barcode / box / batch fields (may be JSON strings via multipart/form-data)
     piecesPerBox = toPiecesPerBox(piecesPerBox);
+    piecesPerSale = productType === 'variant' ? 1 : toPiecesPerBox(piecesPerSale);
     addFullBoxBarcode = toBool(addFullBoxBarcode);
     shortCode = normalizeCode(shortCode) || undefined;
     // Single products: short code + SKU are made automatically when not given
@@ -456,6 +458,7 @@ const createProductService = {
       barcodes,
       batches,
       piecesPerBox,
+      piecesPerSale,
       // The shop's pieces (single product). Variant products: filled from the variants.
       branchStock: productType === 'variant' || batches.length ? [] : [{ branch: ctx.writeBranchId, stock }],
     };

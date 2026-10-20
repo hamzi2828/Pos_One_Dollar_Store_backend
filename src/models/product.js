@@ -137,6 +137,9 @@ const productSchema = new mongoose.Schema(
     batches: { type: [batchSchema], default: [] },
     // Pieces inside one box. 1 = sold loose. Stock is always counted in pieces.
     piecesPerBox: { type: Number, min: 1, default: 1 },
+    // Pieces handed over in ONE sale (e.g. 2 plates for Rs 300). Stock, price and
+    // cost are per sale; this only says how many physical pieces one sale is.
+    piecesPerSale: { type: Number, min: 1, default: 1 },
     // Every code that can be scanned/typed for this product (uppercased).
     // Built by helper/productCodes.js — do not edit by hand.
     scanCodes: { type: [String], default: [], index: true },

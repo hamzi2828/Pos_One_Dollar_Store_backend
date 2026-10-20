@@ -56,6 +56,7 @@ function unitInfo(product, variant, { branchId = null, mainBranchId = null } = {
     lastLandedCost: numOrNull(unit.lastLandedCost),
     lastVendorName: unit.lastVendorName || product.lastVendorName || '',
     piecesPerBox: Math.max(1, Math.floor(num(product.piecesPerBox)) || 1),
+    piecesPerSale: variant ? 1 : Math.max(1, Math.floor(num(product.piecesPerSale)) || 1),
     stockTotal: unitTotalStock(unit),
     branchStock: branchId ? unitBranchStock(unit, branchId, mainBranchId) : unitTotalStock(unit),
     isDeleted: !!product.isDeleted,

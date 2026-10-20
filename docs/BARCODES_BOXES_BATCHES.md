@@ -156,3 +156,12 @@ Print `batch` stickers for the new batch. POS: scanning `30877-2` sells from bat
   `variantLabel`; beep. Not found (404) → error beep + message, clear input.
 - Check stock in pieces before adding; show "box" lines as pieces (e.g. "12 pcs").
 - On checkout send each item with `variantId`, `quantity` (pieces), `scannedCode`, `batchNo`.
+
+## Pieces per sale (Oct 2026)
+
+`product.piecesPerSale` (int, default 1): physical pieces handed over in ONE sale
+(e.g. 2 plates for Rs 300). Stock, price, cost and `piecesPerBox` are all counted
+in SALES, so the POS, stock and reports need no change: one scan = one sale.
+The product form types "pieces in one box/pack" (physical) and saves
+piecesPerBox = physical / piecesPerSale; receiving counts pieces and saves
+qty = pieces / piecesPerSale (must divide evenly). Variants: always 1.

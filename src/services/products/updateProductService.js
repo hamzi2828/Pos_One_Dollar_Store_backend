@@ -405,6 +405,10 @@ const updateProductService = {
       updates.discountedPrice = payload.discountedPrice === null ? undefined : Number(payload.discountedPrice);
     }
     if (typeof payload.stock !== 'undefined') updates.stock = Number(payload.stock);
+    if (typeof payload.piecesPerSale !== 'undefined' && payload.piecesPerSale !== '') {
+      const pps = Math.floor(Number(payload.piecesPerSale));
+      updates.piecesPerSale = Number.isFinite(pps) && pps >= 1 ? pps : 1;
+    }
     if (typeof payload.status !== 'undefined') updates.status = String(payload.status);
     if (typeof payload.featured !== 'undefined') updates.featured = payload.featured === 'true' || payload.featured === true;
 

@@ -568,6 +568,7 @@ function entryUnit(unit, grn, billId = null) {
     salePrice: unit.salePrice,
     lastCost: unit.lastPurchasePrice ?? unit.costPrice ?? null,
     piecesPerBox: unit.piecesPerBox,
+    piecesPerSale: unit.piecesPerSale || 1,
     expected: line
       ? {
           lineId: line._id,
