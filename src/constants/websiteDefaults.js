@@ -1,6 +1,6 @@
 // src/constants/websiteDefaults.js
 // Default content of the marketing website (first load, and "Reset to default").
-// The website keeps the SAME copy in dollar_marketing/lib/defaults.ts as its
+// The website keeps the SAME copy in dollar_website/lib/defaults.ts as its
 // offline fallback — change both together. See docs/WEBSITE_CMS.md §1.
 //
 // Truthful only: no address, phone, hours or social links by default (the

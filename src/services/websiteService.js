@@ -7,10 +7,16 @@
 const SiteContent = require('../models/siteContent');
 const User = require('../models/user');
 const { WEBSITE_DEFAULTS, WEBSITE_ICONS } = require('../constants/websiteDefaults');
+const { getJson, setJson, delJson } = require('../middleware/cache');
 
 const KEY = 'main';
 const LIMITS = Object.freeze({ line: 120, text: 1500, body: 5000, url: 2000, items: 24, galleryItems: 40 });
 const HOOK_TIMEOUT_MS = 4000;
+
+// Redis copy of the public content. Every save/reset overwrites it straight away,
+// so the TTL is only a safety net for edits made outside this service (scripts).
+const PUBLIC_CACHE_KEY = 'website:public';
+const PUBLIC_CACHE_TTL = 12 * 60 * 60;
 
 const httpError = (status, message, code) => Object.assign(new Error(message), { status, code });
 const clone = (v) => JSON.parse(JSON.stringify(v));
@@ -244,9 +250,30 @@ function toContent(doc, { includeUser = true } = {}) {
 
 const loadDoc = () => SiteContent.findOne({ key: KEY }).lean();
 
-/** Public website content (no internal ids / user names). Defaults when nothing saved yet. */
+/**
+ * Public website content (no internal ids / user names). Defaults when nothing saved yet.
+ * Served from Redis when possible; `source` says where it came from ('redis' | 'db').
+ */
+async function getPublicWithSource() {
+  const cached = await getJson(PUBLIC_CACHE_KEY);
+  if (cached) return { data: cached, source: 'redis' };
+  const data = toContent(await loadDoc(), { includeUser: false });
+  // NX: never overwrite a newer copy that a save wrote while we were reading MongoDB.
+  await setJson(PUBLIC_CACHE_KEY, data, PUBLIC_CACHE_TTL, { onlyIfMissing: true });
+  return { data, source: 'db' };
+}
+
 async function getPublic() {
-  return toContent(await loadDoc(), { includeUser: false });
+  return (await getPublicWithSource()).data;
+}
+
+/** Put freshly saved content into Redis (before the website is told to rebuild). */
+async function cachePublic(doc) {
+  const ok = await setJson(PUBLIC_CACHE_KEY, toContent(doc, { includeUser: false }), PUBLIC_CACHE_TTL);
+  if (!ok) {
+    // Redis down: drop the old copy if we can, so nobody keeps reading it.
+    await delJson(PUBLIC_CACHE_KEY);
+  }
 }
 
 /** Admin: content + icons, defaults and limits for the editor. */
@@ -305,6 +332,7 @@ async function save(body, { userId } = {}) {
   delete next.updatedAt;
   delete next.updatedByName;
   const doc = await persist(next, userId);
+  await cachePublic(doc);
   const refresh = await refreshWebsite();
   return { data: toContent(doc), meta: { refresh } };
 }
@@ -317,8 +345,9 @@ async function resetSection(section, { userId } = {}) {
   delete current.updatedByName;
   current[section] = clone(WEBSITE_DEFAULTS[section]);
   const doc = await persist(current, userId);
+  await cachePublic(doc);
   const refresh = await refreshWebsite();
   return { data: toContent(doc), meta: { refresh } };
 }
 
-module.exports = { getPublic, getAdmin, save, resetSection, refreshWebsite, SECTIONS, LIMITS };
+module.exports = { getPublic, getPublicWithSource, getAdmin, save, resetSection, refreshWebsite, SECTIONS, LIMITS };

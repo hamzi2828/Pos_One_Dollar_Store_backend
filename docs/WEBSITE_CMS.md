@@ -1,15 +1,15 @@
 # Marketing website + CMS — Oct 2026
 
-The shop's public website (`dollar_marketing`, Next.js) tells people **who we are,
+The shop's public website (`dollar_website`, Next.js) tells people **who we are,
 what we do and what you get**, links to (and shows) the shop's Facebook page,
 and is shared on Facebook. All its text and pictures are edited by the owner in
 the POS admin: **System Settings → Website** (`/admin/website`).
 
 ```
 pos_frontend /admin/website ──PUT /api/website──► pos_backend (SiteContent, one document)
-                                                      │  GET /api/public/website (no login, cached 60 s)
+                                                      │  GET /api/public/website (no login, served from Redis)
                                                       ▼
-                                       dollar_marketing (Next.js, ISR 60 s + instant refresh hook)
+                                       dollar_website (Next.js, static page; rebuilt on every save via the refresh hook)
 ```
 
 ## 1. Content shape (`SiteContent`, key `main`) — the contract
@@ -82,7 +82,7 @@ Both apps carry the same defaults (backend `src/constants/websiteDefaults.js`; w
 
 | Route | Access | Does |
 |---|---|---|
-| `GET /api/public/website` | none (public) | `{ success, data: content }` without internal ids/users. `Cache-Control: public, max-age=60, s-maxage=60, stale-while-revalidate=300`. Never 500 on missing doc: returns defaults. |
+| `GET /api/public/website` | none (public) | `{ success, data: content }` without internal ids/users. Served from Redis (`pos:cache:data:website:public`, header `X-Cache: HIT`/`MISS`), `Cache-Control: no-store` (no CDN copy). Never 500 on missing doc: returns defaults. |
 | `GET /api/website` | permission `website` view | `{ success, data: content, meta: { icons: [...], defaults, limits: { line:120, text:1500, body:5000, url:2000, items:24, galleryItems:40 } } }` |
 | `PUT /api/website` | `website` edit | Body = whole content (sections may be omitted = unchanged; fields left out of a sent section are unchanged too; item lists are replaced as sent). Validates (§1 limits), saves, records `updatedBy`, returns `{ success, data: content, meta: { refresh: 'done'\|'failed'\|'skipped' } }`. Fires the refresh hook (below) before answering, never failing the save if the hook fails. |
 | `POST /api/website/upload` | `website` edit | multipart field `file`: one image (jpg/png/webp, ≤ 5 MB; SVG/GIF refused) → 201 `{ success, data: { url } }` (Vercel Blob URL in production; local dev returns the full `http://host/uploads/...` address). |
@@ -91,18 +91,24 @@ Both apps carry the same defaults (backend `src/constants/websiteDefaults.js`; w
 Refresh hook: if env `MARKETING_SITE_URL` and `MARKETING_REVALIDATE_SECRET` are set, after a
 save POST `${MARKETING_SITE_URL}/api/revalidate` with header `x-revalidate-secret` and JSON body
 `{ "path": "/" }` (timeout 4 s). Otherwise the website refreshes by itself within 60 s.
-Note: `s-maxage=60` lets the Vercel CDN in front of the backend keep the public JSON up to 60 s,
-so a rebuild right after a save can still read the old copy. The website should fetch
-`/api/public/website` with a changing query (e.g. `?v=<minute or revalidate time>`) or accept up to ~1 min delay.
+### Caching (Oct 2026)
+- Backend: the public content lives in Redis (`REDIS_URL`, Upstash `dollar-co-cache`, Mumbai). A miss reads
+  MongoDB once and fills Redis with SET NX (a slow reader can never overwrite a newer save). Every save/reset
+  writes the new content into Redis **before** calling the refresh hook. TTL 12 h is only a safety net for
+  edits made outside `websiteService`. Redis down → plain MongoDB reads, nothing breaks.
+- Website: the content fetch is in the Next.js data cache with tag `website` (1 h safety revalidate). The
+  refresh hook calls `revalidateTag('website')` + `revalidatePath('/', 'layout')` and then warms `/` and
+  `/sitemap.xml`, so visitors get the new page from the CDN straight away. On Vercel a failed CMS fetch fails
+  the rebuild, so the last good page keeps being served (never a defaults-only page).
 `/api/public/*` requests are not written to the Activity Log.
 
 Permission: new key `website` (actions view, edit) in a new section "Website" in
 `src/constants/rolePermissions.js` — owner/Admin only by default (not in Manager/Cashier defaults).
 
-## 3. Website (dollar_marketing)
+## 3. Website (dollar_website)
 
 Next.js 15 App Router + TypeScript + Tailwind 3, deploy target Vercel. Env:
 `NEXT_PUBLIC_API_URL` (backend, e.g. https://pos-one-dollar-store-backend.vercel.app),
-`REVALIDATE_SECRET`. Fetch `GET /api/public/website` server-side with `revalidate: 60`;
-on any error use `lib/defaults.ts`. `/api/revalidate` route checks the secret and calls
-`revalidatePath('/')`.
+`REVALIDATE_SECRET`. Fetch `GET /api/public/website` server-side with `tags: ['website']`, `revalidate: 3600`;
+on any error use `lib/defaults.ts`. `/api/revalidate` route checks the secret, calls
+`revalidateTag('website')` + `revalidatePath('/', 'layout')` and warms the page. Functions run in `bom1`.

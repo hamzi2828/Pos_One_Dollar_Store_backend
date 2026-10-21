@@ -46,6 +46,70 @@ if (REDIS_URL) {
   });
 }
 
+/**
+ * Wait (briefly) for the Redis connection. On a cold serverless start the first
+ * request arrives before the TLS handshake finishes; waiting a few hundred ms is
+ * still far faster than going to MongoDB. Resolves true when Redis can be used.
+ */
+function whenReady(timeoutMs = 600) {
+  if (!client) return Promise.resolve(false);
+  if (redisReady) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const done = (ok) => {
+      clearTimeout(timer);
+      client.off('ready', onReady);
+      resolve(ok);
+    };
+    const onReady = () => done(true);
+    const timer = setTimeout(() => done(redisReady), timeoutMs);
+    client.on('ready', onReady);
+  });
+}
+
+// ---- Plain JSON values in Redis (used for data caches like the website content) ----
+// Keys live under pos:cache:data:* so invalidateAll() clears them too.
+// Redis only (no in-memory copy): if Redis is down the caller just reads MongoDB,
+// so a value can never go stale on one server while another saves a change.
+const DATA_PREFIX = 'pos:cache:data:';
+
+async function getJson(key) {
+  try {
+    if (!(await whenReady())) return null;
+    const raw = await client.get(DATA_PREFIX + key);
+    return raw ? JSON.parse(raw) : null;
+  } catch (err) {
+    console.error('[cache] getJson error:', err.message);
+    return null;
+  }
+}
+
+/**
+ * Store a JSON value. `onlyIfMissing` (SET NX) is for "fill on a miss": a slow
+ * reader holding old data can then never overwrite a value a save just wrote.
+ */
+async function setJson(key, value, ttlSeconds, { onlyIfMissing = false } = {}) {
+  try {
+    if (!(await whenReady())) return false;
+    const opts = { EX: Math.max(1, Math.floor(ttlSeconds)) };
+    if (onlyIfMissing) opts.NX = true;
+    return (await client.set(DATA_PREFIX + key, JSON.stringify(value), opts)) === 'OK';
+  } catch (err) {
+    console.error('[cache] setJson error:', err.message);
+    return false;
+  }
+}
+
+async function delJson(key) {
+  try {
+    if (!(await whenReady())) return false;
+    await client.del(DATA_PREFIX + key);
+    return true;
+  } catch (err) {
+    console.error('[cache] delJson error:', err.message);
+    return false;
+  }
+}
+
 // In-memory fallback (also used when Redis is briefly unavailable).
 const memStore = new Map(); // cacheKey -> { expires, status, body, contentType }
 const memTagIndex = new Map(); // tag -> Set<cacheKey>
@@ -206,4 +270,13 @@ async function getResetTimestamps() {
   };
 }
 
-module.exports = { cache, invalidate, invalidateAll, getResetTimestamps };
+module.exports = {
+  cache,
+  invalidate,
+  invalidateAll,
+  getResetTimestamps,
+  whenReady,
+  getJson,
+  setJson,
+  delJson,
+};

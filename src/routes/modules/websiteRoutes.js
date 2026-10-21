@@ -1,5 +1,5 @@
 // Marketing website CMS (docs/WEBSITE_CMS.md).
-//   GET  /api/public/website   no login — what the public website shows (CDN cached 60 s)
+//   GET  /api/public/website   no login — what the public website shows (Redis cached, refreshed on save)
 //   GET  /api/website          permission website:view — content + icons/defaults/limits
 //   PUT  /api/website          website:edit — save (sections left out stay as they are)
 //   POST /api/website/upload   website:edit — one picture (jpg/png/webp, <= 5 MB) -> { url }
@@ -21,9 +21,12 @@ const upload = (mw) => (req, res, next) =>
 const WEBSITE_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 // ---- Public (no login) ----
+// Served from Redis (refilled on every CMS save). No CDN copy: the website keeps its
+// own cache and asks again only after a save, and must then get the new content.
 router.get('/public/website', handle(async (req, res) => {
-  const data = await svc.getPublic();
-  res.set('Cache-Control', 'public, max-age=60, s-maxage=60, stale-while-revalidate=300');
+  const { data, source } = await svc.getPublicWithSource();
+  res.set('Cache-Control', 'no-store');
+  res.set('X-Cache', source === 'redis' ? 'HIT' : 'MISS');
   res.json({ success: true, data });
 }));
 

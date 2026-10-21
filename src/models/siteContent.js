@@ -1,5 +1,5 @@
 // src/models/siteContent.js
-// Content of the public marketing website (dollar_marketing), edited in the
+// Content of the public marketing website (dollar_website), edited in the
 // POS admin under System Settings -> Website. ONE document (key 'main').
 // `content` holds the sections exactly as in docs/WEBSITE_CMS.md §1; the
 // service (services/websiteService.js) validates it and fills gaps from
