@@ -5,6 +5,7 @@
 // Mounted at /api by routes/modules/index.js — define sub-paths relative to /api.
 //
 // Permissions: attendance_kiosk (view = employees, templates, board; create = punch);
+// desktop_pos view = the Sales button (session.features.sales) — sales use /api/pos/offline/*;
 // employees edit OR attendance edit = enrol / remove fingers.
 const express = require('express');
 const { staff, can, handle } = require('./_access');
@@ -16,7 +17,8 @@ const ENROL = can(['employees', 'attendance'], 'edit');
 
 // ---- Session (who is signed in on the desk, and keeping it signed in) ----
 router.get('/desktop/session', ...staff, handle(ctrl.session));
-router.post('/desktop/session/renew', ...staff, can('attendance_kiosk', 'view'), handle(ctrl.renew));
+// Either desktop permission keeps the desk signed in (attendance and/or Sales).
+router.post('/desktop/session/renew', ...staff, can(['attendance_kiosk', 'desktop_pos'], 'view'), handle(ctrl.renew));
 
 // ---- People and fingerprints ----
 // Names / photos / fingers on file / in-out state. Readable by the desk and by

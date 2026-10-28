@@ -13,6 +13,7 @@
 //     sale counter. (false = never required.)
 //
 //   await tillService.attachOrder(session, order)   // stamps order.cashSession/counter, never throws
+//   await tillService.findSessionAt(cashierId, at, { branchId }) // offline sales: session open at that time
 //
 // Also used by the till / counters controllers: openSession, closeSession,
 // reviewSession, computeExpected, myStatus, checkCutoffs, maybeCheckCutoffs,
@@ -189,6 +190,38 @@ async function resolveSaleSession(req) {
     );
   }
   return { session: null, counter: null };
+}
+
+/**
+ * Till session of a cashier for a sale made at `at` (offline sales uploaded later):
+ * the session that was open at that time (openedAt <= at and not closed before it),
+ * else the cashier's session open right now, else null. Branch-limited when given.
+ * -> { session, counter, match: 'at_time' | 'open_now' } | null
+ */
+async function findSessionAt(cashierId, at, { branchId = null } = {}) {
+  const cashier = toId(cashierId);
+  if (!cashier) return null;
+  const when = new Date(at);
+  const branch = branchId ? { branch: toId(branchId) } : {};
+  let match = 'at_time';
+  let session = null;
+  if (!Number.isNaN(when.getTime())) {
+    session = await CashSession.findOne({
+      cashier,
+      ...branch,
+      openedAt: { $lte: when },
+      $or: [{ closedAt: null }, { closedAt: { $gte: when } }],
+    })
+      .sort({ openedAt: -1 })
+      .lean();
+  }
+  if (!session) {
+    match = 'open_now';
+    session = await CashSession.findOne({ cashier, ...branch, status: 'open' }).lean();
+  }
+  if (!session) return null;
+  const counter = session.counter ? await SaleCounter.findById(session.counter).setOptions({ withDeleted: true }).lean() : null;
+  return { session, counter, match };
 }
 
 async function attachOrder(session, order) {
@@ -776,6 +809,7 @@ async function maybeCheckCutoffs() {
 
 module.exports = {
   resolveSaleSession,
+  findSessionAt,
   attachOrder,
   // till workflow
   openSession,

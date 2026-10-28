@@ -19,9 +19,9 @@ const ROLE_SORTABLE = ['createdAt', 'name'];
 
 // Every permission key in today's catalogue.
 const ALL_KEYS = () => PERMISSION_GROUPS.map((g) => g.key);
-// Keys added with HR time & pay (Oct 2026). Roles saved before then have no
-// knownPermissionKeys; for them these count as "new".
-const KEYS_ADDED_AFTER_LAUNCH = ['shifts', 'hr_policies', 'attendance', 'attendance_kiosk', 'payroll'];
+// Keys added with HR time & pay (Oct 2026) and offline counter sales. Roles saved
+// before then have no knownPermissionKeys; for them these count as "new".
+const KEYS_ADDED_AFTER_LAUNCH = ['shifts', 'hr_policies', 'attendance', 'attendance_kiosk', 'payroll', 'desktop_pos'];
 const ROLE_SEARCH_FIELDS = ['name', 'description'];
 
 /**

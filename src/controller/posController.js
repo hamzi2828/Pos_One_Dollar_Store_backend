@@ -20,10 +20,20 @@ const {
 } = require('../helper/productCodes');
 const stockService = require('../services/stockService');
 const tillService = require('../services/tillService');
-const notificationService = require('../services/notificationService');
 const locationService = require('../services/inventory/locationService');
 const pricing = require('../services/sales/pricingService');
 const { orderForViewer, productForViewer, attachShelfCodes } = require('../services/sales/posView');
+const {
+  PAYMENT_METHODS,
+  paymentPlan,
+  pricingInput,
+  orderMovement,
+  loadOrderForResponse,
+  queueReceipt,
+  cleanClientId,
+  findByClientId,
+  isClientIdDuplicate,
+} = require('../services/sales/saleHelpers');
 const Branch = require('../models/branch');
 const { resolveWriteBranch } = require('../middleware/access');
 
@@ -44,55 +54,6 @@ const sendKnownError = (res, err) => {
     code: err.code || undefined,
     ...(err.maxManualDiscount !== undefined ? { maxManualDiscount: err.maxManualDiscount, maxManualDiscountPct: err.maxManualDiscountPct } : {}),
   });
-};
-
-// Ledger context of an order (StockMovement refType/refId/refNo).
-const orderMovement = (order, userId, note) => ({
-  refType: 'POSOrder',
-  refId: order._id,
-  refNo: order.orderNumber,
-  userId: userId || null,
-  ...(note ? { note } : {}),
-});
-
-// Same population everywhere an order is returned.
-const loadOrderForResponse = (id) =>
-  POSOrder.findById(id)
-    .populate('customer', 'firstName lastName email phone')
-    .populate('cashier', 'firstName lastName email')
-    .populate('items.product', 'name thumbnailUrl bannerUrls price')
-    .populate('paymentHistory.receivedBy', 'firstName lastName')
-    .populate('branch', 'name code address phone');
-
-// WhatsApp slip: queue it but never let it block or fail the sale / payment.
-// The status is written compare-and-set: if the notifications module changed
-// it during the call (e.g. to 'sent'), we leave its value alone. A later
-// "skipped" (e.g. payment slips switched off) never hides an earlier result.
-const WHATSAPP_WAIT_MS = 2500;
-const queueReceipt = async (order, event, { resend = false } = {}) => {
-  const before = order.whatsappStatus || 'none';
-  let result = null;
-  try {
-    result = await Promise.race([
-      notificationService.enqueueOrderReceipt(order, { event, resend }),
-      new Promise((resolve) => setTimeout(() => resolve({ queued: false, reason: 'timeout' }), WHATSAPP_WAIT_MS)),
-    ]);
-  } catch (err) {
-    console.error('[pos] whatsapp receipt failed:', err.message);
-    result = { queued: false, reason: 'error' };
-  }
-  const queued = !!(result && result.queued);
-  const reason = (result && result.reason) || '';
-  const status = queued ? 'queued' : /error|fail|timeout/i.test(reason) ? 'failed' : 'skipped';
-  if (before === 'none' || status !== 'skipped' || resend) {
-    try {
-      const unchanged = before === 'none' ? { $in: [null, 'none'] } : before;
-      await POSOrder.updateOne({ _id: order._id, whatsappStatus: unchanged }, { $set: { whatsappStatus: status } });
-    } catch (err) {
-      console.error('[pos] whatsapp status save failed:', err.message);
-    }
-  }
-  return { queued, reason, status };
 };
 
 // Put an order's pieces back into stock exactly once. The stockRestored flag is
@@ -117,58 +78,6 @@ const restoreOrderStockOnce = async (order, { userId = null, note = '' } = {}) =
   return { claimed: true, errors };
 };
 
-// Partial / full payment of a NEW sale from the server total.
-const paymentPlan = ({ total, paymentMethod, isPartialPayment, paidAmount, cashAmount }) => {
-  let paid = total;
-  let status = PAYMENT_STATUS.FULL;
-  let orderStatus = 'completed';
-  if (isPartialPayment && paidAmount !== undefined && paidAmount !== null && paidAmount !== '') {
-    paid = Math.min(total, Math.max(0, pricing.round2(Number(paidAmount) || 0)));
-    if (total - paid > 0.004) {
-      status = paid > 0 ? PAYMENT_STATUS.PARTIAL : PAYMENT_STATUS.PENDING;
-      orderStatus = 'pending';
-    } else paid = total;
-  }
-  const pending = pricing.round2(Math.max(0, total - paid));
-  const tendered = Number(cashAmount);
-  const out = { paid, pending, status, orderStatus, cashAmount: undefined, cardAmount: undefined, changeGiven: undefined };
-  if (paymentMethod === 'cash') {
-    out.cashAmount = Number.isFinite(tendered) && tendered > 0 ? pricing.round2(tendered) : paid;
-    out.changeGiven = pending > 0 ? 0 : pricing.round2(Math.max(0, out.cashAmount - total));
-  } else if (paymentMethod === 'bank_transfer') {
-    out.changeGiven = pending === 0 && Number.isFinite(tendered) && tendered > total ? pricing.round2(tendered - total) : undefined;
-  } else if (paymentMethod === 'card') {
-    out.cardAmount = paid;
-  } else if (paymentMethod === 'split') {
-    // Split = some cash, the rest by card.
-    const cash = Math.min(paid, Math.max(0, pricing.round2(Number.isFinite(tendered) ? tendered : 0)));
-    out.cashAmount = cash;
-    out.cardAmount = pricing.round2(paid - cash);
-  }
-  return out;
-};
-
-const PAYMENT_METHODS = ['cash', 'card', 'split', 'bank_transfer'];
-
-// Body -> pricing input (shared by quote and createOrder so they always agree).
-// Manual discount: `manualDiscount: { type, value, reason }`; the old body
-// (`discount` amount + `discountReason`) still works as a fixed discount.
-const pricingInput = (body, branchId, access) => {
-  const manualDiscount =
-    body.manualDiscount !== undefined
-      ? body.manualDiscount
-      : Number(body.discount) > 0
-      ? { type: 'fixed', value: Number(body.discount), reason: body.discountReason }
-      : null;
-  return {
-    items: body.items,
-    branchId,
-    access,
-    manualDiscount,
-    taxIds: body.taxIds,
-    appliedTaxes: body.appliedTaxes,
-  };
-};
 
 const posController = {
   // GET /api/pos/products — published products with stock > 0 in the shop.
@@ -498,7 +407,8 @@ const posController = {
   // Body: { items: [{ product, variantId?, quantity, batchNo?, scannedCode?, isGift?, giftReason?,
   //         priceOverride?, price? }], manualDiscount?, taxIds?,
   //         expectedTotal?, paymentMethod, cashAmount?, isPartialPayment?, paidAmount?,
-  //         bankTransferScreenshot?, customer?, customerInfo?, notes? }
+  //         bankTransferScreenshot?, customer?, customerInfo?, notes?, clientId? }
+  // clientId (uuid made by the POS): the same sale sent twice is saved once (200 + the saved order).
   createOrder: async (req, res) => {
     const body = req.body || {};
     try {
@@ -516,6 +426,21 @@ const posController = {
       if (!PAYMENT_METHODS.includes(paymentMethod)) {
         return res.status(400).json({ success: false, message: 'Unknown payment method' });
       }
+
+      // Same sale sent again (the reply was lost, or it was already uploaded as an
+      // offline sale): give back the saved order. No new sale, no stock change.
+      const clientId = cleanClientId(body.clientId);
+      const sendExisting = async (existing) => {
+        const populated = await loadOrderForResponse(existing._id);
+        return res.status(200).json({
+          success: true,
+          duplicate: true,
+          data: orderForViewer(populated, req.access),
+          message: 'This sale was already saved',
+        });
+      };
+      const already = await findByClientId(clientId, '_id');
+      if (already) return sendExisting(already);
 
       // The shop's branch id: stamped on the sale, stock is taken from it.
       const branchId = await shopBranch(req);
@@ -636,11 +561,18 @@ const posController = {
           counter: refOf(till.counter),
           notes: body.notes || 'POS Order',
           completedAt: plan.status === PAYMENT_STATUS.FULL ? new Date() : undefined,
+          clientId: clientId || undefined,
         });
         await order.save();
       } catch (saveErr) {
         // Order was not saved -> give the pieces back (same refs).
-        await stockService.restoreOrderItems(orderItems, { branchId, movement: { ...movement, note: 'Sale not saved' } });
+        const twice = isClientIdDuplicate(saveErr);
+        await stockService.restoreOrderItems(orderItems, { branchId, movement: { ...movement, note: twice ? 'Sale sent twice' : 'Sale not saved' } });
+        if (twice) {
+          // Two sends of the same sale arrived together: the other one was saved.
+          const winner = await findByClientId(clientId, '_id');
+          if (winner) return sendExisting(winner);
+        }
         throw saveErr;
       }
 
@@ -694,6 +626,7 @@ const posController = {
         const esc = String(search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         query.$or = [
           { orderNumber: { $regex: esc, $options: 'i' } },
+          { 'offline.number': { $regex: esc, $options: 'i' } }, // OFF- number on an offline slip
           { 'customerInfo.name': { $regex: esc, $options: 'i' } },
           { 'customerInfo.phone': { $regex: esc, $options: 'i' } },
         ];

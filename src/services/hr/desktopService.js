@@ -2,7 +2,7 @@
 // The desktop attendance app (pos_desktop) — the ONLY way staff mark attendance:
 // a DigitalPersona fingerprint reader on the counter PC. OWNER: Desktop attendance module.
 //
-//   sessionInfo(access)            who is signed in on the desk and what it may do
+//   sessionInfo(access)            who is signed in on the desk and what it may do (+ features: attendance / sales)
 //   renewToken(access)             a fresh 7-day token, so the desk stays signed in
 //   listEmployees({ now })         names / photos / fingers on file / in-out state (no private data)
 //   listTemplates({ updatedSince }) every active employee's templates for local 1:N matching
@@ -129,6 +129,11 @@ async function sessionInfo(access, { now = new Date() } = {}) {
     canEnroll: access.can('employees', 'edit') || access.can('attendance', 'edit'),
     serverTime: now,
     timezone: T.TZ || 'Asia/Karachi',
+    // Which buttons the desktop app shows (Roles page -> Desktop app).
+    features: {
+      attendance: access.can('attendance_kiosk', 'view'),
+      sales: access.can('desktop_pos', 'view'),
+    },
   };
 }
 

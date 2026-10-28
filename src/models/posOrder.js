@@ -135,6 +135,41 @@ const posOrderSchema = new mongoose.Schema(
     isDeleted: { type: Boolean, default: false, index: true },
     deletedAt: { type: Date, default: null },
     deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    // Id the POS made for this sale (uuid). The same sale sent again (reply lost,
+    // then uploaded as an offline sale) is never saved twice. Offline sales set it too.
+    clientId: { type: String },
+    // Sold on the counter PC while the internet was down, uploaded later
+    // (services/sales/offlineSaleService.js, docs/OFFLINE_SALES.md). Absent on normal sales.
+    offline: {
+      type: new mongoose.Schema(
+        {
+          clientId: { type: String }, // made on the PC; the same sale is never saved twice
+          number: { type: String }, // OFF-... number printed on the slip
+          deviceId: { type: String },
+          deviceName: { type: String },
+          soldAt: { type: Date },
+          uploadedAt: { type: Date },
+          uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+          offlineTotal: { type: Number }, // what the PC charged (saved as the order total)
+          serverTotal: { type: Number }, // what the server would have charged
+          warnings: [
+            {
+              _id: false,
+              code: { type: String }, // STOCK_SHORT | PRICE_DIFF | NO_TILL | NOT_ALLOWED
+              product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+              variantId: { type: String },
+              name: { type: String },
+              short: { type: Number },
+              serverTotal: { type: Number },
+              offlineTotal: { type: Number },
+              message: { type: String },
+            },
+          ],
+        },
+        { _id: false }
+      ),
+      default: undefined,
+    },
   },
   { timestamps: true }
 );
@@ -149,6 +184,11 @@ posOrderSchema.index({ customer: 1, paymentStatus: 1 });
 posOrderSchema.index({ 'paymentHistory.receivedBy': 1, 'paymentHistory.paidAt': -1 });
 // Refunds given by a user in a time window (till closing).
 posOrderSchema.index({ refundedBy: 1, refundedAt: -1 });
+
+// Offline sales: one order per PC sale (clientId), and the slip's OFF- number is searchable.
+posOrderSchema.index({ 'offline.clientId': 1 }, { unique: true, sparse: true });
+posOrderSchema.index({ 'offline.number': 1 }, { sparse: true });
+posOrderSchema.index({ clientId: 1 }, { unique: true, sparse: true });
 
 posOrderSchema.statics.generateOrderNumber = async function () {
   const count = await this.countDocuments();

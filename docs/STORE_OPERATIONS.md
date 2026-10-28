@@ -315,7 +315,7 @@ allows daily crons only. `MONGO_URI` → `pos_mirpur_dollar_shop`.
 **Attendance is marked ONLY by fingerprint on the DOLLAR & Co Attendance desktop app** (`pos_desktop`,
 `/api/desktop/*`, punch `source: 'device'`); no PIN, no web kiosk, no manual punch. A manager fixes a
 forgotten punch with a logged **correction** (reason required) in HR → Attendance. The counter PC is
-signed in once by an account with `attendance_kiosk` ("Attendance desktop app").
+signed in once by an account with `attendance_kiosk` (Roles page → Desktop app → "Attendance (fingerprint)").
 Owner's rules (default policy):
 grace 10 min · 3 lates = 1 day cut · absent = 1 day (salary ÷ 30) · overtime at the normal hourly
 rate after manager approval · till shortage cut from the cashier after manager approval.
@@ -342,7 +342,7 @@ All rules are **HR Policies** the shop creates (HR → Policies) and assigns per
   quota, unpaidTotal), overtime approved/pending, `daysWorked`, and `cuts` in DAYS
   (`lateCutDays`, `lateCutMinutes`, `absentCutDays`, `halfDayCutDays`, `unpaidLeaveCutDays`).
 - Permissions: `shifts`, `hr_policies`, `attendance` (edit = corrections / overtime approval),
-  `attendance_kiosk` ("Attendance desktop app" sign-in), `payroll` (edit = approve / pay).
+  `payroll` (edit = approve / pay). Desktop app section: `attendance_kiosk` ("Attendance (fingerprint)"), `desktop_pos` (offline counter sales, see OFFLINE_SALES.md).
 - Payroll approval locks every day of the month (days without a record get a locked placeholder,
   note "Payroll lock"); reopen (super admin, nothing paid) removes them.
 - Pages (sidebar already links them): `/admin/hr/roster`, `/admin/hr/policies`,

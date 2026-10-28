@@ -233,8 +233,13 @@ const insufficient = (product, variant, branchId, available, requested) =>
  * `movement` (optional): ledger context, default type 'adjustment_out'. Use it
  * for every non-sale removal too: damage, internal_use, vendor_return,
  * consignment_return, adjustment_out.
+ *
+ * `allowShort: true` (offline counter sales only — the goods already left the
+ * shop): never throws for missing stock. It takes what the branch has (stock
+ * stops at 0) and returns `short` = pieces that were not there. The result
+ * always has `taken` (pieces really taken out) and `short` (0 normally).
  */
-const deductStock = async ({ productId, variantId, quantity, batchNo, branchId, movement }) => {
+const deductStock = async ({ productId, variantId, quantity, batchNo, branchId, movement, allowShort = false }) => {
   const qty = toInt(quantity, 0);
   if (qty <= 0) throw stockError('Quantity must be at least 1', 400);
   const wantedBatch = normalizeCode(batchNo);
@@ -245,14 +250,15 @@ const deductStock = async ({ productId, variantId, quantity, batchNo, branchId, 
     const { unit, index, variant } = pickUnit(product, variantId);
     syncUnitBranchStock(unit, { mainBranchId });
     const available = unitBranchStock(unit, branch, mainBranchId);
-    if (available < qty) throw insufficient(product, variant, branch, available, qty);
+    if (available < qty && !allowShort) throw insufficient(product, variant, branch, available, qty);
+    const take = Math.min(qty, Math.max(0, available));
 
     const allocations = [];
     if (unit.batches && unit.batches.length) {
       const here = batchesIn(unit, branch);
       const first = wantedBatch ? here.find((b) => normalizeCode(b.batchNo) === wantedBatch) : null;
       const order = [...(first ? [first] : []), ...sortBatchesForSale(here.filter((b) => b !== first))];
-      let remaining = qty;
+      let remaining = take;
       for (const b of order) {
         if (remaining <= 0) break;
         const have = Math.max(0, Number(b.quantity) || 0);
@@ -264,19 +270,19 @@ const deductStock = async ({ productId, variantId, quantity, batchNo, branchId, 
       }
     } else {
       const row = branchRow(unit, branch);
-      row.stock = Math.max(0, (Number(row.stock) || 0) - qty);
+      row.stock = Math.max(0, (Number(row.stock) || 0) - take);
     }
 
     recompute(product, unit, { allowRepublish: false, mainBranchId });
-    return { set: buildSet(product, index, unit), result: { allocations, branchId: branch } };
+    return { set: buildSet(product, index, unit), result: { allocations, branchId: branch, taken: take, short: qty - take } };
   });
 
-  if (movement !== false) {
+  if (movement !== false && out.taken > 0) {
     out.movement = await hooks().onOut({
       product: out.product,
       variantId,
       branchId: branch,
-      quantity: qty,
+      quantity: out.taken,
       allocations: out.allocations,
       movement: movement || {},
       defaultType: 'adjustment_out',
@@ -612,8 +618,13 @@ const itemProductId = (item) => (item.product && item.product._id ? item.product
  * Each item gets type 'sale' (or 'gift' when item.isGift), unitPrice =
  * item.price and unitCost = item.costPrice when set. Ledger rows are written
  * only after EVERY item was deducted (a failed order leaves no rows).
+ *
+ * `allowShort: true` (offline counter sales): never fails for missing stock;
+ * each result also has `taken` and `short` (pieces that were not in stock).
+ * Ledger rows record only the pieces really taken. To undo, restore `taken`
+ * pieces per line (not item.quantity).
  */
-const deductOrderItems = async (items, { branchId, movement } = {}) => {
+const deductOrderItems = async (items, { branchId, movement, allowShort = false } = {}) => {
   const branch = await resolveBranch(branchId);
   const done = [];
   const results = [];
@@ -630,24 +641,28 @@ const deductOrderItems = async (items, { branchId, movement } = {}) => {
         batchNo: item.batchNo,
         branchId: branch,
         movement: false,
+        allowShort,
       });
-      done.push({ item, allocations: r.allocations, product: r.product });
-      results.push({ allocations: r.allocations });
+      done.push({ item, allocations: r.allocations, product: r.product, taken: r.taken });
+      results.push(allowShort ? { allocations: r.allocations, taken: r.taken, short: r.short } : { allocations: r.allocations });
     }
     if (movement !== false) {
       const ctx = movement || {};
       for (const d of done) {
+        if (!(d.taken > 0)) continue;
+        const short = toInt(d.item.quantity, 0) - d.taken;
         await hooks().onOut({
           product: d.product,
           variantId: d.item.variantId,
           branchId: branch,
-          quantity: toInt(d.item.quantity, 0),
+          quantity: d.taken,
           allocations: d.allocations,
           movement: {
             ...ctx,
             type: d.item.isGift ? 'gift' : ctx.type || 'sale',
             unitPrice: d.item.isGift ? 0 : d.item.price,
             ...(d.item.costPrice !== undefined && d.item.costPrice !== null ? { unitCost: d.item.costPrice } : {}),
+            ...(short > 0 ? { note: [ctx.note, `${short} more sold than in stock (offline sale)`].filter(Boolean).join(' · ') } : {}),
           },
           defaultType: 'sale',
         });
@@ -657,10 +672,11 @@ const deductOrderItems = async (items, { branchId, movement } = {}) => {
   } catch (err) {
     for (const d of done.reverse()) {
       try {
+        if (!(d.taken > 0)) continue;
         await restoreStock({
           productId: itemProductId(d.item),
           variantId: d.item.variantId,
-          quantity: d.item.quantity,
+          quantity: d.taken,
           allocations: d.allocations,
           branchId: branch,
           movement: false,

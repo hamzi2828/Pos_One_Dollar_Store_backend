@@ -124,12 +124,23 @@ const PERMISSION_SECTIONS = [
             { key: 'hr_policies', label: 'HR Policies', actions: ['view', 'create', 'edit', 'delete'] },
             // create = manual punch, edit = correct times / approve overtime.
             { key: 'attendance', label: 'Attendance', actions: ['view', 'create', 'edit', 'export'] },
-            // Sign in the DOLLAR & Co Attendance desktop app (fingerprint clock-in on the counter PC).
-            { key: 'attendance_kiosk', label: 'Attendance desktop app', actions: ['view', 'create'] },
             // Payroll, advances and deductions; edit = approve / pay.
             { key: 'payroll', label: 'Payroll & Advances', actions: ['view', 'create', 'edit', 'delete', 'export'] },
             // Which employees look after which product category (drives Category Performance).
             { key: 'category_assignments', label: 'Category Staff', actions: ['view', 'edit'] },
+        ],
+    },
+    {
+        // The DOLLAR & Co desktop app on the counter PC (pos_desktop).
+        key: 'desktop',
+        label: 'Desktop app',
+        iconKey: 'desktop',
+        groups: [
+            // Sign in the desktop app and punch (fingerprint clock-in). Key kept from the HR section.
+            { key: 'attendance_kiosk', label: 'Attendance (fingerprint)', actions: ['view', 'create'] },
+            // view = "Sales" button in the desktop app + download the offline catalogue;
+            // create = sell while the internet is down and upload those sales later.
+            { key: 'desktop_pos', label: 'Sales on the counter PC (works offline)', actions: ['view', 'create'] },
         ],
     },
     {
@@ -218,13 +229,13 @@ const DEFAULT_ROLES = [
             price_tiers: VCE, customers: VCE, banks: V, expenses: VCE, assets: VCE, employees: VCE, category_assignments: VE,
             staff: VCE, roles: V, activity_log: V, notifications: V,
             shifts: ['view', 'create', 'edit', 'delete'], hr_policies: V, attendance: ['view', 'create', 'edit', 'export'],
-            attendance_kiosk: VC, payroll: ['view', 'create', 'export'],
+            attendance_kiosk: VC, desktop_pos: VC, payroll: ['view', 'create', 'export'],
         },
     },
     {
         name: 'Cashier',
         description: 'Sells at the counter and closes their own till (blind count). Cannot see sales totals.',
-        permissions: { pos: VC, till: VCE, customers: VC },
+        permissions: { pos: VC, till: VCE, customers: VC, desktop_pos: VC },
     },
     {
         name: 'Warehouse Assistant',

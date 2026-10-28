@@ -3,6 +3,7 @@
 // Every route: auth (JWT) + loadAccess (role/permissions) + a permission:
 //   pos        = the selling screen (products, customers, new sale, held carts)
 //   pos_orders = POS order history (list, refund = edit, delete = delete)
+//   desktop_pos = selling on the counter PC without internet (view = catalogue, create = upload sales)
 // Sales figures (dashboard stats, sales chart, order history) are NOT for the
 // plain `pos` cashier: they need dashboard / pos_orders / till_verify view
 // (the shift salesman must not see today's sale before cash closing).
@@ -10,6 +11,7 @@ const express = require('express');
 const router = express.Router();
 const posController = require('../controller/posController');
 const heldOrderController = require('../controller/heldOrderController');
+const offlineSaleController = require('../controller/offlineSaleController');
 const auth = require('../middleware/auth');
 const { loadAccess, requirePermission } = require('../middleware/access');
 const { uploadSingle } = require('../helper/upload');
@@ -64,6 +66,11 @@ router.post('/held-orders', can('pos', 'create'), heldOrderController.createHeld
 router.post('/held-orders/:id/retrieve', can('pos', 'create'), heldOrderController.retrieveHeldOrder);
 router.delete('/held-orders/:id', can('pos', 'delete'), heldOrderController.deleteHeldOrder);
 router.delete('/held-orders', can('pos', 'delete'), heldOrderController.clearAllHeldOrders);
+
+// Offline selling on the counter PC (docs/OFFLINE_SALES.md).
+// Uploading also needs `pos` create: offline sales are still sales.
+router.get('/offline/catalog', can('desktop_pos', 'view'), offlineSaleController.catalog);
+router.post('/offline/orders', can('desktop_pos', 'create'), can('pos', 'create'), offlineSaleController.uploadOrders);
 
 // Uploads
 router.post('/upload/screenshot', can('pos', 'create'), uploadSingle('screenshot'), posController.uploadScreenshot);
