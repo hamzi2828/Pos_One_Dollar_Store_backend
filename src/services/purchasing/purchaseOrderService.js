@@ -359,7 +359,30 @@ async function getOne(req, id) {
   const plain = po.toObject();
   delete plain.lockedAt;
   if (po.goodsReceipt) {
-    const grn = await GoodsReceipt.findById(po.goodsReceipt).select('grnNumber status receiverName startedAt completedAt totals').lean();
+    const grn = await GoodsReceipt.findById(po.goodsReceipt)
+      .select('grnNumber status receiverName startedAt completedAt totals boxes boxesCheckedAt boxesDone entries.bill entries.undone')
+      .lean();
+    if (grn) {
+      // Per vendor bill, where it is in the warehouse: not_checked → checked → unpacking → done.
+      const legacy = grn.boxesCheckedAt && !(grn.boxes || []).some((b) => b.checkedAt);
+      grn.byBill = (grn.boxes || []).map((b) => {
+        const checked = !!b.checkedAt || !!legacy;
+        const items = (grn.entries || []).filter((e) => !e.undone && String(e.bill) === String(b.bill)).length;
+        const boxesDone = (grn.boxesDone || []).filter((d) => String(d.bill) === String(b.bill)).length;
+        const done = grn.status === 'completed' || (checked && b.received > 0 && boxesDone >= b.received);
+        return {
+          bill: b.bill,
+          status: done ? 'done' : items || boxesDone ? 'unpacking' : checked ? 'checked' : 'not_checked',
+          expected: b.expected || 0,
+          received: checked ? b.received || 0 : null,
+          boxesDone,
+          items,
+        };
+      });
+      delete grn.boxes;
+      delete grn.boxesDone;
+      delete grn.entries;
+    }
     plain.grn = grn || null;
   }
   return plain;
