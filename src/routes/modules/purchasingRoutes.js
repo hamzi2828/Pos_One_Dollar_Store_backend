@@ -17,6 +17,8 @@ const GRN = 'goods_receiving';
 
 // ----- Purchase orders (static paths before /:id)
 router.get('/purchase-orders/meta', ...staff, can(PO, 'view'), handle(po.meta));
+// Staff logins for the Buyer dropdown (names only).
+router.get('/purchase-orders/buyers', ...staff, can(PO, 'view'), handle(po.buyers));
 // Owner-only rules (e.g. someone other than the buyer must receive the goods).
 router.get('/purchase-orders/settings', ...staff, can([PO, GRN], 'view'), handle(po.settings));
 router.put('/purchase-orders/settings', ...staff, superAdmin, handle(po.updateSettings));

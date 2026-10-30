@@ -11,6 +11,7 @@ const ok = (res, data, extra = {}, status = 200) => res.status(status).json({ su
 module.exports = {
   meta: async (req, res) => ok(res, await service.meta()),
   settings: async (req, res) => ok(res, await service.settings()),
+  buyers: async (req, res) => ok(res, await service.buyers()),
   updateSettings: async (req, res) => ok(res, await service.updateSettings(req, req.body || {})),
 
   // GET /purchase-orders/product-search?search=&ids=a,b

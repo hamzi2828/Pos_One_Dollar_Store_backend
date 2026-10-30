@@ -5,6 +5,8 @@ const PurchaseOrder = require('../../models/purchaseOrder');
 const GoodsReceipt = require('../../models/goodsReceipt');
 const Vendor = require('../../models/vendor');
 const Product = require('../../models/product');
+const User = require('../../models/user');
+const { STAFF_FILTER, isEffectiveSuperAdmin } = require('../../controller/staffController');
 const { branchFilter, resolveWriteBranch } = require('../../middleware/access');
 const { nextNumber } = require('../sequenceService');
 const vendorLedger = require('../vendorLedgerService');
@@ -249,6 +251,32 @@ async function meta() {
   };
 }
 
+// ---------------------------------------------------------------- buyers (staff logins)
+
+const staffName = (u) => `${u.firstName || ''} ${u.lastName || ''}`.trim() || u.email || 'Staff';
+const ACTIVE_STAFF = { $and: [STAFF_FILTER, { isActive: { $ne: false } }] };
+
+/** Active staff logins a trip can be bought by (Buyer dropdown). Names only, no staff permission needed. */
+async function buyers() {
+  const users = await User.find(ACTIVE_STAFF)
+    .select('firstName lastName email role isSuperAdmin staffRole branch')
+    .populate('staffRole', 'name')
+    .sort({ firstName: 1, lastName: 1 })
+    .lean();
+  return users.map((u) => ({
+    id: String(u._id),
+    name: staffName(u),
+    role: isEffectiveSuperAdmin(u) ? 'Super Admin' : (u.staffRole && u.staffRole.name) || null,
+  }));
+}
+
+/** The staff login picked as buyer (must be an active staff member). */
+async function loadBuyer(buyerId) {
+  const user = h.isId(buyerId) ? await User.findOne({ _id: h.toId(buyerId), ...ACTIVE_STAFF }).select('firstName lastName email').lean() : null;
+  if (!user) throw httpError('Pick the buyer from the staff list (that staff login is missing or switched off).');
+  return user;
+}
+
 async function list(req) {
   const q = req.query || {};
   const { page, limit, skip } = h.pageParams(q);
@@ -344,12 +372,14 @@ async function create(req, body = {}) {
   const branch = await resolveWriteBranch(req);
   const method = body.allocationMethod || 'value';
   if (!PurchaseOrder.ALLOCATION_METHODS.includes(method)) throw httpError('Unknown allocation method');
+  // buyerId = a staff login; else a typed name (e.g. a driver) bought for the person starting the trip.
+  const picked = body.buyerId ? await loadBuyer(body.buyerId) : null;
   const po = new PurchaseOrder({
     poNumber: await nextNumber('PO'),
     branch,
     status: 'open',
-    buyer: h.userId(req),
-    buyerName: h.toText(body.buyerName, 100) || h.userName(req),
+    buyer: picked ? picked._id : h.userId(req),
+    buyerName: picked ? staffName(picked) : h.toText(body.buyerName, 100) || h.userName(req),
     notes: h.toText(body.notes, 1000),
     expectedArrival: h.toDate(body.expectedArrival, 'Expected arrival'),
     allocationMethod: method,
@@ -366,9 +396,17 @@ async function create(req, body = {}) {
 }
 
 async function updateHeader(req, id, body = {}) {
+  const picked = body.buyerId ? await loadBuyer(body.buyerId) : null;
   const { po } = await mutateOpen(req, id, (doc) => {
     if (body.notes !== undefined) doc.notes = h.toText(body.notes, 1000);
-    if (body.buyerName !== undefined) doc.buyerName = h.toText(body.buyerName, 100) || doc.buyerName;
+    if (picked) {
+      doc.buyer = picked._id;
+      doc.buyerName = staffName(picked);
+    } else if (body.buyerName !== undefined) {
+      doc.buyerName = h.toText(body.buyerName, 100) || doc.buyerName;
+      // Switched to a typed name: the trip counts as bought by whoever started it.
+      if (body.buyerId === null || body.buyerId === '') doc.buyer = doc.createdBy || doc.buyer;
+    }
     if (body.expectedArrival !== undefined) doc.expectedArrival = h.toDate(body.expectedArrival, 'Expected arrival');
     if (body.allocationMethod !== undefined) {
       if (!PurchaseOrder.ALLOCATION_METHODS.includes(body.allocationMethod)) throw httpError('Unknown allocation method');
@@ -846,6 +884,7 @@ module.exports = {
   updateSettings,
   safeNotify,
   meta,
+  buyers,
   list,
   getOne,
   costingFor,
