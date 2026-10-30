@@ -488,45 +488,64 @@ async function checkBoxes(req, id, body = {}) {
   const grn = await findGRN(req, id);
   await assertMayVerify(req, grn);
   if (!['pending', 'in_progress'].includes(grn.status)) throw httpError(`This goods receipt is ${grn.status}`, 409, 'GRN_LOCKED');
-  if (grn.status === 'in_progress' && liveEntries(grn).length) {
-    throw httpError('Goods are already being entered, so the box/pack count can no longer be changed.', 409, 'BOXES_LOCKED');
-  }
   const inputs = h.toList(body.boxes);
   if (!inputs.length) throw httpError('Enter how many boxes/packs arrived for each vendor bill');
 
   const po = await loadPO(grn);
-  const boxes = billsOf(grn, po).map((b) => ({
-    bill: b.bill,
-    vendor: b.vendor,
-    vendorName: b.vendorName,
-    billNo: b.billNo,
-    billTotal: b.billTotal,
-    expected: b.boxesExpected,
-    received: b.boxesReceived,
-  }));
+  const old = grn.boxes || [];
+  // Old receipts were checked all at once: count those rows as checked.
+  const legacyAt = grn.boxesCheckedAt && !old.some((b) => b.checkedAt) ? grn.boxesCheckedAt : null;
+  const boxes = billsOf(grn, po).map((b) => {
+    const was = old.find((x) => h.sameId(x.bill, b.bill));
+    return {
+      bill: b.bill,
+      vendor: b.vendor,
+      vendorName: b.vendorName,
+      billNo: b.billNo,
+      billTotal: b.billTotal,
+      expected: b.boxesExpected,
+      received: b.boxesReceived,
+      checkedAt: (was && was.checkedAt) || legacyAt || null,
+    };
+  });
+  // Vendors are checked one by one: a vendor's count locks once its goods are being entered.
+  const live = liveEntries(grn);
+  const now = new Date();
+  const changed = [];
+  const lockedBills = [];
   for (const input of inputs) {
     const row = boxes.find((b) => h.sameId(b.bill, input && (input.bill || input.billId)));
     if (!row) throw httpError('Vendor bill not found on this goods receipt', 404);
-    row.received = h.toAmount(input.received, `Boxes received from ${row.vendorName}`, { int: true });
+    const n = h.toAmount(input.received, `Boxes received from ${row.vendorName}`, { int: true });
+    const hasEntries = live.some((e) => h.sameId(e.bill, row.bill));
+    if (hasEntries) {
+      if (n !== row.received) {
+        throw httpError(`${row.vendorName}: goods are already being entered, so its box/pack count can no longer be changed.`, 409, 'BOXES_LOCKED');
+      }
+      lockedBills.push(row.bill);
+    }
+    row.received = n;
+    row.checkedAt = row.checkedAt || now;
+    changed.push(row);
   }
   const received = sumOf(boxes, (b) => b.received);
   const expected = sumOf(boxes, (b) => b.expected);
-  const warnings = boxes
+  const warnings = changed
     .filter((b) => b.received !== b.expected)
     .map((b) =>
       b.received < b.expected
         ? `${b.vendorName}: ${b.expected - b.received} box(es)/pack(s) missing (${b.received} of ${b.expected}).`
         : `${b.vendorName}: ${b.received - b.expected} extra box(es)/pack(s) (${b.received}, bill says ${b.expected}).`
     );
-  const now = new Date();
   const set = {
     boxes,
     cartonsReceived: received,
-    boxesCheckedAt: now,
+    boxesCheckedAt: grn.boxesCheckedAt || now,
     boxesCheckedBy: h.userId(req),
     ...(body.note !== undefined || body.boxesNote !== undefined ? { boxesNote: h.toText(body.note ?? body.boxesNote, 500) } : {}),
   };
-  const history = h.historyEntry(req, 'boxes_checked', [`${received} of ${expected} boxes arrived.`, ...warnings].join(' '));
+  const who = changed.length === 1 ? `${changed[0].vendorName}: ${changed[0].received} of ${changed[0].expected} boxes/packs.` : `${received} of ${expected} boxes arrived.`;
+  const history = h.historyEntry(req, 'boxes_checked', [who, ...warnings].join(' '));
 
   if (grn.status === 'pending') {
     const res = await GoodsReceipt.updateOne(
@@ -543,11 +562,18 @@ async function checkBoxes(req, id, body = {}) {
       { $set: { status: 'receiving' }, $push: { history: h.historyEntry(req, 'receiving_started', grn.grnNumber) }, $inc: { __v: 1 } }
     );
   } else {
+    // Same version (no other save in between), and no new entries for the vendors whose count changes.
+    const changingBills = changed.filter((b) => !lockedBills.some((x) => h.sameId(x, b.bill))).map((b) => b.bill);
     const res = await GoodsReceipt.updateOne(
-      { _id: grn._id, status: 'in_progress', entries: { $not: { $elemMatch: { undone: { $ne: true } } } } },
+      {
+        _id: grn._id,
+        status: 'in_progress',
+        __v: grn.__v,
+        entries: { $not: { $elemMatch: { undone: { $ne: true }, bill: { $in: changingBills } } } },
+      },
       { $set: set, $push: { history }, $inc: { __v: 1 } }
     );
-    if (!res.modifiedCount) throw httpError('Goods are already being entered, so the box/pack count can no longer be changed.', 409, 'BOXES_LOCKED');
+    if (!res.modifiedCount) throw httpError('This goods receipt changed. Reload and try again.', 409);
   }
   return { grn: await getOne(req, id), warnings };
 }
@@ -1032,6 +1058,14 @@ async function complete(req, id, body = {}) {
  * Safe to retry: unique debit note per GRN + bill; a completed GRN is returned as is.
  */
 async function completeEntries(req, id, body, current) {
+  // Every vendor's boxes/packs must be counted (old receipts were counted all at once).
+  const rows = current.boxes || [];
+  if (rows.some((b) => b.checkedAt)) {
+    const notChecked = rows.filter((b) => !b.checkedAt).map((b) => b.vendorName);
+    if (notChecked.length) {
+      throw httpError(`Check boxes/packs first for: ${notChecked.slice(0, 5).join(', ')}${notChecked.length > 5 ? ` and ${notChecked.length - 5} more` : ''}.`, 409, 'BOXES_NOT_CHECKED');
+    }
+  }
   const grn = await h.acquireLock(GoodsReceipt, current._id, { status: 'in_progress' });
   if (!grn) throw httpError('This goods receipt is being finished right now. Try again in a moment.', 409, 'GRN_BUSY');
   const by = h.userId(req);

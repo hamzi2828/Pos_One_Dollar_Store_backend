@@ -98,6 +98,7 @@ const boxSchema = new mongoose.Schema(
     billTotal: { type: Number, default: 0 }, // frozen at send (what we owe on this bill)
     expected: { type: Number, min: 0, default: 0 }, // bill cartons
     received: { type: Number, min: 0, default: 0 },
+    checkedAt: { type: Date, default: null }, // this vendor's boxes counted (vendors are checked one by one)
   },
   { _id: false }
 );
