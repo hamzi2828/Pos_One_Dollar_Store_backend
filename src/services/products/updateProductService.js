@@ -1,6 +1,7 @@
 // updateProductService.js
 // Partial update from the admin product form (multipart). Stock typed in the
 // form is the shop's stock.
+const mongoose = require('mongoose');
 const Product = require('../../models/product');
 
 // Check if Vercel Blob is configured
@@ -49,6 +50,7 @@ const {
     ensureUniqueSku,
     parseVariantCodeFields,
     branchContext,
+    resolveProductVendor,
   },
 } = require('./createProductService');
 
@@ -548,6 +550,22 @@ const updateProductService = {
       });
     }
 
+    // ----- Vendor picked on the form -----
+    // vendorId missing = unchanged, "" = clear, id = set (400 if unknown).
+    // The product's current vendor may be resent even if it is inactive now.
+    const unset = {};
+    if (typeof payload.vendorId !== 'undefined' || typeof payload.vendor !== 'undefined') {
+      const current = mongoose.isValidObjectId(id) ? await Product.findById(id).select('lastVendor').lean() : null;
+      const vendor = await resolveProductVendor(payload, { keepId: current && current.lastVendor });
+      if (vendor) {
+        updates.lastVendor = vendor._id;
+        updates.lastVendorName = vendor.name;
+      } else {
+        unset.lastVendor = 1;
+        unset.lastVendorName = 1;
+      }
+    }
+
     // ----- Price tier (dollar-store price point) -----
     // A product linked to a tier always sells at the tier price
     // (services/sales/priceTierService.js), so edits cannot drift off it.
@@ -597,7 +615,11 @@ const updateProductService = {
       } else if (logsPrices) {
         before = await Product.findById(id).select(PRICE_SELECT).lean();
       }
-      updated = await Product.findOneAndUpdate(filter, { $set: set }, { new: true, runValidators: true });
+      updated = await Product.findOneAndUpdate(
+        filter,
+        Object.keys(unset).length ? { $set: set, $unset: unset } : { $set: set },
+        { new: true, runValidators: true }
+      );
       if (updated || !filter.updatedAt) break;
       // Changed meanwhile (or deleted): loop reloads it.
     }

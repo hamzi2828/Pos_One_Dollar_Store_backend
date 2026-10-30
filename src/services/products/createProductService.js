@@ -1,7 +1,9 @@
 // createProductService.js
 // Create a product from the admin product form (multipart). Codes, batches and
 // stock rules: helper/productCodes.js. Stock typed in the form goes to the shop.
+const mongoose = require('mongoose');
 const Product = require('../../models/product');
+const Vendor = require('../../models/vendor');
 const crypto = require('crypto');
 
 // Check if Vercel Blob is configured
@@ -42,6 +44,30 @@ const isNumber = (value) => {
 const toBool = (value) => value === true || value === 'true' || value === 1 || value === '1' || value === 'on';
 
 const hasValue = (value) => value !== undefined && value !== null && value !== '';
+
+const vendorError = (message) => Object.assign(new Error(message), { status: 400 });
+
+/**
+ * Vendor picked on the product form: `vendorId` (or `vendor`). Multipart sends strings.
+ * Returns undefined = not sent (leave as is), null = "" (no vendor),
+ * or { _id, name } of a live vendor. Throws 400 for a bad / unknown / deleted vendor.
+ * An inactive vendor is refused unless it is `keepId` (the product's current vendor).
+ */
+const resolveProductVendor = async (payload = {}, { keepId = null } = {}) => {
+  const key = typeof payload.vendorId !== 'undefined' ? 'vendorId' : typeof payload.vendor !== 'undefined' ? 'vendor' : null;
+  if (!key) return undefined;
+  let raw = payload[key];
+  if (raw && typeof raw === 'object' && raw._id) raw = raw._id;
+  const id = raw === null ? '' : String(raw).trim();
+  if (!id || id === 'null' || id === 'undefined') return null;
+  if (!mongoose.isValidObjectId(id) || !/^[0-9a-fA-F]{24}$/.test(id)) throw vendorError(`Invalid vendor id "${id}"`);
+  const vendor = await Vendor.findOne({ _id: id, isDeleted: { $ne: true } }).select('name isActive').lean();
+  if (!vendor) throw vendorError('Vendor not found (it may have been deleted)');
+  if (vendor.isActive === false && !(keepId && String(keepId) === String(vendor._id))) {
+    throw vendorError(`Vendor ${vendor.name} is inactive`);
+  }
+  return { _id: vendor._id, name: vendor.name || '' };
+};
 
 // piecesPerBox: integer >= 1 (default 1)
 const toPiecesPerBox = (value) => {
@@ -312,6 +338,9 @@ const createProductService = {
       });
     }
 
+    // Vendor picked on the form (optional)
+    const vendor = await resolveProductVendor(payload);
+
     // Coerce numeric fields when coming from multipart strings
     if (typeof price === 'string' && price !== '') price = Number(price);
     if (typeof discountedPrice === 'string' && discountedPrice !== '') discountedPrice = Number(discountedPrice);
@@ -463,6 +492,11 @@ const createProductService = {
       branchStock: productType === 'variant' || batches.length ? [] : [{ branch: ctx.writeBranchId, stock }],
     };
 
+    if (vendor) {
+      doc.lastVendor = vendor._id;
+      doc.lastVendorName = vendor.name;
+    }
+
     // Add colorMedia to the document
     if (colorMedia && typeof colorMedia === 'object' && Object.keys(colorMedia).length > 0) {
       doc.colorMedia = colorMedia;
@@ -492,4 +526,5 @@ module.exports.helpers = {
   ensureUniqueSku,
   parseVariantCodeFields,
   branchContext,
+  resolveProductVendor,
 };
