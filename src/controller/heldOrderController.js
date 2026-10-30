@@ -78,6 +78,7 @@ const heldOrderController = {
         isGift: !!item.isGift,
         giftReason: item.isGift ? item.giftReason || '' : undefined,
         priceOverride: !!item.priceOverride,
+        scannedCode: typeof item.scannedCode === 'string' ? item.scannedCode.trim().slice(0, 64) : '',
       }));
 
       const heldOrder = await HeldOrder.create({

@@ -11,8 +11,10 @@ const posOrderItemSchema = new mongoose.Schema({
   size: { type: String, required: false },
   color: { type: String, required: false },
   discount: { type: Number, default: 0 },
-  // Barcode/short code the cashier scanned or typed (for audit).
-  scannedCode: { type: String, required: false },
+  // Exact barcode/short code the cashier scanned or typed for this line ('' = added
+  // by name search / click). One product can have several barcodes (e.g. colours),
+  // so "sold by barcode" reports group on this.
+  scannedCode: { type: String, trim: true, default: '' },
   // Batch the cashier asked for (scanned batch label). Optional.
   batchNo: { type: String, required: false },
   // Which batches the pieces actually came out of — used to put stock back.
@@ -184,6 +186,8 @@ posOrderSchema.index({ customer: 1, paymentStatus: 1 });
 posOrderSchema.index({ 'paymentHistory.receivedBy': 1, 'paymentHistory.paidAt': -1 });
 // Refunds given by a user in a time window (till closing).
 posOrderSchema.index({ refundedBy: 1, refundedAt: -1 });
+// Sold-by-barcode report: which barcode of a product was scanned.
+posOrderSchema.index({ 'items.product': 1, 'items.scannedCode': 1 });
 
 // Offline sales: one order per PC sale (clientId), and the slip's OFF- number is searchable.
 posOrderSchema.index({ 'offline.clientId': 1 }, { unique: true, sparse: true });

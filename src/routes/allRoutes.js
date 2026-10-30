@@ -117,6 +117,7 @@ router.post('/products/:id/stock/receive', ...staff, can('stock_receive', 'creat
 router.post('/products/labels/print', ...staff, can('products', 'view'), labelController.printBulk);
 router.get('/products/:id/labels', ...staff, can('products', 'view'), labelController.printLabels);
 router.get('/products/:id/label-data', ...staff, can('products', 'view'), labelController.getLabelData);
+router.get('/products/:id/sold-by-barcode', ...staff, can(PRODUCT_READ, 'view'), productController.getSoldByBarcode);
 router.get('/products/:id', ...staff, can(PRODUCT_READ, 'view'), productController.getProductById);
 // multipart form-data: thumbnail (1), banners (up to 10), colorThumbnail / colorBanner (per colour)
 router.post('/products', ...staff, can('products', 'create'), PRODUCT_UPLOADS, productController.createProduct);

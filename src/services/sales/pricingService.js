@@ -188,6 +188,11 @@ function pickTaxIds(taxIds, appliedTaxes) {
 
 // ---------------------------------------------------------------- lines
 
+// Code scanned/typed for a line: normalized like product codes (trim + upper case,
+// so it matches product.barcodes / scanCodes), max 64 chars, '' when not sent.
+const MAX_SCANNED_CODE = 64;
+const cleanScannedCode = (v) => (typeof v === 'string' || typeof v === 'number' ? normalizeCode(v).slice(0, MAX_SCANNED_CODE) : '');
+
 const toPlain = (doc) => (doc && typeof doc.toObject === 'function' ? doc.toObject({ flattenMaps: true }) : doc);
 
 /**
@@ -214,10 +219,11 @@ async function resolveLines(rawItems, { branchId, access } = {}) {
     const productRef = idOf(raw.product);
     let product = productRef ? byId.get(String(productRef)) : null;
     let match = null;
-    if (raw.scannedCode) {
-      if (product) match = resolveScan(product, raw.scannedCode);
+    const scannedCode = cleanScannedCode(raw.scannedCode);
+    if (scannedCode) {
+      if (product) match = resolveScan(product, scannedCode);
       else if (!productRef) {
-        const found = await findProductByCode(raw.scannedCode);
+        const found = await findProductByCode(scannedCode);
         if (found) {
           product = toPlain(found.product);
           match = found.match;
@@ -225,7 +231,7 @@ async function resolveLines(rawItems, { branchId, access } = {}) {
       }
     }
     if (!product) {
-      throw httpError(404, `Product not found: ${productRef || raw.scannedCode || 'unknown'}`, 'PRODUCT_NOT_FOUND');
+      throw httpError(404, `Product not found: ${productRef || scannedCode || 'unknown'}`, 'PRODUCT_NOT_FOUND');
     }
 
     let unit = product;
@@ -290,7 +296,7 @@ async function resolveLines(rawItems, { branchId, access } = {}) {
       priceOverride,
       costPrice: cost === null ? undefined : cost,
       discount: 0,
-      scannedCode: raw.scannedCode ? normalizeCode(raw.scannedCode) : undefined,
+      scannedCode,
       batchNo: batchNo ? normalizeCode(batchNo) : undefined,
       isGift,
       giftReason,
@@ -315,7 +321,7 @@ function toOrderItem(line) {
     size: line.size,
     color: line.color,
     category: line.category,
-    scannedCode: line.scannedCode,
+    scannedCode: line.scannedCode || '',
     batchNo: line.batchNo,
     isGift: !!line.isGift,
     giftReason: line.isGift ? line.giftReason : undefined,

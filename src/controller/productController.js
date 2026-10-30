@@ -7,6 +7,7 @@ const { resolveWriteBranch } = require('../middleware/access');
 const { getMainBranchId, withBranchStock, branchStockLevelQuery } = require('../helper/productCodes');
 const createProductService = require('../services/products/createProductService');
 const updateProductService = require('../services/products/updateProductService');
+const { soldByBarcode } = require('../services/products/soldByBarcodeService');
 
 // 409 for a barcode / short code that is already used (thrown by helper/productCodes.js)
 const duplicateCodeResponse = (res, error) =>
@@ -118,6 +119,18 @@ const productController = {
     } catch (error) {
       console.error('Get product error:', error);
       return res.status(400).json({ message: 'Error fetching product', error: error.message });
+    }
+  },
+
+  // GET /products/:id/sold-by-barcode — pieces sold per scanned barcode ('' = searched by name)
+  getSoldByBarcode: async (req, res) => {
+    try {
+      const report = await soldByBarcode(req.params.id);
+      if (!report) return res.status(404).json({ message: 'Product not found' });
+      return res.status(200).json(report);
+    } catch (error) {
+      console.error('Sold by barcode error:', error);
+      return res.status(400).json({ message: 'Error loading sales by barcode', error: error.message });
     }
   },
 
