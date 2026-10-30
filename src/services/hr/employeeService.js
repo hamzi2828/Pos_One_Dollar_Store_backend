@@ -481,6 +481,7 @@ async function linkableUsers(req) {
 
 module.exports = {
   serialize,
+  readBody,
   canSeeSensitive,
   load,
   list,

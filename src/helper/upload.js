@@ -73,6 +73,7 @@ const documentFilter = (req, file, cb) => {
 };
 const documentUpload = multer({ storage, fileFilter: documentFilter, limits: { fileSize: MAX_FILE_BYTES } });
 const documentUploadArray = (fieldName, maxCount) => documentUpload.array(fieldName, maxCount);
+const documentUploadFields = (fields) => documentUpload.fields(fields);
 
 // Helper to build public URL path (as served by Express static middleware)
 function toPublicPath(filename) {
@@ -86,6 +87,7 @@ module.exports = {
   uploadArray,
   uploadFields,
   documentUploadArray,
+  documentUploadFields,
   ensureUploadsDir,
   toPublicPath,
   UPLOADS_DIR,

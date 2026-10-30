@@ -17,6 +17,7 @@ const MODULES = [
   'analyticsRoutes',
   'stockOpsRoutes',
   'hrRoutes',
+  'employeeJoinRoutes',
   'shiftsRoutes',
   'attendanceRoutes',
   'payrollRoutes',
