@@ -69,8 +69,12 @@ async function findPO(req, id) {
   return po;
 }
 
-const assertOpen = (po) => {
-  if (po.status !== 'open') {
+// Bills can still be added / fixed after "Send to warehouse" while the goods are
+// being received (owner, 2026-10-31): more buying for the same trip.
+const BILL_STATUSES = ['open', 'closed', 'receiving'];
+
+const assertOpen = (po, { bills = false } = {}) => {
+  if (bills ? !BILL_STATUSES.includes(po.status) : po.status !== 'open') {
     throw httpError(`Purchase order ${po.poNumber} is ${po.status} and cannot be changed`, 409, 'PO_LOCKED');
   }
   if (h.isLocked(po)) throw httpError('This purchase order is being closed right now. Try again in a moment.', 409, 'PO_BUSY');
@@ -81,10 +85,10 @@ const assertOpen = (po) => {
  * the same PO in between (optimistic concurrency), so `fn` must work on the
  * document it is given.
  */
-async function mutateOpen(req, id, fn) {
+async function mutateOpen(req, id, fn, opts = {}) {
   for (let attempt = 1; ; attempt++) {
     const po = await findPO(req, id);
-    assertOpen(po);
+    assertOpen(po, opts);
     const result = await fn(po);
     costing.recalcPO(po);
     try {
@@ -421,21 +425,55 @@ async function updateHeader(req, id, body = {}) {
 
 // ---------------------------------------------------------------- write: bills & items
 
+const BILLS = { bills: true };
+
+/** After send: the bill's goods are already being entered in the warehouse? */
+async function billHasEntries(po, billId) {
+  if (po.status === 'open' || !po.goodsReceipt) return false;
+  return !!(await GoodsReceipt.exists({ _id: po.goodsReceipt, entries: { $elemMatch: { bill: billId, undone: { $ne: true } } } }));
+}
+
+/** After send: refuse changes to the items of a bill the warehouse is already unpacking. */
+async function assertBillNotUnpacked(req, id, billId, what = 'changed') {
+  const po = await findPO(req, id);
+  if (!h.isId(billId)) throw httpError('Bill not found', 404);
+  if (await billHasEntries(po, billId)) {
+    const bill = po.bills.id(billId);
+    throw httpError(
+      `${bill ? bill.vendorName : 'This bill'}: goods are already being entered in the warehouse, so this bill can no longer be ${what}.`,
+      409,
+      'BILL_UNPACKING'
+    );
+  }
+}
+
+/** Everything that must follow a bill change: vendor account rows, then the warehouse receipt. */
+async function afterBillChange(req, po) {
+  await syncBillAccounts(req, po);
+  await syncGRN(req, po);
+}
+
 async function addBill(req, id, body = {}, photos = []) {
   const vendor = await loadVendor(body.vendorId || body.vendor);
   const items = h.toList(body.items);
   const money = await parseBillMoney(body);
-  const { po, result } = await mutateOpen(req, id, async (doc) => {
-    doc.bills.push({ vendor: vendor._id, vendorName: vendor.name, photos, createdBy: h.userId(req) });
-    const bill = doc.bills[doc.bills.length - 1];
-    applyBillFields(bill, body, null, money);
-    assertUniqueBillNo(doc, bill);
-    await addItemsToBill(bill, items, doc.branch);
-    assertPaidFits(bill);
-    doc.history.push(h.historyEntry(req, 'bill_added', `${vendor.name}${bill.billNo ? ` bill ${bill.billNo}` : ''}`));
-    return bill._id;
-  });
-  await syncBillAccounts(req, po);
+  const { po, result } = await mutateOpen(
+    req,
+    id,
+    async (doc) => {
+      doc.bills.push({ vendor: vendor._id, vendorName: vendor.name, photos, createdBy: h.userId(req) });
+      const bill = doc.bills[doc.bills.length - 1];
+      applyBillFields(bill, body, null, money);
+      assertUniqueBillNo(doc, bill);
+      await addItemsToBill(bill, items, doc.branch);
+      assertPaidFits(bill);
+      const late = doc.status === 'open' ? '' : ' (after send to warehouse)';
+      doc.history.push(h.historyEntry(req, 'bill_added', `${vendor.name}${bill.billNo ? ` bill ${bill.billNo}` : ''}${late}`));
+      return bill._id;
+    },
+    BILLS
+  );
+  await afterBillChange(req, po);
   return { po: po.toObject(), billId: result };
 }
 
@@ -444,67 +482,97 @@ async function updateBill(req, id, billId, body = {}, photos = []) {
   const vendor = vendorId ? await loadVendor(vendorId) : null;
   const remove = new Set(h.toList(body.removePhotos).map(String));
   const money = await parseBillMoney(body);
-  const { po } = await mutateOpen(req, id, async (doc) => {
-    const bill = findBill(doc, billId);
-    applyBillFields(bill, body, vendor, money);
-    assertUniqueBillNo(doc, bill);
-    assertPaidFits(bill);
-    if (remove.size) bill.photos = bill.photos.filter((p) => !remove.has(p));
-    if (photos.length) bill.photos.push(...photos);
-    if (bill.photos.length > 10) throw httpError('A bill can have at most 10 photos');
-  });
-  await syncBillAccounts(req, po);
+  if (vendor) {
+    const current = (await findPO(req, id)).bills.id(billId);
+    if (current && String(current.vendor) !== String(vendor._id)) await assertBillNotUnpacked(req, id, billId, 'moved to another vendor');
+  }
+  const { po } = await mutateOpen(
+    req,
+    id,
+    async (doc) => {
+      const bill = findBill(doc, billId);
+      applyBillFields(bill, body, vendor, money);
+      assertUniqueBillNo(doc, bill);
+      assertPaidFits(bill);
+      if (remove.size) bill.photos = bill.photos.filter((p) => !remove.has(p));
+      if (photos.length) bill.photos.push(...photos);
+      if (bill.photos.length > 10) throw httpError('A bill can have at most 10 photos');
+    },
+    BILLS
+  );
+  await afterBillChange(req, po);
   return po.toObject();
 }
 
 async function removeBill(req, id, billId) {
+  await assertBillNotUnpacked(req, id, billId, 'removed');
   let removed = null;
-  const { po } = await mutateOpen(req, id, (doc) => {
-    const bill = findBill(doc, billId);
-    removed = { bill: bill.toObject(), index: doc.bills.indexOf(bill) };
-    doc.history.push(h.historyEntry(req, 'bill_removed', `${bill.vendorName}${bill.billNo ? ` bill ${bill.billNo}` : ''}`));
-    bill.deleteOne();
-  });
+  const { po } = await mutateOpen(
+    req,
+    id,
+    (doc) => {
+      const bill = findBill(doc, billId);
+      if (doc.status !== 'open' && doc.bills.length <= 1) throw httpError('A sent trip needs at least one vendor bill. Cancel the trip instead.', 409);
+      removed = { bill: bill.toObject(), index: doc.bills.indexOf(bill) };
+      doc.history.push(h.historyEntry(req, 'bill_removed', `${bill.vendorName}${bill.billNo ? ` bill ${bill.billNo}` : ''}`));
+      bill.deleteOne();
+    },
+    BILLS
+  );
   // Out of the vendor account too (row + "paid now" payment).
   if (removed) await voidBillAccount(req, po, removed.bill, removed.index, `${po.poNumber} bill removed`);
+  await syncGRN(req, po);
   return po.toObject();
 }
 
 async function addItems(req, id, billId, body = {}) {
   const inputs = Array.isArray(body.items) ? body.items : h.toList(body.items).length ? h.toList(body.items) : [body];
   if (!inputs.length) throw httpError('Add at least one item');
-  const { po, result } = await mutateOpen(req, id, (doc) => addItemsToBill(findBill(doc, billId), inputs, doc.branch));
-  await syncBillAccounts(req, po);
+  await assertBillNotUnpacked(req, id, billId);
+  const { po, result } = await mutateOpen(req, id, (doc) => addItemsToBill(findBill(doc, billId), inputs, doc.branch), BILLS);
+  await afterBillChange(req, po);
   return { po: po.toObject(), itemIds: result };
 }
 
 async function updateItem(req, id, billId, itemId, body = {}) {
-  const { po } = await mutateOpen(req, id, (doc) => {
-    const bill = findBill(doc, billId);
-    const item = bill.items.id(itemId);
-    if (!item) throw httpError('Item not found on this bill', 404);
-    const unit = { productName: item.productName, piecesPerBox: item.piecesPerBox || 1 };
-    if (h.has(body.qty) || h.has(body.boxes) || h.has(body.loosePieces)) {
-      const parsed = parseItem({ qty: body.qty, boxes: body.boxes, loosePieces: body.loosePieces }, unit);
-      item.qty = parsed.qty;
-      item.boxes = parsed.boxes;
-    }
-    if (h.has(body.unitPrice)) item.unitPrice = h.toPrice(body.unitPrice, 'Unit price');
-    else if (h.has(body.boxPrice)) item.unitPrice = h.round4(h.toPrice(body.boxPrice, 'Box price') / unit.piecesPerBox);
-    if (body.discount !== undefined) item.discount = h.toAmount(body.discount, 'Line discount');
-    if (body.note !== undefined) item.note = h.toText(body.note, 300);
-  });
-  await syncBillAccounts(req, po);
+  await assertBillNotUnpacked(req, id, billId);
+  const { po } = await mutateOpen(
+    req,
+    id,
+    (doc) => {
+      const bill = findBill(doc, billId);
+      const item = bill.items.id(itemId);
+      if (!item) throw httpError('Item not found on this bill', 404);
+      const unit = { productName: item.productName, piecesPerBox: item.piecesPerBox || 1 };
+      if (h.has(body.qty) || h.has(body.boxes) || h.has(body.loosePieces)) {
+        const parsed = parseItem({ qty: body.qty, boxes: body.boxes, loosePieces: body.loosePieces }, unit);
+        item.qty = parsed.qty;
+        item.boxes = parsed.boxes;
+      }
+      if (h.has(body.unitPrice)) item.unitPrice = h.toPrice(body.unitPrice, 'Unit price');
+      else if (h.has(body.boxPrice)) item.unitPrice = h.round4(h.toPrice(body.boxPrice, 'Box price') / unit.piecesPerBox);
+      if (body.discount !== undefined) item.discount = h.toAmount(body.discount, 'Line discount');
+      if (body.note !== undefined) item.note = h.toText(body.note, 300);
+    },
+    BILLS
+  );
+  await afterBillChange(req, po);
   return po.toObject();
 }
 
 async function removeItem(req, id, billId, itemId) {
-  const { po } = await mutateOpen(req, id, (doc) => {
-    const item = findBill(doc, billId).items.id(itemId);
-    if (!item) throw httpError('Item not found on this bill', 404);
-    item.deleteOne();
-  });
-  await syncBillAccounts(req, po);
+  await assertBillNotUnpacked(req, id, billId);
+  const { po } = await mutateOpen(
+    req,
+    id,
+    (doc) => {
+      const item = findBill(doc, billId).items.id(itemId);
+      if (!item) throw httpError('Item not found on this bill', 404);
+      item.deleteOne();
+    },
+    BILLS
+  );
+  await afterBillChange(req, po);
   return po.toObject();
 }
 
@@ -512,8 +580,9 @@ async function removeItem(req, id, billId, itemId) {
 async function addNewProduct(req, id, billId, body = {}) {
   if (!req.access.can('products', 'create')) throw httpError('You do not have permission to create products', 403);
   const po = await findPO(req, id);
-  assertOpen(po);
+  assertOpen(po, BILLS);
   findBill(po, billId);
+  await assertBillNotUnpacked(req, id, billId);
   // Check the line before creating anything, so a bad quantity leaves no orphan product.
   parseItem(body, { productName: h.toText(body.name, 200) || 'the new product', piecesPerBox: Math.max(1, parseInt(body.piecesPerBox, 10) || 1) });
   const unit = await products.createProductForLine(body, { branchId: String(po.branch) });
@@ -521,6 +590,49 @@ async function addNewProduct(req, id, billId, body = {}) {
     items: [{ productId: unit.productId, qty: body.qty, boxes: body.boxes, loosePieces: body.loosePieces, unitPrice: body.unitPrice, boxPrice: body.boxPrice }],
   });
   return { ...out, product: unit };
+}
+
+/**
+ * Bills changed after "Send to warehouse": bring the warehouse receipt up to date.
+ * New vendor bills get a box/pack row (not checked yet) and their typed items;
+ * bills already being unpacked keep their counts and lines; removed bills drop out.
+ */
+async function syncGRN(req, po) {
+  if (!['closed', 'receiving'].includes(po.status) || !po.goodsReceipt) return;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const grn = await GoodsReceipt.findById(po.goodsReceipt).lean();
+    if (!grn || !['pending', 'in_progress'].includes(grn.status)) return;
+    const live = (grn.entries || []).filter((e) => !e.undone);
+    const unpacking = (billId) => live.some((e) => String(e.bill) === String(billId));
+    // Old receipts were checked all at once: keep their rows counted as checked.
+    const legacyAt = grn.boxesCheckedAt && !(grn.boxes || []).some((b) => b.checkedAt) ? grn.boxesCheckedAt : null;
+    const boxes = grnBoxesFrom(po).map((b) => {
+      const was = (grn.boxes || []).find((x) => String(x.bill) === String(b.bill));
+      return was ? { ...b, received: was.received || 0, checkedAt: was.checkedAt || legacyAt || null } : { ...b, checkedAt: null };
+    });
+    // Lines: keep those of bills being unpacked (counts live on them), rebuild the rest.
+    const kept = (grn.lines || []).filter((l) => unpacking(l.bill) && po.bills.some((b) => String(b._id) === String(l.bill)));
+    let lineNo = kept.reduce((m, l) => Math.max(m, l.lineNo || 0), 0);
+    const fresh = grnLinesFrom(po)
+      .filter((l) => !unpacking(l.bill))
+      .map((l) => ({ ...l, lineNo: ++lineNo }));
+    const goodsTotal = po.totals.goods;
+    const set = {
+      boxes,
+      lines: [...kept, ...fresh],
+      goodsTotal,
+      expectedCartons: po.builty.cartons || po.totals.cartons,
+      cartonsReceived: boxes.reduce((s, b) => s + (b.received || 0), 0),
+    };
+    // The charge rate is frozen once goods are entered; before that it follows the new goods total.
+    if (!live.length) set.chargeRate = costing.chargeRateOf(po.totals.charges, goodsTotal);
+    const res = await GoodsReceipt.updateOne(
+      { _id: grn._id, __v: grn.__v, status: { $in: ['pending', 'in_progress'] } },
+      { $set: set, $push: { history: h.historyEntry(req, 'bills_updated', `${po.poNumber}: ${po.bills.length} vendor bills`) }, $inc: { __v: 1 } }
+    );
+    if (res.modifiedCount) return;
+  }
+  throw httpError('The warehouse receipt changed while saving. Reload and try again.', 409);
 }
 
 // ---------------------------------------------------------------- write: charges
@@ -701,7 +813,7 @@ async function voidBillAccount(req, po, bill, index, why) {
  * old one and post a new one). Send to warehouse then finds them already there.
  */
 async function syncBillAccounts(req, po) {
-  if (po.status !== 'open') return;
+  if (!BILL_STATUSES.includes(po.status)) return;
   const VendorLedgerEntry = require('../../models/vendorLedgerEntry');
   const VendorPayment = require('../../models/vendorPayment');
   const paymentService = require('../vendors/paymentService');
