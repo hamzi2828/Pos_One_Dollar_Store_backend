@@ -44,8 +44,10 @@ const storage = USE_BLOB_STORAGE
       filename: (req, file, cb) => {
         const timestamp = Date.now();
         const rand = Math.round(Math.random() * 1e9);
-        const ext = path.extname(file.originalname || '').toLowerCase();
-        const base = path.basename((file.originalname || 'file').replace(/\s+/g, '-'), ext);
+        const rawExt = path.extname(file.originalname || '');
+        // PDFs always end in .pdf so the browser opens them as a PDF
+        const ext = file.mimetype === 'application/pdf' ? '.pdf' : rawExt.toLowerCase();
+        const base = path.basename((file.originalname || 'file').replace(/\s+/g, '-'), rawExt);
         cb(null, `${timestamp}-${rand}-${base}${ext}`);
       },
     });

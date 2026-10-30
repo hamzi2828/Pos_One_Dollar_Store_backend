@@ -39,7 +39,8 @@ async function uploadToBlob(buffer, filename, mimetype, folder = 'uploads', opti
   // Generate unique filename
   const timestamp = Date.now();
   const rand = Math.round(Math.random() * 1e9);
-  const ext = filename.split('.').pop()?.toLowerCase() || 'jpg';
+  // PDFs always keep .pdf so the browser opens them as a document.
+  const ext = isPdf ? 'pdf' : (filename.includes('.') && filename.split('.').pop().toLowerCase()) || 'jpg';
   const baseName = filename.replace(/\.[^/.]+$/, '').replace(/\s+/g, '-');
   const uniqueFilename = `${folder}/${timestamp}-${rand}-${baseName}.${ext}`;
 

@@ -6,7 +6,7 @@
 // Permission checks run BEFORE the upload middleware.
 const express = require('express');
 const { staff, can, superAdmin, handle } = require('./_access');
-const { uploadArray } = require('../../helper/upload');
+const { uploadArray, documentUploadArray } = require('../../helper/upload');
 const po = require('../../controller/store/purchaseOrderController');
 const grn = require('../../controller/store/receivingController');
 
@@ -14,6 +14,18 @@ const router = express.Router();
 
 const PO = 'purchase_orders';
 const GRN = 'goods_receiving';
+
+// Bad / too-big file -> plain 400 instead of a server error.
+const upload = (mw) => (req, res, next) =>
+  mw(req, res, (err) => {
+    if (!err) return next();
+    const tooBig = err.code === 'LIMIT_FILE_SIZE';
+    return res.status(400).json({
+      success: false,
+      message: tooBig ? 'File is too large (max 5 MB)' : err.message || 'Upload failed',
+      code: tooBig ? 'FILE_TOO_LARGE' : 'UPLOAD_FAILED',
+    });
+  });
 
 // ----- Purchase orders (static paths before /:id)
 router.get('/purchase-orders/meta', ...staff, can(PO, 'view'), handle(po.meta));
@@ -29,9 +41,9 @@ router.get('/purchase-orders/:id', ...staff, can(PO, 'view'), handle(po.get));
 router.put('/purchase-orders/:id', ...staff, can(PO, 'edit'), handle(po.update));
 router.get('/purchase-orders/:id/costing', ...staff, can(PO, 'view'), handle(po.costing));
 
-// Vendor bills (multipart: `photos` up to 5 per request) and their items
-router.post('/purchase-orders/:id/bills', ...staff, can(PO, 'edit'), uploadArray('photos', 5), handle(po.addBill));
-router.put('/purchase-orders/:id/bills/:billId', ...staff, can(PO, 'edit'), uploadArray('photos', 5), handle(po.updateBill));
+// Vendor bills (multipart: `photos` up to 5 per request, images or PDF) and their items
+router.post('/purchase-orders/:id/bills', ...staff, can(PO, 'edit'), upload(documentUploadArray('photos', 5)), handle(po.addBill));
+router.put('/purchase-orders/:id/bills/:billId', ...staff, can(PO, 'edit'), upload(documentUploadArray('photos', 5)), handle(po.updateBill));
 router.delete('/purchase-orders/:id/bills/:billId', ...staff, can(PO, 'edit'), handle(po.removeBill));
 router.post('/purchase-orders/:id/bills/:billId/items', ...staff, can(PO, 'edit'), handle(po.addItems));
 router.post('/purchase-orders/:id/bills/:billId/new-product', ...staff, can(PO, 'edit'), handle(po.addNewProduct));
