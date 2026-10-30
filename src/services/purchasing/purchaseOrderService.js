@@ -22,12 +22,15 @@ const CHARGE_LABELS = {
   car_rent: 'Car rent',
   transport: 'Transport',
   builty_freight: 'Builty freight',
-  loading: 'Loading',
-  unloading: 'Unloading',
+  loading: 'Loading / unloading',
+  unloading: 'Loading / unloading', // old rows only; new ones are saved as 'loading'
   landing: 'Landing',
   labour: 'Labour',
   misc: 'Misc',
 };
+
+/** Old charge types folded into another one: new costs are saved as the target. */
+const MERGED_CHARGE_TYPES = { unloading: 'loading' };
 
 const settings = () =>
   config.getMany({ 'purchasing.minMarginPct': 15, 'purchasing.requireDifferentReceiver': false }).then((c) => ({
@@ -240,7 +243,7 @@ async function meta() {
   const categories = (await Product.distinct('category')).filter(Boolean).sort((a, b) => a.localeCompare(b));
   return {
     statuses: PurchaseOrder.STATUSES,
-    chargeTypes: PurchaseOrder.CHARGE_TYPES.map((value) => ({ value, label: CHARGE_LABELS[value] || value })),
+    chargeTypes: PurchaseOrder.CHARGE_TYPES.filter((value) => !MERGED_CHARGE_TYPES[value]).map((value) => ({ value, label: CHARGE_LABELS[value] || value })),
     allocationMethods: [
       { value: 'value', label: 'By value (default)', hint: 'Expensive lines carry more of the charges' },
       { value: 'quantity', label: 'By pieces', hint: 'Every piece carries the same charge' },
@@ -523,7 +526,8 @@ async function addNewProduct(req, id, billId, body = {}) {
 // ---------------------------------------------------------------- write: charges
 
 function parseCharge(body, current = {}) {
-  const type = body.type !== undefined ? body.type : current.type;
+  // 'unloading' is one type with 'loading' now (owner, 2026-10-30).
+  const type = MERGED_CHARGE_TYPES[body.type] || (body.type !== undefined ? body.type : current.type);
   if (!PurchaseOrder.CHARGE_TYPES.includes(type)) throw httpError('Choose a charge type');
   const amount = body.amount !== undefined ? h.toAmount(body.amount, 'Amount') : current.amount;
   if (!(amount > 0)) throw httpError('Charge amount must be more than 0');
@@ -535,20 +539,27 @@ function parseCharge(body, current = {}) {
   };
 }
 
-async function addCharge(req, id, body = {}) {
+const MAX_CHARGE_PHOTOS = 5;
+
+async function addCharge(req, id, body = {}, photos = []) {
   const charge = parseCharge(body);
+  if (photos.length > MAX_CHARGE_PHOTOS) throw httpError(`A cost can have at most ${MAX_CHARGE_PHOTOS} files`);
   const { po } = await mutateOpen(req, id, (doc) => {
-    doc.charges.push({ ...charge, source: 'manual', createdBy: h.userId(req) });
+    doc.charges.push({ ...charge, photos, source: 'manual', createdBy: h.userId(req) });
     doc.history.push(h.historyEntry(req, 'charge_added', `${CHARGE_LABELS[charge.type]} Rs ${charge.amount}`));
   });
   return po.toObject();
 }
 
-async function updateCharge(req, id, chargeId, body = {}) {
+async function updateCharge(req, id, chargeId, body = {}, photos = []) {
+  const remove = new Set(h.toList(body.removePhotos).map(String));
   const { po } = await mutateOpen(req, id, (doc) => {
     const charge = doc.charges.id(chargeId);
     if (!charge) throw httpError('Charge not found', 404);
     Object.assign(charge, parseCharge(body, charge));
+    if (remove.size) charge.photos = (charge.photos || []).filter((p) => !remove.has(p));
+    if (photos.length) charge.photos.push(...photos);
+    if (charge.photos.length > MAX_CHARGE_PHOTOS) throw httpError(`A cost can have at most ${MAX_CHARGE_PHOTOS} files`);
   });
   return po.toObject();
 }

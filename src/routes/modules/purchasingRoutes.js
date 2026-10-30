@@ -51,8 +51,8 @@ router.put('/purchase-orders/:id/bills/:billId/items/:itemId', ...staff, can(PO,
 router.delete('/purchase-orders/:id/bills/:billId/items/:itemId', ...staff, can(PO, 'edit'), handle(po.removeItem));
 
 // Trip charges (car rent, builty freight, loading, landing, misc...)
-router.post('/purchase-orders/:id/charges', ...staff, can(PO, 'edit'), handle(po.addCharge));
-router.put('/purchase-orders/:id/charges/:chargeId', ...staff, can(PO, 'edit'), handle(po.updateCharge));
+router.post('/purchase-orders/:id/charges', ...staff, can(PO, 'edit'), upload(documentUploadArray('photos', 5)), handle(po.addCharge));
+router.put('/purchase-orders/:id/charges/:chargeId', ...staff, can(PO, 'edit'), upload(documentUploadArray('photos', 5)), handle(po.updateCharge));
 router.delete('/purchase-orders/:id/charges/:chargeId', ...staff, can(PO, 'edit'), handle(po.removeCharge));
 
 // Workflow (multipart builty photos: `photos`)

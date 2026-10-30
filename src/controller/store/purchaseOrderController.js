@@ -67,9 +67,15 @@ module.exports = {
 
   removeItem: async (req, res) => ok(res, await service.removeItem(req, req.params.id, req.params.billId, req.params.itemId)),
 
-  addCharge: async (req, res) => ok(res, await service.addCharge(req, req.params.id, req.body), {}, 201),
+  addCharge: async (req, res) => {
+    const photos = await saveUploads(req, 'purchasing/charges');
+    ok(res, await service.addCharge(req, req.params.id, req.body, photos), {}, 201);
+  },
 
-  updateCharge: async (req, res) => ok(res, await service.updateCharge(req, req.params.id, req.params.chargeId, req.body)),
+  updateCharge: async (req, res) => {
+    const photos = await saveUploads(req, 'purchasing/charges');
+    ok(res, await service.updateCharge(req, req.params.id, req.params.chargeId, req.body, photos));
+  },
 
   removeCharge: async (req, res) => ok(res, await service.removeCharge(req, req.params.id, req.params.chargeId)),
 
