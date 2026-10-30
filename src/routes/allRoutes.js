@@ -77,6 +77,7 @@ router.get('/me/access', ...staff, staffController.me);
 // Staff users (super admin, or permission `staff` — see staffController).
 router.get('/admin/staff', ...staff, can('staff', 'view'), staffController.list);
 router.post('/admin/staff', ...staff, can('staff', 'create'), staffController.create);
+router.get('/admin/staff/employees', ...staff, can('staff', 'create'), staffController.employeesWithoutLogin);
 router.post('/admin/staff/:id/reset-password', ...staff, can('staff', 'edit'), staffController.resetPassword);
 router.get('/admin/staff/:id', ...staff, can('staff', 'view'), staffController.getById);
 router.put('/admin/staff/:id', ...staff, can('staff', 'edit'), staffController.update);

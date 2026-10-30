@@ -388,24 +388,31 @@ async function removeDocument(req, id, docId) {
  * (same rules as /admin/staff, services/staffService.js) and link it.
  * 409 when the employee already has a login or the e-mail is taken.
  */
-async function createLogin(req, id) {
-  const emp = await load(req, id);
+/**
+ * Create a staff login for an employee and link it (employee profile card and
+ * Staff → Add Staff Login both use this). Name and phone come from the HR record.
+ * input: { email, password, staffRole, isActive?, isSuperAdmin? }. Returns { emp, user }.
+ */
+async function createLoginForEmployee(access, id, input = {}) {
+  const emp = await load({ access }, id);
   if (emp.user) throw httpError(409, 'This employee already has a staff login', 'LOGIN_EXISTS');
-  const body = req.body || {};
-  const user = await staffService.createStaffUser(req.access, {
+  if (emp.isActive === false) throw httpError(400, 'This employee has left. Make them active in HR first.');
+  const user = await staffService.createStaffUser(access, {
     firstName: emp.firstName,
     lastName: emp.lastName,
-    email: body.email,
-    password: body.password,
-    phone: emp.phone,
-    staffRole: body.roleId,
+    email: input.email || emp.email,
+    password: input.password,
+    phone: input.phone || emp.phone,
+    staffRole: input.staffRole,
+    isActive: input.isActive,
+    isSuperAdmin: input.isSuperAdmin,
   });
   // Link only if nobody linked a login meanwhile (two clicks at once).
   const linked = await Employee.updateOne(
     { _id: emp._id, user: null },
     {
-      $set: { user: user._id, updatedBy: req.access.userId },
-      $push: { history: { $each: [{ by: req.access.userId, action: 'login_created', note: user.email }], $slice: -200 } },
+      $set: { user: user._id, updatedBy: access.userId },
+      $push: { history: { $each: [{ by: access.userId, action: 'login_created', note: user.email }], $slice: -200 } },
     }
   );
   if (!linked.modifiedCount) {
@@ -413,7 +420,31 @@ async function createLogin(req, id) {
     await staffService.syncRoleUserCount([user.staffRole]);
     throw httpError(409, 'This employee already has a staff login', 'LOGIN_EXISTS');
   }
+  return { emp, user };
+}
+
+async function createLogin(req, id) {
+  const body = req.body || {};
+  const { emp } = await createLoginForEmployee(req.access, id, { email: body.email, password: body.password, staffRole: body.roleId });
   return get(req, emp._id);
+}
+
+/** Active employees with no staff login yet (Staff → Add Staff Login picks one). */
+async function withoutLogin() {
+  const rows = await Employee.find({ isDeleted: { $ne: true }, isActive: { $ne: false }, $or: [{ user: null }, { user: { $exists: false } }] })
+    .select('firstName lastName employeeCode position phone email')
+    .sort({ firstName: 1, lastName: 1 })
+    .lean();
+  return rows.map((e) => ({
+    id: String(e._id),
+    name: `${e.firstName || ''} ${e.lastName || ''}`.trim(),
+    firstName: e.firstName || '',
+    lastName: e.lastName || '',
+    employeeCode: e.employeeCode || null,
+    position: e.position || null,
+    phone: e.phone || null,
+    email: e.email || null,
+  }));
 }
 
 /** DELETE /employees/:id/login — unlink the staff login (the login itself stays). */
@@ -461,7 +492,9 @@ module.exports = {
   setPhoto,
   addDocuments,
   removeDocument,
+  createLoginForEmployee,
   createLogin,
+  withoutLogin,
   removeLogin,
   linkableUsers,
 };

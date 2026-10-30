@@ -33,6 +33,7 @@ const { buildAllPermissions } = require('../constants/rolePermissions');
 const { getMainBranchId } = require('../helper/productCodes');
 const { paginate, buildRegexSearchFilter } = require('../helper/paginate');
 const staffService = require('../services/staffService');
+const employeeService = require('../services/hr/employeeService');
 
 const {
   ESCALATION_KEYS,
@@ -204,9 +205,31 @@ const staffController = {
    * POST /admin/staff
    * { firstName, lastName, email, password, phone?, staffRole, isActive?, isSuperAdmin? }
    */
+  /** GET /admin/staff/employees: HR employees who have no login yet (Add Staff Login dropdown). */
+  employeesWithoutLogin: async (req, res) => {
+    try {
+      return res.status(200).json({ message: 'Employees fetched', data: await employeeService.withoutLogin() });
+    } catch (error) {
+      return sendError(res, error, 'Failed to fetch employees');
+    }
+  },
+
+  /**
+   * POST /admin/staff. A login belongs to an HR employee: send employeeId
+   * (name + phone come from the HR record). Only a super admin login (the
+   * owner) may be made without an employee.
+   */
   create: async (req, res) => {
     try {
       const body = req.body || {};
+      const makeSuper = body.isSuperAdmin === true || body.isSuperAdmin === 'true';
+      if (body.employeeId) {
+        const { user } = await employeeService.createLoginForEmployee(req.access, body.employeeId, body);
+        return res.status(201).json({ message: 'Staff user created', data: shapeStaff(await findPopulated(user._id)) });
+      }
+      if (!makeSuper) {
+        return res.status(400).json({ message: 'Pick the employee first. Not in the list? Register them in HR → Employees.' });
+      }
       if (!String(body.firstName || '').trim() || !String(body.lastName || '').trim() || !String(body.email || '').trim()) {
         return res.status(400).json({ message: 'firstName, lastName and email are required' });
       }
