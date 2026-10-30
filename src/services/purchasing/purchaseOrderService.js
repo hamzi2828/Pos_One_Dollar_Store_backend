@@ -432,6 +432,7 @@ async function addBill(req, id, body = {}, photos = []) {
     doc.history.push(h.historyEntry(req, 'bill_added', `${vendor.name}${bill.billNo ? ` bill ${bill.billNo}` : ''}`));
     return bill._id;
   });
+  await syncBillAccounts(req, po);
   return { po: po.toObject(), billId: result };
 }
 
@@ -449,15 +450,20 @@ async function updateBill(req, id, billId, body = {}, photos = []) {
     if (photos.length) bill.photos.push(...photos);
     if (bill.photos.length > 10) throw httpError('A bill can have at most 10 photos');
   });
+  await syncBillAccounts(req, po);
   return po.toObject();
 }
 
 async function removeBill(req, id, billId) {
+  let removed = null;
   const { po } = await mutateOpen(req, id, (doc) => {
     const bill = findBill(doc, billId);
+    removed = { bill: bill.toObject(), index: doc.bills.indexOf(bill) };
     doc.history.push(h.historyEntry(req, 'bill_removed', `${bill.vendorName}${bill.billNo ? ` bill ${bill.billNo}` : ''}`));
     bill.deleteOne();
   });
+  // Out of the vendor account too (row + "paid now" payment).
+  if (removed) await voidBillAccount(req, po, removed.bill, removed.index, `${po.poNumber} bill removed`);
   return po.toObject();
 }
 
@@ -465,6 +471,7 @@ async function addItems(req, id, billId, body = {}) {
   const inputs = Array.isArray(body.items) ? body.items : h.toList(body.items).length ? h.toList(body.items) : [body];
   if (!inputs.length) throw httpError('Add at least one item');
   const { po, result } = await mutateOpen(req, id, (doc) => addItemsToBill(findBill(doc, billId), inputs, doc.branch));
+  await syncBillAccounts(req, po);
   return { po: po.toObject(), itemIds: result };
 }
 
@@ -484,6 +491,7 @@ async function updateItem(req, id, billId, itemId, body = {}) {
     if (body.discount !== undefined) item.discount = h.toAmount(body.discount, 'Line discount');
     if (body.note !== undefined) item.note = h.toText(body.note, 300);
   });
+  await syncBillAccounts(req, po);
   return po.toObject();
 }
 
@@ -493,6 +501,7 @@ async function removeItem(req, id, billId, itemId) {
     if (!item) throw httpError('Item not found on this bill', 404);
     item.deleteOne();
   });
+  await syncBillAccounts(req, po);
   return po.toObject();
 }
 
@@ -644,26 +653,115 @@ const grnBoxesFrom = (po) =>
     received: 0,
   }));
 
+/** Date a bill counts from in the vendor account. */
+const billDateOf = (po, bill) => bill.billDate || po.createdAt || new Date();
+
+/** The bill's row in the vendor account (credit = bill total). Returns the existing live row if there is one. */
+function postBillEntry(req, po, bill) {
+  const what = bill.items.length ? `${bill.items.length} items, ${bill.cartons || 0} boxes` : `${bill.cartons || 0} boxes`;
+  return vendorLedger.post({
+    vendorId: bill.vendor,
+    type: 'bill',
+    credit: bill.billTotal,
+    date: billDateOf(po, bill),
+    branchId: po.branch,
+    reference: bill.billNo || '',
+    attachments: bill.photos || [],
+    refType: 'PurchaseOrder',
+    refId: bill._id,
+    refNo: po.poNumber,
+    description: `Purchase ${po.poNumber}${bill.billNo ? ` · bill ${bill.billNo}` : ''} · ${what}`,
+    userId: h.userId(req),
+    unique: true,
+  });
+}
+
+/** Take a bill out of the vendor account: its row and its "paid now" payment. */
+async function voidBillAccount(req, po, bill, index, why) {
+  await vendorLedger.voidByRef('PurchaseOrder', bill._id, { userId: h.userId(req), reason: why });
+  bill.ledgerEntry = null;
+  await voidMarketPayment(req, po, bill, index, why);
+}
+
+/**
+ * Open trip: a bill counts in the vendor's account as soon as it is added
+ * (owner, 2026-10-30). After any change to the bills, make each bill's
+ * account row and "paid now" payment match the bill again (changed = void the
+ * old one and post a new one). Send to warehouse then finds them already there.
+ */
+async function syncBillAccounts(req, po) {
+  if (po.status !== 'open') return;
+  const VendorLedgerEntry = require('../../models/vendorLedgerEntry');
+  const VendorPayment = require('../../models/vendorPayment');
+  const paymentService = require('../vendors/paymentService');
+  const why = `${po.poNumber} bill changed`;
+  const day = (d) => (d ? new Date(d).toISOString().slice(0, 10) : '');
+  const updates = {};
+
+  for (const [index, bill] of po.bills.entries()) {
+    const at = `bills.${index}`;
+    // Bill row
+    const want = bill.billTotal > 0;
+    const live = await VendorLedgerEntry.findOne({ refType: 'PurchaseOrder', refId: bill._id, type: 'bill', isVoided: false })
+      .select('vendor credit date reference')
+      .lean();
+    const ok =
+      !!live &&
+      want &&
+      String(live.vendor) === String(bill.vendor) &&
+      vendorLedger.round2(live.credit) === vendorLedger.round2(bill.billTotal) &&
+      day(live.date) === day(billDateOf(po, bill)) &&
+      (live.reference || '') === (bill.billNo || '');
+    if (live && !ok) await vendorLedger.voidByRef('PurchaseOrder', bill._id, { userId: h.userId(req), reason: why });
+    const entryId = want ? (ok ? live._id : (await postBillEntry(req, po, bill))._id) : null;
+    if (String(entryId || '') !== String(bill.ledgerEntry || '')) {
+      bill.ledgerEntry = entryId;
+      updates[`${at}.ledgerEntry`] = entryId;
+    }
+
+    // "Paid now" payment
+    const paid = bill.paidNow > 0 ? bill.paidNow : 0;
+    const pay = bill.payment ? await VendorPayment.findOne({ _id: bill.payment, status: 'active' }).select('vendor amount method bank').lean() : null;
+    const payOk =
+      !!pay &&
+      paid > 0 &&
+      String(pay.vendor) === String(bill.vendor) &&
+      vendorLedger.round2(pay.amount) === vendorLedger.round2(paid) &&
+      pay.method === (bill.paidMethod || 'cash') &&
+      String(pay.bank || '') === String(bill.paidBank || '');
+    if (payOk || (!pay && !paid && !bill.payment)) continue;
+    if (pay) {
+      try {
+        await paymentService.voidPayment(req, pay._id, { reason: why });
+      } catch (err) {
+        if (err.code !== 'ALREADY_VOIDED' && err.status !== 404) throw err;
+      }
+    }
+    let paymentId = null;
+    if (paid > 0) {
+      const created = await paymentService.recordPayment({
+        vendorId: bill.vendor,
+        branchId: po.branch,
+        amount: paid,
+        method: bill.paidMethod || 'cash',
+        bankId: bill.paidBank || null,
+        reference: marketPaymentRef(po, bill, index),
+        date: billDateOf(po, bill),
+        notes: `Paid at the market · ${po.poNumber}`,
+        userId: h.userId(req),
+      });
+      paymentId = created._id;
+    }
+    bill.payment = paymentId;
+    updates[`${at}.payment`] = paymentId;
+  }
+  if (Object.keys(updates).length) await PurchaseOrder.updateOne({ _id: po._id }, { $set: updates });
+}
+
 async function finalizeClose(req, po) {
-  const refNo = po.poNumber;
   for (const [index, bill] of po.bills.entries()) {
     if (!(bill.billTotal > 0)) continue;
-    const what = bill.items.length ? `${bill.items.length} items, ${bill.cartons || 0} boxes` : `${bill.cartons || 0} boxes`;
-    const entry = await vendorLedger.post({
-      vendorId: bill.vendor,
-      type: 'bill',
-      credit: bill.billTotal,
-      date: bill.billDate || po.closedAt || new Date(),
-      branchId: po.branch,
-      reference: bill.billNo || '',
-      attachments: bill.photos || [],
-      refType: 'PurchaseOrder',
-      refId: bill._id,
-      refNo,
-      description: `Purchase ${po.poNumber}${bill.billNo ? ` · bill ${bill.billNo}` : ''} · ${what}`,
-      userId: h.userId(req),
-      unique: true,
-    });
+    const entry = await postBillEntry(req, po, bill); // already there when it was posted on "add bill"
     bill.ledgerEntry = entry._id;
     await postMarketPayment(req, po, bill, index);
   }
@@ -819,13 +917,8 @@ async function undoClose(req, po, mode, reason) {
       }
     }
   }
-  const why = `${po.poNumber} ${mode === 'reopen' ? 'reopened' : 'cancelled'}${reason ? `: ${reason}` : ''}`;
-  for (const [index, bill] of po.bills.entries()) {
-    await vendorLedger.voidByRef('PurchaseOrder', bill._id, { userId: h.userId(req), reason: why });
-    bill.ledgerEntry = null;
-    // Money paid at the market is voided too; it is posted again when the trip is sent again.
-    await voidMarketPayment(req, po, bill, index, why);
-  }
+  // Reopen: the bills stay in the vendor accounts (they count from the moment
+  // they are added). Cancel takes them out: see cancel().
 }
 
 async function cancel(req, id, body = {}) {
@@ -841,6 +934,9 @@ async function cancel(req, id, body = {}) {
   const reason = h.toText(body.reason, 300);
   try {
     if (po.status === 'closed') await undoClose(req, po, 'cancel', reason);
+    // Bills (and money paid at the market) leave the vendor accounts, open or sent.
+    const why = `${po.poNumber} cancelled${reason ? `: ${reason}` : ''}`;
+    for (const [index, bill] of po.bills.entries()) await voidBillAccount(req, po, bill, index, why);
     po.status = 'cancelled';
     po.cancelledAt = new Date();
     po.cancelledBy = h.userId(req);
@@ -893,6 +989,7 @@ module.exports = {
   addBill,
   updateBill,
   removeBill,
+  syncBillAccounts,
   addItems,
   updateItem,
   removeItem,
