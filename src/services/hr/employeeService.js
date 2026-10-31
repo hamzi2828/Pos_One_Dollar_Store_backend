@@ -432,7 +432,7 @@ async function createLogin(req, id) {
 /** Active employees with no staff login yet (Staff → Add Staff Login picks one). */
 async function withoutLogin() {
   const rows = await Employee.find({ isDeleted: { $ne: true }, isActive: { $ne: false }, $or: [{ user: null }, { user: { $exists: false } }] })
-    .select('firstName lastName employeeCode position phone email')
+    .select('firstName lastName employeeCode position designation phone email')
     .sort({ firstName: 1, lastName: 1 })
     .lean();
   return rows.map((e) => ({
@@ -442,6 +442,7 @@ async function withoutLogin() {
     lastName: e.lastName || '',
     employeeCode: e.employeeCode || null,
     position: e.position || null,
+    designation: e.designation || e.position || null,
     phone: e.phone || null,
     email: e.email || null,
   }));
