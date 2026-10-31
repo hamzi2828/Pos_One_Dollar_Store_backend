@@ -173,52 +173,109 @@ function discardUploads(req) {
   }
 }
 
-async function checkCnicFree(cnic) {
+/** `exceptId`: the person's own application (on update) does not count as a clash. */
+async function checkCnicFree(cnic, exceptId = null) {
   if (!cnic) return;
   const emp = await Employee.findOne({ cnic, isDeleted: { $ne: true }, status: { $in: Employee.ACTIVE_STATUSES } }).select('_id').lean();
   if (emp) throw httpError(409, 'This CNIC is already registered as an employee', 'CNIC_EMPLOYEE');
-  const app = await EmployeeApplication.findOne({ cnic, status: 'pending' }).select('_id').lean();
+  const q = { cnic, status: 'pending' };
+  if (exceptId) q._id = { $ne: exceptId };
+  const app = await EmployeeApplication.findOne(q).select('_id').lean();
   if (app) throw httpError(409, 'An application with this CNIC is already waiting', 'CNIC_PENDING');
 }
+
+const fullName = (o) => `${o.firstName || ''} ${o.lastName || ''}`.trim();
 
 const clientIp = (req) => {
   const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
   return fwd || req.ip || (req.socket && req.socket.remoteAddress) || null;
 };
 
-/** POST /public/join/:token -> { reference } */
-async function submit(req, token) {
-  try {
-    await checkToken(token);
-    const payload = readPayload(req.body || {});
+// ---------- edit key (the person can change their own form while pending) ----------
+//
+// editKey = "<applicationId>.<secret>". Only SHA-256(secret) is stored
+// (editKeyHash, select: false). The person keeps the key in their browser.
 
-    // Honeypot: bots fill every field. Pretend it worked, keep nothing.
-    if (u.str(payload.website)) {
-      discardUploads(req);
-      return { reference: `APP-${String(Math.floor(1000 + Math.random() * 9000))}` };
-    }
+const hashKey = (secret) => crypto.createHash('sha256').update(String(secret)).digest('hex');
+const NOT_YOURS = 'We could not find your form. Please fill a new one.';
 
-    const fields = cleanPersonal(payload);
-    const photoFile = (req.files && req.files.photo && req.files.photo[0]) || null;
-    if (photoFile && photoFile.mimetype === 'application/pdf') throw httpError(400, 'Your photo must be a picture (JPG or PNG), not a PDF');
-    await checkCnicFree(fields.cnic);
+function splitKey(editKey) {
+  const k = String(editKey || '');
+  const dot = k.indexOf('.');
+  if (dot <= 0 || k.length > 200) return null;
+  const id = k.slice(0, dot);
+  const secret = k.slice(dot + 1);
+  return u.isId(id) && secret ? { id, secret } : null;
+}
 
-    const [photo] = photoFile ? await saveUploads(req, 'hr/applications', 'photo') : [];
-    const docFiles = (req.files && req.files.files) || [];
-    const docUrls = docFiles.length ? await saveUploads(req, 'hr/applications', 'files') : [];
-    const files = docUrls.map((url, i) => ({
+/** The application this edit key belongs to, or 404. Hashes are compared in constant time. */
+async function findByKey(editKey) {
+  const parts = splitKey(editKey);
+  if (!parts) throw httpError(404, NOT_YOURS, 'NOT_FOUND');
+  const app = await EmployeeApplication.findById(parts.id).select('+editKeyHash');
+  const want = Buffer.from(hashKey(parts.secret), 'hex');
+  const have = Buffer.from((app && app.editKeyHash) || '', 'hex');
+  if (!app || have.length !== want.length || !crypto.timingSafeEqual(have, want)) throw httpError(404, NOT_YOURS, 'NOT_FOUND');
+  return app;
+}
+
+// ---------- public submit / update ----------
+
+/** Shared by submit and update: read + validate the multipart body. */
+function readSubmission(req) {
+  const payload = readPayload(req.body || {});
+  // Honeypot: bots fill every field.
+  if (u.str(payload.website)) return { honeypot: true };
+  const fields = cleanPersonal(payload);
+  const photoFile = (req.files && req.files.photo && req.files.photo[0]) || null;
+  if (photoFile && photoFile.mimetype === 'application/pdf') throw httpError(400, 'Your photo must be a picture (JPG or PNG), not a PDF');
+  const docFiles = (req.files && req.files.files) || [];
+  return { honeypot: false, fields, photoFile, docFiles };
+}
+
+/** Saves the sent photo / documents. Fields with nothing sent stay undefined. */
+async function storeFiles(req, { photoFile, docFiles }) {
+  const out = {};
+  if (photoFile) [out.photo] = await saveUploads(req, 'hr/applications', 'photo');
+  if (docFiles.length) {
+    const docUrls = await saveUploads(req, 'hr/applications', 'files');
+    out.files = docUrls.map((url, i) => ({
       url,
       name: u.str(docFiles[i] && docFiles[i].originalname, 120) || `Document ${i + 1}`,
       type: docFiles[i] && docFiles[i].mimetype === 'application/pdf' ? 'pdf' : 'image',
     }));
+  }
+  return out;
+}
 
+/** POST /public/join/:token -> { reference, editKey } */
+async function submit(req, token) {
+  try {
+    await checkToken(token);
+    const sub = readSubmission(req);
+
+    // Honeypot: pretend it worked, keep nothing (the fake key finds nothing).
+    if (sub.honeypot) {
+      discardUploads(req);
+      return {
+        reference: `APP-${String(Math.floor(1000 + Math.random() * 9000))}`,
+        editKey: `${crypto.randomBytes(12).toString('hex')}.${newToken()}`,
+      };
+    }
+
+    const { fields } = sub;
+    await checkCnicFree(fields.cnic);
+
+    const saved = await storeFiles(req, sub);
+    const secret = newToken();
     const reference = await nextNumber('APP', { yearly: false, pad: 4 });
     const app = await EmployeeApplication.create({
       ...fields,
       reference,
       status: 'pending',
-      photo: photo || null,
-      files,
+      photo: saved.photo || null,
+      files: saved.files || [],
+      editKeyHash: hashKey(secret),
       ip: clientIp(req),
       userAgent: u.str(req.headers['user-agent'], 300),
     });
@@ -228,14 +285,92 @@ async function submit(req, token) {
       .notify({
         type: 'employee_application',
         title: 'New job application',
-        message: `${`${app.firstName} ${app.lastName || ''}`.trim()} sent an application (${reference}).`,
+        message: `${fullName(app)} sent an application (${reference}).`,
         link: '/admin/hr/employees?tab=applications',
         audience: 'employees',
         meta: { applicationId: String(app._id), reference },
       })
       .catch(() => {});
 
-    return { reference };
+    return { reference, editKey: `${app._id}.${secret}` };
+  } catch (err) {
+    discardUploads(req);
+    throw err;
+  }
+}
+
+/** Only what the person sent themselves, plus the status. No review notes, reviewer or employee link. */
+function serializeMine(app) {
+  const o = app && typeof app.toObject === 'function' ? app.toObject() : { ...app };
+  const out = { reference: o.reference, status: o.status, submittedAt: o.createdAt, updatedAt: o.updatedBySubmitterAt || null };
+  for (const k of PERSONAL) out[k] = o[k] ?? null;
+  out.lastName = o.lastName || '';
+  out.photo = o.photo || null;
+  out.files = (o.files || []).map((f) => ({ url: f.url, name: f.name, type: f.type }));
+  return out;
+}
+
+/** GET /public/join/:token/mine (header x-join-key) */
+async function getMine(token, editKey) {
+  await checkToken(token);
+  return serializeMine(await findByKey(editKey));
+}
+
+const NOT_PENDING_MSG = {
+  approved: 'Your form was already approved, so it cannot be changed now.',
+  rejected: 'Your form was not approved, so it cannot be changed now.',
+};
+const notPending = (status) => httpError(409, NOT_PENDING_MSG[status] || 'This form cannot be changed now.', 'NOT_PENDING');
+
+/**
+ * PUT /public/join/:token/mine (header x-join-key), same multipart body as submit.
+ * Only while pending. A new photo / new documents replace the old ones; none sent = keep.
+ */
+async function updateMine(req, token, editKey) {
+  try {
+    await checkToken(token);
+    const app = await findByKey(editKey);
+    if (app.status !== 'pending') throw notPending(app.status);
+    const sub = readSubmission(req);
+    if (sub.honeypot) {
+      discardUploads(req);
+      return serializeMine(app);
+    }
+    const { fields } = sub;
+    await checkCnicFree(fields.cnic, app._id);
+
+    // The whole form is sent again: a field left empty is cleared.
+    const set = {};
+    for (const k of PERSONAL) set[k] = fields[k] !== undefined ? fields[k] : null;
+    set.lastName = fields.lastName || '';
+    const saved = await storeFiles(req, sub);
+    if (saved.photo) set.photo = saved.photo;
+    if (saved.files) set.files = saved.files;
+    set.updatedBySubmitterAt = new Date();
+
+    // Status checked again in the write: an approve / reject in between wins.
+    const updated = await EmployeeApplication.findOneAndUpdate(
+      { _id: app._id, status: 'pending' },
+      { $set: set, $inc: { submitterEdits: 1 } },
+      { new: true }
+    );
+    if (!updated) {
+      const now = await EmployeeApplication.findById(app._id).select('status').lean();
+      throw notPending(now && now.status);
+    }
+
+    notificationService
+      .notify({
+        type: 'employee_application',
+        title: 'Job application updated',
+        message: `${fullName(updated)} changed their application (${updated.reference}).`,
+        link: '/admin/hr/employees?tab=applications',
+        audience: 'employees',
+        meta: { applicationId: String(updated._id), reference: updated.reference },
+      })
+      .catch(() => {});
+
+    return serializeMine(updated);
   } catch (err) {
     discardUploads(req);
     throw err;
@@ -243,8 +378,6 @@ async function submit(req, token) {
 }
 
 // ---------- admin ----------
-
-const fullName = (o) => `${o.firstName || ''} ${o.lastName || ''}`.trim();
 
 function serialize(doc, { sensitive = true } = {}) {
   const o = doc && typeof doc.toObject === 'function' ? doc.toObject() : { ...doc };
@@ -274,6 +407,8 @@ function serialize(doc, { sensitive = true } = {}) {
     bankDetails: o.bankDetails ?? null,
     photo: o.photo ?? null,
     files: (o.files || []).map((f) => ({ url: f.url, name: f.name, type: f.type })),
+    updatedBySubmitterAt: o.updatedBySubmitterAt ?? null,
+    submitterEdits: o.submitterEdits || 0,
     reviewedAt: o.reviewedAt ?? null,
     reviewedByName: o.reviewedByName ?? null,
     rejectReason: o.rejectReason ?? null,
@@ -403,6 +538,8 @@ module.exports = {
   setEnabled,
   publicInfo,
   submit,
+  getMine,
+  updateMine,
   list,
   get,
   approve,

@@ -44,6 +44,13 @@ const employeeApplicationSchema = new mongoose.Schema(
     ip: { type: String, default: null }, // never returned by the API
     userAgent: { type: String, default: null },
 
+    // SHA-256 of the secret "edit key" given to the person on submit. Lets them
+    // change their own form (from the same link) while it is still pending.
+    // Never returned by the API.
+    editKeyHash: { type: String, default: null, select: false },
+    updatedBySubmitterAt: { type: Date, default: null },
+    submitterEdits: { type: Number, default: 0 },
+
     reviewedAt: { type: Date, default: null },
     reviewedBy: { type: ObjectId, ref: 'User', default: null },
     reviewedByName: { type: String, default: null },

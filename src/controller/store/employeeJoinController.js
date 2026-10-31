@@ -11,6 +11,13 @@ module.exports = {
   async publicSubmit(req, res) {
     ok(res, await svc.submit(req, req.params.token), 201);
   },
+  // The person's own application (header x-join-key = the editKey from submit).
+  async publicMine(req, res) {
+    ok(res, await svc.getMine(req.params.token, req.get('x-join-key')));
+  },
+  async publicUpdateMine(req, res) {
+    ok(res, await svc.updateMine(req, req.params.token, req.get('x-join-key')));
+  },
 
   // ----- link settings -----
   async getLink(req, res) {
