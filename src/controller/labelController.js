@@ -457,6 +457,8 @@ body{font-family:-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-ser
 .toolbar .tip{opacity:.75;font-size:12px}
 .toolbar .warn{flex-basis:100%;color:#fde68a;font-size:12px}
 .toolbar .warn li{margin-left:18px}
+.toolbar .count{display:inline-flex;align-items:center;gap:6px;font-weight:600}
+.toolbar .count input{width:72px;padding:4px 6px;border:0;border-radius:6px;font:inherit;font-weight:700;color:#111827;text-align:center}
 @media print{.toolbar{display:none!important}}
 `;
   if (size.kind === 'sheet') {
@@ -503,13 +505,25 @@ const renderPage = ({ labels, size, ctx, title, skipped = [], capped = false }) 
       ? 'In the print dialog choose paper A4, margins None, scale 100%.'
       : `In the print dialog choose your label printer, paper ${size.widthMm} x ${size.heightMm} mm, margins None, scale 100%.`;
 
-  const toolbar = `<div class="toolbar"><button type="button" onclick="window.print()">Print</button><strong>${total} label${total === 1 ? '' : 's'}</strong><span>${escapeHtml(size.label)}${size.kind === 'sheet' ? ` · ${pages} sheet${pages === 1 ? '' : 's'}` : ''}</span><span class="tip">${escapeHtml(tip)}</span>${
+  // Owner, 2026-10-31: choose how many of the stickers to print (the first N), total always shown.
+  const toolbar = `<div class="toolbar"><label class="count">Print <input id="tag-count" type="number" min="1" max="${total}" value="${total}" inputmode="numeric" aria-label="How many to print"> of ${total}</label><button type="button" id="tag-print">Print</button><strong id="tag-total">Total: ${total} label${total === 1 ? '' : 's'}</strong><span>${escapeHtml(size.label)}${size.kind === 'sheet' ? ` · ${pages} sheet${pages === 1 ? '' : 's'}` : ''}</span><span class="tip">${escapeHtml(tip)}</span>${
     warnings.length ? `<ul class="warn">${warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join('')}</ul>` : ''
   }</div>`;
 
-  const autoPrint = ctx.autoPrint
-    ? '<script>window.addEventListener("load",function(){setTimeout(function(){window.print()},300)});</script>'
-    : '';
+  // Only the first N labels are shown / printed; the last one shown ends the run (no blank page).
+  const countScript = `<script>(function(){var T=${total};var box=document.getElementById('tag-count');var tot=document.getElementById('tag-total');
+function apply(){var n=parseInt(box.value,10);if(!(n>=1))n=T;if(n>T)n=T;var ls=document.querySelectorAll('.label');
+for(var i=0;i<ls.length;i++){ls[i].style.display=i<n?'':'none';ls[i].style.breakAfter='';ls[i].style.pageBreakAfter='';}
+if(ls[n-1]){ls[n-1].style.breakAfter='auto';ls[n-1].style.pageBreakAfter='auto';}
+var sh=document.querySelectorAll('.sheet'),last=null;for(var j=0;j<sh.length;j++){var on=false,k=sh[j].querySelectorAll('.label');for(var x=0;x<k.length;x++)if(k[x].style.display!=='none'){on=true;break;}
+sh[j].style.display=on?'':'none';sh[j].style.breakAfter='';sh[j].style.pageBreakAfter='';if(on)last=sh[j];}
+if(last){last.style.breakAfter='auto';last.style.pageBreakAfter='auto';}
+tot.textContent=n===T?'Total: '+T+' label'+(T===1?'':'s'):'Printing '+n+' of '+T+' labels';return n;}
+box.addEventListener('input',apply);box.addEventListener('keydown',function(e){if(e.key==='Enter'){apply();window.print();}});
+document.getElementById('tag-print').addEventListener('click',function(){apply();window.print();});
+window.addEventListener('load',function(){apply();if(${ctx.autoPrint ? 'true' : 'false'}&&T===1){setTimeout(function(){window.print()},300);}else{box.focus();box.select();}});})();</script>`;
+  // Auto print only for a single label: with more, the count is chosen first.
+  const autoPrint = countScript;
 
   return `<!DOCTYPE html>
 <html lang="en">
