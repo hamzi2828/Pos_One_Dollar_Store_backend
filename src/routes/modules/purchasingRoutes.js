@@ -75,5 +75,6 @@ router.get('/receiving/:id/lookup', ...staff, can(GRN, 'edit'), handle(grn.looku
 router.post('/receiving/:id/new-product', ...staff, can(GRN, 'edit'), handle(grn.newProduct));
 router.post('/receiving/:id/entries', ...staff, can(GRN, 'edit'), handle(grn.addEntry));
 router.delete('/receiving/:id/entries/:entryId', ...staff, can(GRN, 'edit'), handle(grn.undoEntry));
+router.put('/receiving/:id/entries/:entryId', ...staff, can(GRN, 'edit'), handle(grn.editEntry));
 
 module.exports = router;

@@ -1023,6 +1023,53 @@ async function undoEntry(req, id, entryId) {
   }
 }
 
+/**
+ * PUT /receiving/:id/entries/:entryId { qty, damagedQty, costPrice, boxNo }
+ * Fix an entry: the old pieces go back out (same rules as Undo) and the
+ * corrected entry goes in. Safe to resend (fixed requestId per entry).
+ */
+async function editEntry(req, id, entryId, body = {}) {
+  const first = await findGRN(req, id);
+  await assertMayVerify(req, first);
+  const old = h.isId(entryId) ? first.entries.id(entryId) : null;
+  if (!old) throw httpError('Entry not found on this goods receipt', 404);
+  const requestId = `edit-${old._id}`;
+  const already = first.entries.find((e) => e.requestId === requestId);
+  if (already) return entryResult(req, id, first, already, { repeated: true });
+  if (old.undone) throw httpError('This entry was already undone. Enter the product again instead.', 409, 'ENTRY_UNDONE');
+  if (first.status !== 'in_progress') throw httpError('Entries can only be changed while the goods are being entered.', 409, 'GRN_LOCKED');
+
+  // Check the new values before anything is taken out.
+  const qty = h.has(body.qty) ? h.toAmount(body.qty, 'Pieces', { int: true }) : old.qty;
+  if (!(qty >= 1)) throw httpError('Enter how many pieces you took out of the box/pack');
+  const damagedQty = h.has(body.damagedQty) ? h.toAmount(body.damagedQty, 'Damaged pieces', { int: true }) : old.damagedQty || 0;
+  if (damagedQty > qty) throw httpError(`Damaged pieces (${damagedQty}) cannot be more than the pieces entered (${qty})`);
+  const costPrice = h.has(body.costPrice) ? h.toPrice(body.costPrice, 'Cost price') : old.costPrice;
+  if (!(costPrice > 0)) throw httpError('Enter the cost price (what the vendor charged per piece)');
+  const bill = billsOf(first, await loadPO(first)).find((b) => h.sameId(b.bill, old.bill));
+  if (!bill) throw httpError('Vendor bill not found on this goods receipt', 404);
+  const boxNo = h.has(body.boxNo) ? boxNoFor(first, bill, body.boxNo) : old.boxNo || 0;
+  if (qty === old.qty && damagedQty === (old.damagedQty || 0) && costPrice === old.costPrice && boxNo === (old.boxNo || 0)) {
+    return entryResult(req, id, first, old, { warnings: ['Nothing changed.'] });
+  }
+
+  await undoEntry(req, id, entryId);
+  try {
+    return await addEntry(req, id, {
+      bill: String(old.bill),
+      productId: String(old.product),
+      variantId: old.variantId ? String(old.variantId) : null,
+      qty,
+      damagedQty,
+      costPrice,
+      boxNo,
+      requestId,
+    });
+  } catch (err) {
+    throw httpError(`The old entry was taken out, but the new one could not be saved: ${err.message}. Enter ${old.productName} again.`, err.status && err.status < 500 ? err.status : 400, 'EDIT_FAILED');
+  }
+}
+
 // ---------------------------------------------------------------- complete
 
 /**
@@ -1328,4 +1375,4 @@ async function completeLines(req, id, body, current) {
   }
 }
 
-module.exports = { list, getOne, start, saveCounts, scan, addPhotos, checkBoxes, lookup, newProduct, addEntry, undoEntry, markBox, complete };
+module.exports = { list, getOne, start, saveCounts, scan, addPhotos, checkBoxes, lookup, newProduct, addEntry, undoEntry, editEntry, markBox, complete };

@@ -51,6 +51,7 @@ module.exports = {
 
   // DELETE /receiving/:id/entries/:entryId -> data: { entry, grn }
   undoEntry: async (req, res) => ok(res, await service.undoEntry(req, req.params.id, req.params.entryId)),
+  editEntry: async (req, res) => ok(res, await service.editEntry(req, req.params.id, req.params.entryId, req.body || {})),
 
   markBox: async (req, res) => ok(res, await service.markBox(req, req.params.id, req.body || {})),
 };
