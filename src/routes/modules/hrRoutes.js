@@ -28,6 +28,27 @@ const upload = (mw) => (req, res, next) =>
 // ----- Employees -----
 router.get('/employees', ...staff, can('employees', 'view'), handle(employees.list));
 router.get('/employees/linkable-users', ...staff, can('employees', 'view'), handle(employees.linkableUsers));
+// Designation choices: the shop's roles (Roles page) + designations already used. Owner, 2026-10-31.
+router.get(
+  '/employees/designations',
+  ...staff,
+  can('employees', 'view'),
+  handle(async (req, res) => {
+    const Role = require('../../models/role');
+    const Employee = require('../../models/employee');
+    const roles = await Role.find({ isDeleted: { $ne: true } }).select('name').sort({ name: 1 }).lean();
+    const used = await Employee.distinct('designation', { designation: { $nin: [null, ''] } });
+    const seen = new Set();
+    const data = [];
+    for (const [name, source] of [...roles.map((r) => [r.name, 'role']), ...used.sort().map((d) => [d, 'used'])]) {
+      const key = String(name || '').trim().toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      data.push({ name: String(name).trim(), source });
+    }
+    res.json({ success: true, data });
+  })
+);
 router.post('/employees', ...staff, can('employees', 'create'), handle(employees.create));
 router.get('/employees/:id', ...staff, can('employees', 'view'), handle(employees.get));
 router.put('/employees/:id', ...staff, can('employees', 'edit'), handle(employees.update));
