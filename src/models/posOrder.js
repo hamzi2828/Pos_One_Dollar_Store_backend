@@ -194,8 +194,9 @@ posOrderSchema.index({ 'offline.clientId': 1 }, { unique: true, sparse: true });
 posOrderSchema.index({ 'offline.number': 1 }, { sparse: true });
 posOrderSchema.index({ clientId: 1 }, { unique: true, sparse: true });
 
-posOrderSchema.statics.generateOrderNumber = async function () {
-  const count = await this.countDocuments();
+// `offset` > 0 when a save at the same moment took the number (retry).
+posOrderSchema.statics.generateOrderNumber = async function (offset = 0) {
+  const count = (await this.countDocuments()) + offset;
   const timestamp = Date.now().toString().slice(-6);
   const date = new Date().toISOString().split('T')[0].replace(/-/g, '');
   return `POS-${date}-${timestamp}-${(count + 1).toString().padStart(4, '0')}`;

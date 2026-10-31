@@ -24,7 +24,7 @@ const stockService = require('../stockService');
 const tillService = require('../tillService');
 const pricing = require('./pricingService');
 const { PAYMENT_NOTES, PAYMENT_STATUS } = require('../../constants/paymentNotes');
-const { PAYMENT_METHODS, paymentPlan, pricingInput, orderMovement, queueReceipt, CLIENT_ID_RE, findByClientId, isClientIdDuplicate } = require('./saleHelpers');
+const { PAYMENT_METHODS, paymentPlan, pricingInput, orderMovement, queueReceipt, CLIENT_ID_RE, findByClientId, saveNewOrder } = require('./saleHelpers');
 const { listUnits, unitCodes, unitBranchStock, getMainBranchId, variantLabel } = require('../../helper/productCodes');
 
 const MAX_ORDERS = 50;
@@ -187,7 +187,6 @@ async function catalog(access, { branchId, now = new Date() } = {}) {
 // Broken data -> `failed` with retry:false (the PC shows it under "Needs attention").
 const badData = (code, message) => Object.assign(new Error(message), { badData: true, code });
 
-const isDuplicateKey = isClientIdDuplicate;
 
 const duplicateResult = (clientId, existing) => ({
   clientId,
@@ -398,16 +397,18 @@ async function uploadOne(order, ctx) {
       warnings,
     },
   });
+  let winner = null;
   try {
-    await doc.save();
+    // Same bill number drawn at the same moment -> retried; same sale uploaded twice -> the saved one.
+    ({ winner } = await saveNewOrder(doc, clientId, 'orderNumber offline'));
   } catch (saveErr) {
-    await restoreTaken(isDuplicateKey(saveErr) ? 'Offline sale uploaded twice' : 'Sale not saved');
-    if (isDuplicateKey(saveErr)) {
-      // Two uploads of the same sale arrived together: the other one won.
-      const winner = await findByClientId(clientId, 'orderNumber offline');
-      if (winner) return duplicateResult(clientId, winner);
-    }
+    await restoreTaken('Sale not saved');
     throw saveErr;
+  }
+  if (winner) {
+    // Two uploads of the same sale arrived together: the other one won.
+    await restoreTaken('Offline sale uploaded twice');
+    return duplicateResult(clientId, winner);
   }
 
   // 7. Never fail the sale because of bookkeeping / messaging.

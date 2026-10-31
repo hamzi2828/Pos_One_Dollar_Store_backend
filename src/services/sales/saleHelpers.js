@@ -28,6 +28,33 @@ const findByClientId = (clientId, select) => {
 const isClientIdDuplicate = (err) =>
   !!err && (err.code === 11000 || err.code === 11001) && /clientId/.test(String(err.message || '') + JSON.stringify(err.keyPattern || {}));
 
+const isDuplicate = (err) => !!err && (err.code === 11000 || err.code === 11001);
+const dupText = (err) => String(err.message || '') + JSON.stringify(err.keyPattern || {});
+
+/**
+ * Save a NEW order. Two sales saved at the same moment can draw the same bill
+ * number (count + 1): then try again with the next number. When the same sale
+ * (clientId) was sent twice at once and the other copy is saved, returns
+ * { winner } instead of saving a second order. -> { winner: null | order }
+ */
+async function saveNewOrder(doc, clientId, select = '_id') {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await doc.save();
+      return { winner: null };
+    } catch (err) {
+      if (!isDuplicate(err)) throw err;
+      const winner = clientId ? await findByClientId(clientId, select) : null;
+      if (winner) return { winner };
+      if (/orderNumber/.test(dupText(err)) && attempt < 5) {
+        doc.orderNumber = await doc.constructor.generateOrderNumber(attempt);
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 // Ledger context of an order (StockMovement refType/refId/refNo).
 const orderMovement = (order, userId, note) => ({
   refType: 'POSOrder',
@@ -136,6 +163,7 @@ module.exports = {
   cleanClientId,
   findByClientId,
   isClientIdDuplicate,
+  saveNewOrder,
   PAYMENT_METHODS,
   paymentPlan,
   pricingInput,

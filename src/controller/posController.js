@@ -32,7 +32,7 @@ const {
   queueReceipt,
   cleanClientId,
   findByClientId,
-  isClientIdDuplicate,
+  saveNewOrder,
 } = require('../services/sales/saleHelpers');
 const Branch = require('../models/branch');
 const { resolveWriteBranch } = require('../middleware/access');
@@ -563,16 +563,15 @@ const posController = {
           completedAt: plan.status === PAYMENT_STATUS.FULL ? new Date() : undefined,
           clientId: clientId || undefined,
         });
-        await order.save();
+        // Same bill number drawn at the same moment -> retried; same sale sent twice -> the saved one.
+        const { winner } = await saveNewOrder(order, clientId, '_id');
+        if (winner) {
+          await stockService.restoreOrderItems(orderItems, { branchId, movement: { ...movement, note: 'Sale sent twice' } });
+          return sendExisting(winner);
+        }
       } catch (saveErr) {
         // Order was not saved -> give the pieces back (same refs).
-        const twice = isClientIdDuplicate(saveErr);
-        await stockService.restoreOrderItems(orderItems, { branchId, movement: { ...movement, note: twice ? 'Sale sent twice' : 'Sale not saved' } });
-        if (twice) {
-          // Two sends of the same sale arrived together: the other one was saved.
-          const winner = await findByClientId(clientId, '_id');
-          if (winner) return sendExisting(winner);
-        }
+        await stockService.restoreOrderItems(orderItems, { branchId, movement: { ...movement, note: 'Sale not saved' } });
         throw saveErr;
       }
 
