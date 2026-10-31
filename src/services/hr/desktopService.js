@@ -126,13 +126,16 @@ async function sessionInfo(access, { now = new Date() } = {}) {
     isSuperAdmin: !!access.isSuperAdmin,
     canView: access.can('attendance_kiosk', 'view'),
     canPunch: access.can('attendance_kiosk', 'create'),
-    canEnroll: access.can('employees', 'edit') || access.can('attendance', 'edit'),
+    // Owner, 2026-10-31: Settings and Enroll each have their own permission (super admin only by default).
+    canEnroll: access.can('desktop_enroll', 'create'),
     serverTime: now,
     timezone: T.TZ || 'Asia/Karachi',
     // Which buttons the desktop app shows (Roles page -> Desktop app).
     features: {
       attendance: access.can('attendance_kiosk', 'view'),
       sales: access.can('desktop_pos', 'view'),
+      settings: access.can('desktop_settings', 'view'),
+      enroll: access.can('desktop_enroll', 'create'),
     },
   };
 }
@@ -540,7 +543,42 @@ async function board({ date = null, now = new Date() } = {}) {
   };
 }
 
+// ---------------------------------------------------------------- Sales button sign-in
+
+const POS_LINK_MS = 2 * MIN_MS;
+const hashCode = (code) => require('crypto').createHash('sha256').update(String(code)).digest('hex');
+
+/** POST /api/desktop/pos-link — a one-time code that signs the POS window in as this user. */
+async function createPosLink(access, { now = new Date() } = {}) {
+  const DesktopPosLink = require('../../models/desktopPosLink');
+  const code = require('crypto').randomBytes(24).toString('base64url');
+  const expiresAt = new Date(now.getTime() + POS_LINK_MS);
+  await DesktopPosLink.create({ codeHash: hashCode(code), user: access.userId, expiresAt });
+  return { code, expiresAt };
+}
+
+/** POST /api/public/desktop/pos-link { code } — same answer as POST /user/login; works once. */
+async function redeemPosLink(body = {}, { now = new Date() } = {}) {
+  const DesktopPosLink = require('../../models/desktopPosLink');
+  const User = require('../../models/user');
+  const users = require('../../controller/userController');
+  const code = String(body.code || '').trim();
+  if (!code || code.length > 100) throw httpError(400, 'Sign-in link is missing. Press Sales on the counter PC again.');
+  const link = await DesktopPosLink.findOneAndUpdate(
+    { codeHash: hashCode(code), usedAt: null, expiresAt: { $gt: now } },
+    { $set: { usedAt: now } },
+    { new: true }
+  ).lean();
+  if (!link) throw httpError(401, 'This sign-in link has expired. Press Sales on the counter PC again.');
+  const user = await User.findById(link.user);
+  if (!user || !users.isStaffAccount(user)) throw httpError(401, 'Account not found.');
+  if (user.isActive === false) throw httpError(403, users.DISABLED_MESSAGE);
+  return users.signInResponse(user);
+}
+
 module.exports = {
+  createPosLink,
+  redeemPosLink,
   sessionInfo,
   renewToken,
   listEmployees,

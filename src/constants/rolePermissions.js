@@ -143,6 +143,9 @@ const PERMISSION_SECTIONS = [
             { key: 'desktop_pos', label: 'Sales on the counter PC (works offline)', actions: ['view', 'create'] },
             // Admin panel page "Desktop app": download the installer + setup steps.
             { key: 'desktop_download', label: 'Download the desktop app', actions: ['view'] },
+            // Owner, 2026-10-31: no role gets these by default (super admin has everything).
+            { key: 'desktop_settings', label: 'Settings on the counter PC', actions: ['view'] },
+            { key: 'desktop_enroll', label: 'Enroll fingerprints on the counter PC', actions: ['create'] },
         ],
     },
     {

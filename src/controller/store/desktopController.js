@@ -10,6 +10,16 @@ module.exports = {
     res.json({ success: true, data: await svc.sessionInfo(req.access) });
   },
 
+  // POST /api/desktop/pos-link -> { code, expiresAt } (Sales button: sign the POS window in)
+  async posLink(req, res) {
+    res.json({ success: true, data: await svc.createPosLink(req.access) });
+  },
+
+  // POST /api/public/desktop/pos-link { code } -> { token, data, access } like /user/login
+  async redeemPosLink(req, res) {
+    res.json({ success: true, message: 'Signed in', ...(await svc.redeemPosLink(req.body || {})) });
+  },
+
   // POST /api/desktop/session/renew
   async renew(req, res) {
     res.json({ success: true, data: await svc.renewToken(req.access) });

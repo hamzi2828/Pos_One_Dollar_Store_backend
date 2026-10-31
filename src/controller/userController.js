@@ -49,6 +49,24 @@ const guardStaffTarget = async (req, target, { disabling = false } = {}) => {
 };
 
 const userController = {
+    /**
+     * { token, data, access } exactly as POST /user/login returns them, for a
+     * user already checked (staff, active). Also used by the desktop app's
+     * Sales button (one-time sign-in link). Throws when JWT_SECRET is missing.
+     */
+    signInResponse: async (user) => {
+        const secret = process.env.JWT_SECRET;
+        if (!secret) throw Object.assign(new Error('Server misconfiguration: missing JWT secret'), { status: 500 });
+        const token = jwt.sign(buildTokenPayload(user), secret, { expiresIn: '7d' });
+        user.lastLogin = new Date();
+        await user.save();
+        const access = await staffHelpers().buildAccessSummary(user);
+        const { password: _pw, ...safe } = user.toObject();
+        return { token, data: safe, access };
+    },
+    isStaffAccount,
+    DISABLED_MESSAGE,
+
     // POST /user/login — staff sign in to the admin panel; returns a JWT.
     loginUser: async (req, res) => {
         try {
@@ -77,14 +95,7 @@ const userController = {
             if (!secret) {
                 return res.status(500).json({ message: 'Server misconfiguration: missing JWT secret' });
             }
-            const token = jwt.sign(buildTokenPayload(user), secret, { expiresIn: '7d' });
-
-            user.lastLogin = new Date();
-            await user.save();
-
-            const access = await staffHelpers().buildAccessSummary(user);
-            const { password: _pw, ...safe } = user.toObject();
-            return res.status(200).json({ message: 'Login successful', token, data: safe, access });
+            return res.status(200).json({ message: 'Login successful', ...(await userController.signInResponse(user)) });
         } catch (error) {
             res.status(500).json({ message: 'Error during login', error: error.message });
         }
