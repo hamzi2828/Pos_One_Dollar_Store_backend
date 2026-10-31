@@ -117,6 +117,17 @@ router.post('/products/:id/stock/receive', ...staff, can('stock_receive', 'creat
 router.post('/products/labels/print', ...staff, can('products', 'view'), labelController.printBulk);
 router.get('/products/:id/labels', ...staff, can('products', 'view'), labelController.printLabels);
 router.get('/products/:id/label-data', ...staff, can('products', 'view'), labelController.getLabelData);
+// "Improve name" button (OpenAI, key on the server). Before /products/:id routes.
+router.post('/products/improve-name', ...staff, can('products', 'create'), async (req, res) => {
+  try {
+    const out = await require('../services/products/nameHelperService').improveName(req.body || {});
+    res.json({ success: true, data: out });
+  } catch (err) {
+    const status = Number(err.status) || 500;
+    if (status >= 500 && status !== 502 && status !== 503) console.error('[improve-name]', err);
+    res.status(status).json({ success: false, message: err.message || 'Could not improve the name', code: err.code });
+  }
+});
 router.get('/products/:id/sold-by-barcode', ...staff, can(PRODUCT_READ, 'view'), productController.getSoldByBarcode);
 router.get('/products/:id', ...staff, can(PRODUCT_READ, 'view'), productController.getProductById);
 // multipart form-data: thumbnail (1), banners (up to 10), colorThumbnail / colorBanner (per colour)
