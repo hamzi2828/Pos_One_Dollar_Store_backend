@@ -239,10 +239,11 @@ const DEFAULT_ROLES = [
     },
     {
         name: 'Warehouse Assistant',
-        description: 'Receives goods, sends stock from the warehouse to the shop shelves, reports damage and counts stock.',
+        // Owner, 2026-10-31: also does the buying (trips + vendor bills) and creates new products while storing.
+        description: 'Buys (trips and vendor bills), receives goods, creates new products, sends stock to the shelves, reports damage and counts stock.',
         permissions: {
-            purchase_orders: V, goods_receiving: VCE, racks: V, stock_putaway: VC, stock_movements: V, damages: VC,
-            shop_use: VC, stock_adjustments: VC, products: V, product_stock: V, stock_receive: VC,
+            purchase_orders: VCE, goods_receiving: VCE, vendors: VC, racks: V, stock_putaway: VC, stock_movements: V, damages: VC,
+            shop_use: VC, stock_adjustments: VC, products: VCE, product_categories: V, product_stock: V, stock_receive: VC,
         },
     },
     {
