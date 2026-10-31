@@ -246,7 +246,7 @@ const DEFAULT_ROLES = [
         permissions: {
             purchase_orders: VCE, goods_receiving: VCE, vendors: VC, racks: V, stock_putaway: VC, stock_movements: V, damages: VC,
             shop_use: VC, stock_adjustments: VC, products: VCE, product_categories: V, product_stock: V, stock_receive: VC,
-            desktop_download: V, attendance_kiosk: VC,
+            desktop_download: V, attendance_kiosk: VC, desktop_pos: VC, pos: VC,
         },
     },
     {
