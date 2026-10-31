@@ -39,33 +39,54 @@ const NESTED = ['address', 'emergencyContact', 'guarantor', 'bankDetails'];
 
 const newToken = () => crypto.randomBytes(24).toString('base64url');
 
+// Every "Join link" open makes a fresh link (owner, 2026-10-31); links already
+// shared keep working. Stored: { token: newest, tokens: [all working], enabled }.
+const MAX_LINKS = 2000;
+
 async function readLink() {
   const doc = await AppConfig.findOne({ key: LINK_KEY }).lean();
-  return doc && doc.value && doc.value.token ? { token: doc.value.token, enabled: doc.value.enabled !== false } : null;
+  const v = doc && doc.value;
+  if (!v || !v.token) return null;
+  const tokens = Array.isArray(v.tokens) && v.tokens.length ? v.tokens : [v.token];
+  return { token: v.token, tokens, enabled: v.enabled !== false };
 }
 
 async function writeLink(value, userId) {
-  await config.set(LINK_KEY, value, userId);
-  return { token: value.token, enabled: value.enabled };
+  await config.set(LINK_KEY, { token: value.token, tokens: value.tokens, enabled: value.enabled }, userId);
+  return { token: value.token, enabled: value.enabled, activeLinks: value.tokens.length };
 }
 
-/** GET /employee-join-link — creates the link on first call. */
+const shown = (link) => ({ token: link.token, enabled: link.enabled, activeLinks: link.tokens.length });
+
+/** GET /employee-join-link — the newest link (made on first call). */
 async function getLink(req) {
   const link = await readLink();
-  if (link) return link;
-  return writeLink({ token: newToken(), enabled: true }, req.access.userId);
+  if (link) return shown(link);
+  const token = newToken();
+  return writeLink({ token, tokens: [token], enabled: true }, req.access.userId);
 }
 
+/**
+ * POST /employee-join-link/regenerate — a new link; older links keep working.
+ * { blockOld: true } stops every older link (shared with the wrong person).
+ */
 async function regenerateLink(req) {
   const link = await readLink();
-  return writeLink({ token: newToken(), enabled: link ? link.enabled : true }, req.access.userId);
+  const token = newToken();
+  const blockOld = !!(req.body && req.body.blockOld);
+  const tokens = blockOld || !link ? [token] : [...link.tokens, token].slice(-MAX_LINKS);
+  return writeLink({ token, tokens, enabled: link ? link.enabled : true }, req.access.userId);
 }
 
 async function setEnabled(req) {
   const { enabled } = req.body || {};
   if (typeof enabled !== 'boolean') throw httpError(400, 'enabled must be true or false');
   const link = await readLink();
-  return writeLink({ token: link ? link.token : newToken(), enabled }, req.access.userId);
+  if (!link) {
+    const token = newToken();
+    return writeLink({ token, tokens: [token], enabled }, req.access.userId);
+  }
+  return writeLink({ token: link.token, tokens: link.tokens, enabled }, req.access.userId);
 }
 
 const sameToken = (a, b) => {
@@ -74,10 +95,10 @@ const sameToken = (a, b) => {
   return x.length === y.length && x.length > 0 && crypto.timingSafeEqual(x, y);
 };
 
-/** 404 unless `token` is the current, switched-on link. */
+/** 404 unless `token` is one of the working links and links are switched on. */
 async function checkToken(token) {
   const link = await readLink();
-  if (!link || !link.enabled || !sameToken(token, link.token)) throw httpError(404, INVALID_LINK, 'INVALID_LINK');
+  if (!link || !link.enabled || !link.tokens.some((t) => sameToken(token, t))) throw httpError(404, INVALID_LINK, 'INVALID_LINK');
 }
 
 async function shopName() {
