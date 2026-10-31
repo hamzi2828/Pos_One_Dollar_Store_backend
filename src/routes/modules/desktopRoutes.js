@@ -36,6 +36,9 @@ router.get('/desktop/session', ...staff, handle(ctrl.session));
 // Either desktop permission keeps the desk signed in (attendance and/or Sales).
 router.post('/desktop/session/renew', ...staff, can(['attendance_kiosk', 'desktop_pos'], 'view'), handle(ctrl.renew));
 
+// Counter PCs and the app version each one runs (Desktop app page on the website).
+router.get('/desktop/devices', ...staff, can('desktop_download', 'view'), handle(ctrl.devices));
+
 // ---- Sales button: one-time sign-in for the POS window (2 min, once) ----
 router.post('/desktop/pos-link', ...staff, can('desktop_pos', 'view'), handle(ctrl.posLink));
 router.post('/public/desktop/pos-link', posLinkLimit, handle(ctrl.redeemPosLink));

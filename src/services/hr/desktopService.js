@@ -576,7 +576,39 @@ async function redeemPosLink(body = {}, { now = new Date() } = {}) {
   return users.signInResponse(user);
 }
 
+// ---------------------------------------------------------------- counter PCs
+
+/** Remember which app version a counter PC runs (from its request headers). Never fails the request. */
+async function noteDevice(access, headers = {}, { now = new Date() } = {}) {
+  try {
+    const version = String(headers['x-app-version'] || '').trim().slice(0, 20);
+    if (!/^\d+(\.\d+){1,3}$/.test(version)) return;
+    let name = String(headers['x-device-name'] || '').trim();
+    try { name = decodeURIComponent(name); } catch {}
+    name = name.replace(/\s+/g, ' ').slice(0, 60) || 'Unnamed PC';
+    const info = await loadUserAccess(access.userId);
+    const u = (info && info.user) || {};
+    const DesktopDevice = require('../../models/desktopDevice');
+    await DesktopDevice.updateOne(
+      { key: name.toLowerCase() },
+      { $set: { name, version, user: access.userId || null, userName: fullName(u) || u.email || '', lastSeenAt: now } },
+      { upsert: true }
+    );
+  } catch (err) {
+    console.error('[desktop] could not note device', err.message);
+  }
+}
+
+/** GET /api/desktop/devices — counter PCs, newest first. */
+async function listDevices() {
+  const DesktopDevice = require('../../models/desktopDevice');
+  const rows = await DesktopDevice.find({}).sort({ lastSeenAt: -1 }).limit(100).lean();
+  return rows.map((d) => ({ id: String(d._id), name: d.name, version: d.version, userName: d.userName, lastSeenAt: d.lastSeenAt }));
+}
+
 module.exports = {
+  noteDevice,
+  listDevices,
   createPosLink,
   redeemPosLink,
   sessionInfo,

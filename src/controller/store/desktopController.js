@@ -7,7 +7,13 @@ const svc = require('../../services/hr/desktopService');
 module.exports = {
   // GET /api/desktop/session
   async session(req, res) {
+    await svc.noteDevice(req.access, req.headers);
     res.json({ success: true, data: await svc.sessionInfo(req.access) });
+  },
+
+  // GET /api/desktop/devices -> counter PCs with their app version
+  async devices(req, res) {
+    res.json({ success: true, data: await svc.listDevices() });
   },
 
   // POST /api/desktop/pos-link -> { code, expiresAt } (Sales button: sign the POS window in)
