@@ -141,6 +141,8 @@ const PERMISSION_SECTIONS = [
             // view = "Sales" button in the desktop app + download the offline catalogue;
             // create = sell while the internet is down and upload those sales later.
             { key: 'desktop_pos', label: 'Sales on the counter PC (works offline)', actions: ['view', 'create'] },
+            // Admin panel page "Desktop app": download the installer + setup steps.
+            { key: 'desktop_download', label: 'Download the desktop app', actions: ['view'] },
         ],
     },
     {
@@ -229,7 +231,7 @@ const DEFAULT_ROLES = [
             price_tiers: VCE, customers: VCE, banks: V, expenses: VCE, assets: VCE, employees: VCE, category_assignments: VE,
             staff: VCE, roles: V, activity_log: V, notifications: V,
             shifts: ['view', 'create', 'edit', 'delete'], hr_policies: V, attendance: ['view', 'create', 'edit', 'export'],
-            attendance_kiosk: VC, desktop_pos: VC, payroll: ['view', 'create', 'export'],
+            attendance_kiosk: VC, desktop_pos: VC, desktop_download: V, payroll: ['view', 'create', 'export'],
         },
     },
     {
@@ -244,6 +246,7 @@ const DEFAULT_ROLES = [
         permissions: {
             purchase_orders: VCE, goods_receiving: VCE, vendors: VC, racks: V, stock_putaway: VC, stock_movements: V, damages: VC,
             shop_use: VC, stock_adjustments: VC, products: VCE, product_categories: V, product_stock: V, stock_receive: VC,
+            desktop_download: V,
         },
     },
     {
