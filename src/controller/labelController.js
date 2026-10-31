@@ -477,6 +477,89 @@ body{font-family:-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-ser
 `;
 };
 
+// ---------------------------------------------------------------- TSPL (direct label printing)
+// Owner, 2026-10-31: stickers go straight to the thermal printer (Xprinter XP-246B, 203 dpi)
+// through the DollarCoPos desktop app (127.0.0.1:47321), no Chrome print dialog.
+// Built-in TSPL fonts at 203 dpi: "1" 8x12, "2" 12x20, "3" 16x24 dots. 8 dots = 1 mm.
+const DOTS_PER_MM = 8;
+const TSPL_FONTS = { 1: [8, 12], 2: [12, 20], 3: [16, 24] };
+const tsplText = (v) =>
+  String(v == null ? '' : v)
+    .normalize('NFKD')
+    .replace(/[^\x20-\x7E]/g, '')
+    .replace(/"/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+const wrapLine = (text, max, lines) => {
+  const words = text.split(' ');
+  const out = [];
+  let cur = '';
+  for (const w of words) {
+    const next = cur ? `${cur} ${w}` : w;
+    if (next.length <= max) cur = next;
+    else {
+      if (cur) out.push(cur);
+      cur = w.length > max ? w.slice(0, max) : w;
+    }
+    if (out.length === lines) break;
+  }
+  if (out.length < lines && cur) out.push(cur);
+  if (out.length === lines && words.join(' ').length > out.join(' ').length) out[lines - 1] = `${out[lines - 1].slice(0, max - 1)}.`;
+  return out.slice(0, lines);
+};
+/** Approximate Code 128 width in modules (TSPL picks subset C for digit runs). */
+const code128Modules = (code) => {
+  const digitsOnly = /^\d+$/.test(code) && code.length >= 4;
+  const symbols = digitsOnly ? Math.ceil(code.length / 2) + (code.length % 2) : code.length;
+  return 11 * (symbols + 2) + 13 + 20; // + quiet zones
+};
+
+/** TSPL commands for ONE label body (between CLS and PRINT). */
+const tsplLabelBody = (item, ctx, size) => {
+  const W = size.widthMm * DOTS_PER_MM;
+  const H = size.heightMm * DOTS_PER_MM;
+  const big = size.heightMm >= 30;
+  const side = 12;
+  const cmds = [];
+  let y = 8;
+  const text = (x, yy, font, t) => cmds.push(`TEXT ${Math.max(0, Math.round(x))},${Math.round(yy)},"${font}",0,1,1,"${t}"`);
+  const centre = (yy, font, t) => text((W - t.length * TSPL_FONTS[font][0]) / 2, yy, font, t);
+
+  if (ctx.showShop && ctx.shopName) {
+    const shop = tsplText(ctx.shopName).toUpperCase().slice(0, Math.floor((W - 2 * side) / 8));
+    centre(y, 1, shop);
+    y += 14;
+  }
+  const nameFont = big ? 3 : 2;
+  const [nw, nh] = TSPL_FONTS[nameFont];
+  const lines = wrapLine(tsplText(item.name) || '-', Math.floor((W - 2 * side) / nw), big ? 2 : 2);
+  for (const l of lines) {
+    centre(y, nameFont, l);
+    y += nh + 2;
+  }
+  const variant = tsplText(item.variant || (item.extra || []).join(' '));
+  const price = ctx.showPrice ? tsplText(formatMoney(item.price, ctx.currency)) : '';
+  if (variant || price) {
+    if (variant) text(side, y + 4, 1, variant.slice(0, Math.floor((W - 2 * side - price.length * 16 - 8) / 8)));
+    if (price) text(W - side - price.length * 16, y, 3, price);
+    y += 26;
+  }
+  const code = tsplText(item.code);
+  const codeFont = code.length <= 10 ? 3 : 2;
+  const codeH = TSPL_FONTS[codeFont][1];
+  const modules = code128Modules(code);
+  const narrow = [3, 2, 1].find((n) => modules * n <= W - 16) || 1;
+  const barH = Math.max(32, H - y - codeH - 10);
+  const bx = Math.max(0, Math.round((W - (modules - 20) * narrow) / 2));
+  cmds.push(`BARCODE ${bx},${y + 2},"128",${barH},0,0,${narrow},${narrow},"${code}"`);
+  centre(y + 4 + barH, codeFont, code);
+  return cmds.join('\r\n');
+};
+
+/** TSPL job header for this sticker size (gap rolls). */
+const tsplHeader = (size) =>
+  [`SIZE ${size.widthMm} mm,${size.heightMm} mm`, 'GAP 2 mm,0 mm', 'DIRECTION 1,0', 'REFERENCE 0,0', 'OFFSET 0 mm', 'SET TEAR ON', 'DENSITY 10', 'SPEED 4', 'CODEPAGE 1252'].join('\r\n');
+
 const renderPage = ({ labels, size, ctx, title, skipped = [], capped = false }) => {
   const flat = [];
   for (const item of labels) {
@@ -506,7 +589,7 @@ const renderPage = ({ labels, size, ctx, title, skipped = [], capped = false }) 
       : `In the print dialog choose your label printer, paper ${size.widthMm} x ${size.heightMm} mm, margins None, scale 100%.`;
 
   // Owner, 2026-10-31: choose how many of the stickers to print (the first N), total always shown.
-  const toolbar = `<div class="toolbar"><label class="count">Print <input id="tag-count" type="number" min="1" max="${total}" value="${total}" inputmode="numeric" aria-label="How many to print"> of ${total}</label><button type="button" id="tag-print">Print</button><strong id="tag-total">Total: ${total} label${total === 1 ? '' : 's'}</strong><span>${escapeHtml(size.label)}${size.kind === 'sheet' ? ` · ${pages} sheet${pages === 1 ? '' : 's'}` : ''}</span><span class="tip">${escapeHtml(tip)}</span>${
+  const toolbar = `<div class="toolbar"><label class="count">Print <input id="tag-count" type="number" min="1" max="${total}" value="${total}" inputmode="numeric" aria-label="How many to print"> of ${total}</label><button type="button" id="tag-print">Print</button><button type="button" id="tag-direct" hidden style="background:#16a34a">Print on label printer</button><span id="tag-direct-msg" class="tip"></span><strong id="tag-total">Total: ${total} label${total === 1 ? '' : 's'}</strong><span>${escapeHtml(size.label)}${size.kind === 'sheet' ? ` · ${pages} sheet${pages === 1 ? '' : 's'}` : ''}</span><span class="tip">${escapeHtml(tip)}</span>${
     warnings.length ? `<ul class="warn">${warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join('')}</ul>` : ''
   }</div>`;
 
@@ -522,8 +605,23 @@ tot.textContent=n===T?'Total: '+T+' label'+(T===1?'':'s'):'Printing '+n+' of '+T
 box.addEventListener('input',apply);box.addEventListener('keydown',function(e){if(e.key==='Enter'){apply();window.print();}});
 document.getElementById('tag-print').addEventListener('click',function(){apply();window.print();});
 window.addEventListener('load',function(){apply();if(${ctx.autoPrint ? 'true' : 'false'}&&T===1){setTimeout(function(){window.print()},300);}else{box.focus();box.select();}});})();</script>`;
+  // Direct printing through the DollarCoPos desktop app (thermal sizes only).
+  const direct =
+    size.kind === 'sheet'
+      ? ''
+      : (() => {
+          const job = { header: tsplHeader(size), labels: labels.map((it) => ({ body: tsplLabelBody(it, ctx, size), copies: it.copies })) };
+          const json = JSON.stringify(job).replace(/</g, '\\u003c');
+          return `<script>(function(){var JOB=${json};var AGENT='http://127.0.0.1:47321';var btn=document.getElementById('tag-direct');var msg=document.getElementById('tag-direct-msg');var box=document.getElementById('tag-count');var printer=null;
+function count(){var n=parseInt(box.value,10);var T=0;for(var i=0;i<JOB.labels.length;i++)T+=JOB.labels[i].copies;if(!(n>=1))n=T;return Math.min(n,T);}
+function tspl(n){var out=[JOB.header],left=n;for(var i=0;i<JOB.labels.length&&left>0;i++){var k=Math.min(left,JOB.labels[i].copies);out.push('CLS',JOB.labels[i].body,'PRINT 1,'+k);left-=k;}return out.join('\\r\\n')+'\\r\\n';}
+var ctl=window.AbortController?new AbortController():null;var t=setTimeout(function(){if(ctl)ctl.abort();},1500);
+fetch(AGENT+'/status',ctl?{signal:ctl.signal}:{}).then(function(r){return r.json();}).then(function(s){clearTimeout(t);if(s&&s.ok&&s.printer){printer=s.printer;btn.hidden=false;btn.textContent='Print on '+s.printer;msg.textContent='Label printer ready: no print window needed.';}else if(s&&s.ok){msg.textContent='Desktop app found, but no label printer. Install the Xprinter driver.';}}).catch(function(){});
+btn.addEventListener('click',function(){var n=count();btn.disabled=true;msg.textContent='Sending '+n+' label'+(n===1?'':'s')+'...';
+fetch(AGENT+'/print',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:tspl(n),printer:printer})}).then(function(r){return r.json();}).then(function(r){msg.textContent=r&&r.ok?'Sent '+n+' label'+(n===1?'':'s')+' to '+r.printer+'.':'Could not print: '+((r&&r.error)||'unknown error');}).catch(function(){msg.textContent='Could not reach the DollarCoPos desktop app. Open it and try again.';}).then(function(){btn.disabled=false;});});})();</script>`;
+        })();
   // Auto print only for a single label: with more, the count is chosen first.
-  const autoPrint = countScript;
+  const autoPrint = countScript + direct;
 
   return `<!DOCTYPE html>
 <html lang="en">
