@@ -323,16 +323,44 @@ async function update(vendorId, body = {}, { userId } = {}) {
   if (body.openingBalance !== undefined && body.openingBalance !== '') {
     await setOpeningBalance(vendor, body.openingBalance, { date: body.openingBalanceDate, userId });
   }
-  // Older purchase screens keep a copy of the vendor name.
-  if (fields.name && fields.name !== oldName) {
+  // Trips, receipts, payments, returns... keep a copy of the vendor name: rename it everywhere.
+  if (fields.name && fields.name !== oldName) await renameVendorCopies(vendor._id, vendor.name);
+  return getById(vendor._id);
+}
+
+/**
+ * Owner, 2026-11-01: a renamed vendor shows the new name everywhere (trip bills,
+ * warehouse receipts, payments, returns, consignment, damages, products' last vendor).
+ * Each copy is refreshed on its own; one failing never stops the rename.
+ */
+async function renameVendorCopies(vendorId, name) {
+  const id = oid(vendorId);
+  const m = (n) => require(`../../models/${n}`);
+  const jobs = [
+    ['purchase', () => m('purchase').updateMany({ vendorId: id }, { $set: { vendorName: name } })],
+    ['trip bills', () => m('purchaseOrder').updateMany({ 'bills.vendor': id }, { $set: { 'bills.$[b].vendorName': name } }, { arrayFilters: [{ 'b.vendor': id }] })],
+    ...['boxes', 'lines', 'entries', 'claims'].map((f) => [
+      `receipt ${f}`,
+      () => m('goodsReceipt').updateMany({ [`${f}.vendor`]: id }, { $set: { [`${f}.$[x].vendorName`]: name } }, { arrayFilters: [{ 'x.vendor': id }] }),
+    ]),
+    ['payments', () => m('vendorPayment').updateMany({ vendor: id }, { $set: { vendorName: name } })],
+    ['returns', () => m('vendorReturn').updateMany({ vendor: id }, { $set: { vendorName: name } })],
+    ['consignment', () => m('consignment').updateMany({ vendor: id }, { $set: { vendorName: name } })],
+    ['damages', () => m('damageRecord').updateMany({ vendor: id }, { $set: { vendorName: name } })],
+    ['account rows', () => m('vendorLedgerEntry').updateMany({ vendor: id }, { $set: { vendorName: name } })],
+    ['consignment settlements', () => m('consignmentSettlement').updateMany({ vendor: id }, { $set: { vendorName: name } })],
+    ['products', () => m('product').updateMany({ lastVendor: id }, { $set: { lastVendorName: name } })],
+  ];
+  const out = {};
+  for (const [label, run] of jobs) {
     try {
-      const Purchase = require('../../models/purchase');
-      await Purchase.updateMany({ vendorId: vendor._id, isDeleted: false }, { $set: { vendorName: vendor.name } });
+      const r = await run();
+      out[label] = r.modifiedCount || 0;
     } catch (e) {
-      console.warn('[vendors] could not refresh purchase vendor names:', e.message);
+      console.warn(`[vendors] could not rename vendor in ${label}:`, e.message);
     }
   }
-  return getById(vendor._id);
+  return out;
 }
 
 /** PATCH /api/vendors/:id/status — { isActive } or toggle. */
@@ -619,6 +647,7 @@ async function voidManualEntry(vendorId, entryId, body = {}, { userId } = {}) {
 }
 
 module.exports = {
+  renameVendorCopies,
   TYPE_LABELS,
   loadVendor,
   cleanInput,
