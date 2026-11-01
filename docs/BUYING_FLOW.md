@@ -63,10 +63,15 @@ Rules change:
   - `boxes: [{ bill, vendor, vendorName, billNo, expected (bill cartons), received: 0 }]`
   - `expectedCartons` = trip boxes (as today)
   - `lines` = typed items as today (now called **expected items**, a checklist; may be empty)
-  - `chargeRate` = `chargesTotal / goodsTotal` (goodsTotal = Σ billTotal), frozen here
+  - `chargeRate` = `chargesTotal / goodsTotal` (goodsTotal = Σ billTotal), set here (changes again when trip costs change)
     (4 decimals). Landed cost of every entry = `costPrice × (1 + chargeRate)`, rounded 2.
 - Response unchanged: `{ po, grn: { _id, grnNumber, status }, warnings }`.
-- Trip charges can no longer change once receiving started (already true: PO not open).
+- Trip costs (charges) can be added, edited and removed until the trip is fully
+  received (owner, 2026-11-01), like vendor bills. Each change sets the GRN
+  `chargesTotal`, `goodsTotal` and `chargeRate` (= trip costs / goods) again
+  (`purchaseOrderService.syncChargeRate`). Entries already made keep their landed
+  cost; later entries use the new rate. Editing the builty freight row keeps its
+  type and updates `builty.freight`.
 
 ## 3. Check boxes — GRN step 1
 

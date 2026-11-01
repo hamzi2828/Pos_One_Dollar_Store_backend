@@ -676,37 +676,93 @@ function parseCharge(body, current = {}) {
 
 const MAX_CHARGE_PHOTOS = 5;
 
+// Trip costs, like vendor bills, can change until the trip is fully received
+// (owner, 2026-11-01: a bill added after sending often brings its own costs).
+// Goods already entered in the warehouse keep their cost; goods entered after
+// the change use the new share (see syncChargeRate).
+
+/** Keep the builty freight on the builty in step with its cost row. */
+const syncBuiltyFreight = (doc, charge, amount) => {
+  if (charge.source === 'builty' && doc.builty) doc.builty.freight = amount;
+};
+
 async function addCharge(req, id, body = {}, photos = []) {
   const charge = parseCharge(body);
   if (photos.length > MAX_CHARGE_PHOTOS) throw httpError(`A cost can have at most ${MAX_CHARGE_PHOTOS} files`);
-  const { po } = await mutateOpen(req, id, (doc) => {
-    doc.charges.push({ ...charge, photos, source: 'manual', createdBy: h.userId(req) });
-    doc.history.push(h.historyEntry(req, 'charge_added', `${CHARGE_LABELS[charge.type]} Rs ${charge.amount}`));
-  });
+  const { po } = await mutateOpen(
+    req,
+    id,
+    (doc) => {
+      doc.charges.push({ ...charge, photos, source: 'manual', createdBy: h.userId(req) });
+      doc.history.push(h.historyEntry(req, 'charge_added', `${CHARGE_LABELS[charge.type]} Rs ${charge.amount}`));
+    },
+    BILLS
+  );
+  await syncChargeRate(req, po);
   return po.toObject();
 }
 
 async function updateCharge(req, id, chargeId, body = {}, photos = []) {
   const remove = new Set(h.toList(body.removePhotos).map(String));
-  const { po } = await mutateOpen(req, id, (doc) => {
-    const charge = doc.charges.id(chargeId);
-    if (!charge) throw httpError('Charge not found', 404);
-    Object.assign(charge, parseCharge(body, charge));
-    if (remove.size) charge.photos = (charge.photos || []).filter((p) => !remove.has(p));
-    if (photos.length) charge.photos.push(...photos);
-    if (charge.photos.length > MAX_CHARGE_PHOTOS) throw httpError(`A cost can have at most ${MAX_CHARGE_PHOTOS} files`);
-  });
+  const { po } = await mutateOpen(
+    req,
+    id,
+    (doc) => {
+      const charge = doc.charges.id(chargeId);
+      if (!charge) throw httpError('Charge not found', 404);
+      const before = { type: charge.type, amount: charge.amount, note: charge.note || '' };
+      // The builty freight row always stays "Builty freight".
+      const next = parseCharge(charge.source === 'builty' ? { ...body, type: undefined } : body, charge);
+      Object.assign(charge, next);
+      syncBuiltyFreight(doc, charge, next.amount);
+      if (remove.size) charge.photos = (charge.photos || []).filter((p) => !remove.has(p));
+      if (photos.length) charge.photos.push(...photos);
+      if (charge.photos.length > MAX_CHARGE_PHOTOS) throw httpError(`A cost can have at most ${MAX_CHARGE_PHOTOS} files`);
+      if (before.type !== next.type || before.amount !== next.amount || before.note !== next.note) {
+        const was = before.type !== next.type ? `${CHARGE_LABELS[before.type]} Rs ${before.amount}` : `Rs ${before.amount}`;
+        doc.history.push(h.historyEntry(req, 'charge_changed', `${CHARGE_LABELS[next.type]} Rs ${next.amount} (was ${was})`));
+      }
+    },
+    BILLS
+  );
+  await syncChargeRate(req, po);
   return po.toObject();
 }
 
 async function removeCharge(req, id, chargeId) {
-  const { po } = await mutateOpen(req, id, (doc) => {
-    const charge = doc.charges.id(chargeId);
-    if (!charge) throw httpError('Charge not found', 404);
-    doc.history.push(h.historyEntry(req, 'charge_removed', `${CHARGE_LABELS[charge.type]} Rs ${charge.amount}`));
-    charge.deleteOne();
-  });
+  const { po } = await mutateOpen(
+    req,
+    id,
+    (doc) => {
+      const charge = doc.charges.id(chargeId);
+      if (!charge) throw httpError('Charge not found', 404);
+      doc.history.push(h.historyEntry(req, 'charge_removed', `${CHARGE_LABELS[charge.type]} Rs ${charge.amount}`));
+      syncBuiltyFreight(doc, charge, 0);
+      charge.deleteOne();
+    },
+    BILLS
+  );
+  await syncChargeRate(req, po);
   return po.toObject();
+}
+
+/**
+ * Trip costs changed after "Send to warehouse": give the warehouse receipt the
+ * new total and cost share (trip costs / goods). Entries already made keep
+ * their landed cost; the next entries use the new share.
+ */
+async function syncChargeRate(req, po) {
+  if (!['closed', 'receiving'].includes(po.status) || !po.goodsReceipt) return;
+  const chargeRate = costing.chargeRateOf(po.totals.charges, po.totals.goods);
+  const res = await GoodsReceipt.updateOne(
+    { _id: po.goodsReceipt, status: { $in: ['pending', 'in_progress'] } },
+    {
+      $set: { chargesTotal: po.totals.charges, chargeRate, goodsTotal: po.totals.goods },
+      $push: { history: h.historyEntry(req, 'charges_updated', `${po.poNumber}: trip costs Rs ${po.totals.charges}`) },
+      $inc: { __v: 1 },
+    }
+  );
+  return res.modifiedCount > 0;
 }
 
 // ---------------------------------------------------------------- close / cancel / reopen
