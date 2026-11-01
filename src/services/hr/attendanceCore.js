@@ -30,10 +30,31 @@ const httpError = (status, message, code) => Object.assign(new Error(message), {
 const OUT_WINDOW_MIN = (policy) => Math.max(60, (policy.overtime && policy.overtime.maxMinutesPerDay) || 0) + 60;
 
 /**
+ * Breaks from the Break button: [{ start, end }] in time order (end null = still on break).
+ */
+function breaksOf(record) {
+  const list = [];
+  for (const p of (record && record.punches) || []) {
+    if (p.kind === 'break_start') list.push({ start: p.at, end: null });
+    else if (p.kind === 'break_end' && list.length && !list[list.length - 1].end) list[list.length - 1].end = p.at;
+  }
+  return list;
+}
+
+/** The break still open (Break pressed, not back yet), or null. */
+const openBreak = (record) => breaksOf(record).find((b) => !b.end) || null;
+
+/** Minutes on break: finished breaks, plus an open one up to check-out or now. */
+function breakMinutesOf(record, now = new Date()) {
+  const stop = record && record.checkOut ? new Date(record.checkOut) : now;
+  return breaksOf(record).reduce((sum, b) => sum + Math.max(0, minutesBetween(b.start, b.end || stop)), 0);
+}
+
+/**
  * Computed fields for one shop day.
  * @param plan   scheduleService plan for that day
  * @param record AttendanceRecord (plain) or null
- * @returns { status, lateMinutes, earlyLeaveMinutes, workedMinutes, overtimeMinutes, overtimeApproved }
+ * @returns { status, lateMinutes, earlyLeaveMinutes, workedMinutes, overtimeMinutes, overtimeApproved, breakMinutes }
  */
 function evaluate(plan, record, policy, now = new Date()) {
   const a = policy.attendance || {};
@@ -42,6 +63,9 @@ function evaluate(plan, record, policy, now = new Date()) {
   const checkIn = r.checkIn ? new Date(r.checkIn) : null;
   const checkOut = r.checkOut ? new Date(r.checkOut) : null;
   const out = { status: 'pending', lateMinutes: 0, earlyLeaveMinutes: 0, workedMinutes: 0, overtimeMinutes: 0, overtimeApproved: null };
+  out.breakMinutes = breakMinutesOf(r, now);
+  const allowedBreak = Number(a.breakMinutes) || 0;
+  out.overBreakMinutes = allowedBreak > 0 ? Math.max(0, out.breakMinutes - allowedBreak) : 0;
 
   const worked = () => {
     if (!checkIn || !checkOut || checkOut <= checkIn) return 0;
@@ -198,7 +222,7 @@ const DOUBLE_PUNCH_MS = 60 * 1000;
  * one counts). A second punch within 60 s is ignored (double tap).
  * @returns { record, kind: 'in'|'out', duplicate, date, plan }
  */
-async function punch({ employeeId, at = new Date(), source = 'kiosk', photo = null, userId = null, note = '' }) {
+async function punch({ employeeId, at = new Date(), source = 'kiosk', photo = null, userId = null, note = '', action = null }) {
   const employee = await loadEmployee(employeeId);
   if (!employee.isActive) throw httpError(400, 'This employee is not active');
   const when = new Date(at);
@@ -217,10 +241,22 @@ async function punch({ employeeId, at = new Date(), source = 'kiosk', photo = nu
     return { record: rec.toObject(), kind: last.kind, duplicate: true, date, plan };
   }
 
-  const kind = rec.checkIn ? 'out' : 'in';
+  // Break button: needs a check-in and no check-out. Pressed again while on break = back.
+  // A normal scan while on break ends the break (it is not a check-out).
+  const onBreak = !!openBreak(rec);
+  let kind;
+  if (action === 'break') {
+    if (!rec.checkIn) throw httpError(400, 'Clock in first, then press Break', 'NOT_CLOCKED_IN');
+    if (rec.checkOut) throw httpError(400, "Already clocked out today — a break can't start now", 'ALREADY_OUT');
+    kind = onBreak ? 'break_end' : 'break_start';
+  } else if (onBreak && !rec.checkOut) {
+    kind = 'break_end';
+  } else {
+    kind = rec.checkIn ? 'out' : 'in';
+  }
   rec.punches.push({ at: when, kind, source, photo, by: userId || null, note });
   if (kind === 'in') rec.checkIn = when;
-  else rec.checkOut = when;
+  else if (kind === 'out') rec.checkOut = when;
   Object.assign(rec, { planned: plannedSnapshot(plan) }, evaluate(plan, rec.toObject(), policy, new Date()));
   await rec.save();
   return { record: rec.toObject(), kind, duplicate: false, date, plan };
@@ -425,4 +461,4 @@ async function monthSummary(month, { employeeIds = null, includeDays = false, no
   return { month, from, to, daysInMonth, employees };
 }
 
-module.exports = { evaluate, punch, recomputeDay, recomputeRange, dayView, monthSummary, shopDayFor, loadEmployee, EMP_FIELDS };
+module.exports = { evaluate, breaksOf, openBreak, punch, recomputeDay, recomputeRange, dayView, monthSummary, shopDayFor, loadEmployee, EMP_FIELDS };

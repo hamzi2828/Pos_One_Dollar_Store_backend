@@ -37,6 +37,9 @@ const hrPolicySchema = new mongoose.Schema(
         // Worked less than this % of the shift -> half day.
         minWorkedPct: { type: Number, min: 0, max: 100, default: 50 },
       },
+      // Break time allowed a day (Break button on the counter PC). 0 = no limit.
+      // Longer breaks are shown as "over break" (no pay cut yet).
+      breakMinutes: { type: Number, min: 0, max: 240, default: 30 },
       // A day with a check-in but no check-out (after the shift ended) counts as:
       missingOutCountsAs: { type: String, enum: ['present', 'half_day', 'absent'], default: 'present' },
     },

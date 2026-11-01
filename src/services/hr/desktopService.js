@@ -74,6 +74,14 @@ function duration(minutes) {
 /** The sentence the desk shows (and says) after a punch. Same wording as the web clock-in screen. */
 function punchMessage({ kind, duplicate, at, record, plan }) {
   const time = clock(at);
+  if (kind === 'break_start') return duplicate ? `Already on break since ${time}` : `Break started ${time} — scan again when you are back`;
+  if (kind === 'break_end') {
+    const last = core.breaksOf(record).filter((b) => b.end).pop();
+    const mins = last ? Math.round((new Date(last.end) - new Date(last.start)) / MIN_MS) : 0;
+    if (duplicate) return `Already back from break at ${time}`;
+    const over = record.overBreakMinutes ? ` · ${duration(record.overBreakMinutes)} over break time` : '';
+    return `Back from break ${time} — ${duration(mins)} break${over}`;
+  }
   if (duplicate) return kind === 'in' ? `Already clocked in at ${time}` : `Already clocked out at ${time}`;
   if (kind === 'in') {
     if (plan.type === 'shift') return `Clocked in ${time} — ${record.lateMinutes ? `${duration(record.lateMinutes)} late` : 'on time'}`;
@@ -92,7 +100,9 @@ function punchMessage({ kind, duplicate, at, record, plan }) {
 function describePunch(result, employee, { offline = false } = {}) {
   const r = result.record;
   const last = r.punches && r.punches.length ? r.punches[r.punches.length - 1] : null;
-  const at = result.duplicate && last ? last.at : result.kind === 'in' ? r.checkIn : r.checkOut;
+  const isBreak = result.kind === 'break_start' || result.kind === 'break_end';
+  const at = (result.duplicate || isBreak) && last ? last.at : result.kind === 'in' ? r.checkIn : r.checkOut;
+  const open = core.openBreak(r);
   return {
     kind: result.kind,
     at,
@@ -106,6 +116,10 @@ function describePunch(result, employee, { offline = false } = {}) {
     workedMinutes: r.workedMinutes || 0,
     overtimeMinutes: r.overtimeMinutes || 0,
     overtimeApproved: r.overtimeApproved,
+    breakMinutes: r.breakMinutes || 0,
+    overBreakMinutes: r.overBreakMinutes || 0,
+    onBreak: !!open,
+    breakStartedAt: open ? open.start : null,
     duplicate: !!result.duplicate,
     offline: !!offline,
     shiftName: (result.plan && result.plan.shiftName) || '',
@@ -176,6 +190,8 @@ async function fingersByEmployee(employeeIds) {
 /** Right-now state of one day's record: not in / in since / out. */
 const stateOf = (rec) => {
   if (!rec || !rec.checkIn) return { kind: 'not_in', since: null, outAt: null, date: rec ? rec.date : null };
+  const open = !rec.checkOut && core.openBreak(rec);
+  if (open) return { kind: 'break', since: open.start, outAt: null, date: rec.date };
   if (!rec.checkOut) return { kind: 'in', since: rec.checkIn, outAt: null, date: rec.date };
   return { kind: 'out', since: rec.checkIn, outAt: rec.checkOut, date: rec.date };
 };
@@ -192,7 +208,7 @@ async function listEmployees({ now = new Date() } = {}) {
   const yesterday = T.addDays(today, -1);
   const [recs, fingers] = await Promise.all([
     AttendanceRecord.find({ employee: { $in: ids }, date: { $in: [today, yesterday] } })
-      .select('employee date checkIn checkOut')
+      .select('employee date checkIn checkOut punches.at punches.kind')
       .lean(),
     fingersByEmployee(ids),
   ]);
@@ -417,6 +433,7 @@ async function punch(body = {}, { userId = null, now = new Date() } = {}, attemp
   const offline = body.offline === true || body.offline === 'true';
   const deviceName = deviceOf(body.deviceName);
   const at = punchTime(body, { offline, now });
+  const action = body.action === 'break' ? 'break' : null;
 
   await ensurePunchIndexes();
   let receipt;
@@ -442,7 +459,7 @@ async function punch(body = {}, { userId = null, now = new Date() } = {}, attemp
     if (!onFile) throw httpError(400, 'No fingerprint on file for this employee', 'NO_FINGERPRINT');
     const employee = await core.loadEmployee(employeeId);
     const note = ['fingerprint', deviceName || 'desktop', offline && at < now ? 'saved offline' : null].filter(Boolean).join(' · ');
-    const result = await core.punch({ employeeId, at, source: 'device', userId, note });
+    const result = await core.punch({ employeeId, at, source: 'device', userId, note, action });
     const data = describePunch(result, employee, { offline: offline && at < now });
     await DesktopPunch.updateOne({ _id: receipt._id }, { $set: { status: 'done', result: data } });
     return { ...data, repeated: false };
@@ -455,7 +472,7 @@ async function punch(body = {}, { userId = null, now = new Date() } = {}, attemp
 
 // ---------------------------------------------------------------- board
 
-const STATE_ORDER = { in: 0, not_in: 1, missing_out: 2, out: 3, absent: 4, leave: 5, off: 6, holiday: 7 };
+const STATE_ORDER = { in: 0, break: 1, not_in: 2, missing_out: 3, out: 4, absent: 5, leave: 6, off: 7, holiday: 8 };
 // On a day with no shift (off, holiday, unscheduled) the rules engine reports an
 // open check-in as missing_out at once; the counter still shows that person as
 // "in" for this long after clocking in. Display only — pay is not affected.
@@ -464,9 +481,10 @@ const OPEN_UNSCHEDULED_MS = 16 * 60 * MIN_MS;
 /** What the counter shows for one person today. */
 function rowState(record, status, plan, now) {
   if (record && record.checkIn && !record.checkOut) {
-    if (status !== 'missing_out') return 'in';
+    if (status !== 'missing_out') return core.openBreak(record) ? 'break' : 'in';
     const unscheduled = !plan || plan.type !== 'shift';
-    return unscheduled && now - new Date(record.checkIn) < OPEN_UNSCHEDULED_MS ? 'in' : 'missing_out';
+    if (unscheduled && now - new Date(record.checkIn) < OPEN_UNSCHEDULED_MS) return core.openBreak(record) ? 'break' : 'in';
+    return 'missing_out';
   }
   if (record && record.checkOut) return 'out';
   if (status === 'pending') return 'not_in';
@@ -509,6 +527,8 @@ async function board({ date = null, now = new Date() } = {}) {
         checkIn: (record && record.checkIn) || null,
         checkOut: (record && record.checkOut) || null,
         state,
+        breakStartedAt: state === 'break' ? core.openBreak(record).start : null,
+        breakMinutes: ev.breakMinutes || 0,
         status: ev.status,
         lateMinutes: ev.lateMinutes || 0,
       };
@@ -531,6 +551,7 @@ async function board({ date = null, now = new Date() } = {}) {
       total: rows.length,
       scheduled: count((r) => r.shift.type === 'shift'),
       inNow: count((r) => r.state === 'in'),
+      onBreak: count((r) => r.state === 'break'),
       out: count((r) => r.state === 'out'),
       late: count((r) => r.lateMinutes > 0),
       notInYet: count((r) => r.state === 'not_in'),

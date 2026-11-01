@@ -9,7 +9,8 @@ const STATUSES = ['pending', 'present', 'late', 'half_day', 'absent', 'missing_o
 const punchSchema = new mongoose.Schema(
   {
     at: { type: Date, required: true },
-    kind: { type: String, enum: ['in', 'out'], required: true },
+    // break_start / break_end: the Break button on the counter PC (a scan without it ends an open break).
+    kind: { type: String, enum: ['in', 'out', 'break_start', 'break_end'], required: true },
     source: { type: String, enum: ['kiosk', 'manual', 'device'], default: 'kiosk' },
     photo: { type: String, default: null },
     by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
@@ -55,6 +56,9 @@ const attendanceRecordSchema = new mongoose.Schema(
     lateMinutes: { type: Number, default: 0 },
     earlyLeaveMinutes: { type: Number, default: 0 },
     workedMinutes: { type: Number, default: 0 },
+    // Breaks taken (Break button). Shown only: break rules / pay come later.
+    breakMinutes: { type: Number, default: 0 },
+    overBreakMinutes: { type: Number, default: 0 }, // break beyond the policy's allowed minutes
     overtimeMinutes: { type: Number, default: 0 }, // eligible overtime (policy minimum applied)
     // Overtime approval: null = waiting (when the policy needs approval), true / false = decided.
     overtimeApproved: { type: Boolean, default: null },

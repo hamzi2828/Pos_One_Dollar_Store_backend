@@ -11,7 +11,20 @@ const fresh = (key) => {
   const hit = cache.get(key);
   return hit && Date.now() - hit.at < TTL_MS ? hit.policy : null;
 };
+// Rules added after a policy was saved (e.g. attendance.breakMinutes) get the schema default.
+const ADDED_RULES = ['attendance.breakMinutes'];
+function withDefaults(policy) {
+  if (!policy) return policy;
+  for (const path of ADDED_RULES) {
+    const [section, key] = path.split('.');
+    policy[section] = policy[section] || {};
+    if (policy[section][key] === undefined) policy[section][key] = HrPolicy.schema.path(path).defaultValue;
+  }
+  return policy;
+}
+
 const remember = (key, policy) => {
+  withDefaults(policy);
   cache.set(key, { at: Date.now(), policy });
   return policy;
 };

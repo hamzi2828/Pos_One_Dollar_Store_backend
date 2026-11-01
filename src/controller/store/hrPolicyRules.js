@@ -17,6 +17,7 @@ const FIELDS = {
   'attendance.halfDay.lateAfterMinutes': 'Half day when late by more than',
   'attendance.halfDay.minWorkedPct': 'Half day when worked less than',
   'attendance.missingOutCountsAs': 'No check-out counts as',
+  'attendance.breakMinutes': 'Break allowed a day',
   'pay.dayDivisor': 'Day rate',
   'pay.fixedDays': 'Salary divided by',
   'pay.absentCutDays': 'Days cut per absent day',
@@ -105,6 +106,7 @@ function summaryParts(p) {
   const parts = [];
 
   parts.push(Number(a.graceMinutes) ? `${a.graceMinutes} min grace` : 'no grace time');
+  parts.push(Number(a.breakMinutes) ? `${a.breakMinutes} min break` : 'no break limit');
   if (lr.type === 'count' && Number(lr.cutDays) > 0) parts.push(`every ${lr.latesPerCut} lates cut ${days(lr.cutDays)}`);
   else if (lr.type === 'minutes') parts.push('late minutes cut from pay');
   else parts.push('lates only noted (no cut)');
