@@ -241,6 +241,7 @@ const buildEntries = (product, opts) => {
       variant: vLabel,
       price: sellPrice(unit),
       extra: !variant && pps > 1 ? [`${pps} pcs · scan once`] : [],
+      pps: variant ? 1 : pps,
     };
     const stock = unitBranchStock(unit, opts.branchId || null, opts.mainBranchId);
     const mainCode = unitMainCode(unit);
@@ -458,6 +459,8 @@ body{font-family:-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-ser
 .toolbar .warn{flex-basis:100%;color:#fde68a;font-size:12px}
 .toolbar .warn li{margin-left:18px}
 .toolbar .count{display:inline-flex;align-items:center;gap:6px;font-weight:600}
+.toolbar .mode{background:#374151!important;padding:6px 12px!important}
+.toolbar .mode.on{background:#facc15!important;color:#111827!important}
 .toolbar .count input{width:72px;padding:4px 6px;border:0;border-radius:6px;font:inherit;font-weight:700;color:#111827;text-align:center}
 @media print{.toolbar{display:none!important}}
 `;
@@ -588,8 +591,17 @@ const renderPage = ({ labels, size, ctx, title, skipped = [], capped = false }) 
       ? 'In the print dialog choose paper A4, margins None, scale 100%.'
       : `In the print dialog choose your label printer, paper ${size.widthMm} x ${size.heightMm} mm, margins None, scale 100%.`;
 
+  // One product sold in sets (e.g. 10 pcs · scan once): print one per piece or one per sale.
+  const setPps = labels.length === 1 && labels[0].kind !== 'box' ? Math.max(1, Math.floor(Number(labels[0].pps) || 1)) : 1;
+  const perSale = setPps > 1 ? Math.max(1, Math.ceil(total / setPps)) : total;
+  const start = perSale;
+  const modes =
+    setPps > 1
+      ? `<span class="modes"><button type="button" class="mode${start === total ? ' on' : ''}" data-n="${total}">All pieces (${total})</button> <button type="button" class="mode${start === perSale ? ' on' : ''}" data-n="${perSale}">By sale (${perSale}) · 1 per ${setPps} pcs</button></span>`
+      : '';
+
   // Owner, 2026-10-31: choose how many of the stickers to print (the first N), total always shown.
-  const toolbar = `<div class="toolbar"><label class="count">Print <input id="tag-count" type="number" min="1" max="${total}" value="${total}" inputmode="numeric" aria-label="How many to print"> of ${total}</label><button type="button" id="tag-print">Print</button><button type="button" id="tag-direct" hidden style="background:#16a34a">Print on label printer</button><span id="tag-direct-msg" class="tip"></span><strong id="tag-total">Total: ${total} label${total === 1 ? '' : 's'}</strong><span>${escapeHtml(size.label)}${size.kind === 'sheet' ? ` · ${pages} sheet${pages === 1 ? '' : 's'}` : ''}</span><span class="tip">${escapeHtml(tip)}</span>${
+  const toolbar = `<div class="toolbar">${modes}<label class="count">Print <input id="tag-count" type="number" min="1" max="${total}" value="${start}" inputmode="numeric" aria-label="How many to print"> of ${total}</label><button type="button" id="tag-print">Print</button><button type="button" id="tag-direct" hidden style="background:#16a34a">Print on label printer</button><span id="tag-direct-msg" class="tip"></span><strong id="tag-total">Total: ${total} label${total === 1 ? '' : 's'}</strong><span>${escapeHtml(size.label)}${size.kind === 'sheet' ? ` · ${pages} sheet${pages === 1 ? '' : 's'}` : ''}</span><span class="tip">${escapeHtml(tip)}</span>${
     warnings.length ? `<ul class="warn">${warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join('')}</ul>` : ''
   }</div>`;
 
@@ -602,6 +614,9 @@ var sh=document.querySelectorAll('.sheet'),last=null;for(var j=0;j<sh.length;j++
 sh[j].style.display=on?'':'none';sh[j].style.breakAfter='';sh[j].style.pageBreakAfter='';if(on)last=sh[j];}
 if(last){last.style.breakAfter='auto';last.style.pageBreakAfter='auto';}
 tot.textContent=n===T?'Total: '+T+' label'+(T===1?'':'s'):'Printing '+n+' of '+T+' labels';return n;}
+var ms=document.querySelectorAll('.mode');function mark(){for(var m=0;m<ms.length;m++)ms[m].className='mode'+(String(ms[m].getAttribute('data-n'))===String(box.value)?' on':'');}
+for(var m=0;m<ms.length;m++)ms[m].addEventListener('click',function(){box.value=this.getAttribute('data-n');apply();mark();});
+box.addEventListener('input',function(){mark();});
 box.addEventListener('input',apply);box.addEventListener('keydown',function(e){if(e.key==='Enter'){apply();window.print();}});
 document.getElementById('tag-print').addEventListener('click',function(){apply();window.print();});
 window.addEventListener('load',function(){apply();if(${ctx.autoPrint ? 'true' : 'false'}&&T===1){setTimeout(function(){window.print()},300);}else{box.focus();box.select();}});})();</script>`;
