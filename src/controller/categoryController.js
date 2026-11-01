@@ -159,9 +159,14 @@ const categoryController = {
         updates.thumbnailUrl = updates.thumbnailUrls[0] || null;
       }
 
+      const before = await Category.findById(id).select('name').lean();
       const updated = await Category.findByIdAndUpdate(id, { $set: updates }, { new: true, runValidators: true });
       if (!updated) {
         return res.status(404).json({ message: 'Category not found' });
+      }
+      // Products keep the category by name: carry a rename over to them.
+      if (before && before.name && updated.name && before.name !== updated.name) {
+        await Product.updateMany({ category: before.name }, { $set: { category: updated.name } });
       }
 
       return res.status(200).json({ message: 'Category updated successfully', data: updated });
