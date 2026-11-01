@@ -23,6 +23,7 @@ const MODULES = [
   'payrollRoutes',
   'investmentsRoutes',
   'desktopRoutes',
+  'labelPrintRoutes',
   'websiteRoutes',
 ];
 

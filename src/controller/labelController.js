@@ -28,6 +28,7 @@ const mongoose = require('mongoose');
 const Product = require('../models/product');
 const Settings = require('../models/settings');
 const code128 = require('../helper/code128');
+const labelPrintLog = require('../services/labelPrintLog');
 const {
   listUnits,
   variantLabel,
@@ -563,7 +564,13 @@ const tsplLabelBody = (item, ctx, size) => {
 const tsplHeader = (size) =>
   [`SIZE ${size.widthMm} mm,${size.heightMm} mm`, 'GAP 2 mm,0 mm', 'DIRECTION 1,0', 'REFERENCE 0,0', 'OFFSET 0 mm', 'SET TEAR ON', 'DENSITY 10', 'SPEED 4', 'CODEPAGE 1252'].join('\r\n');
 
-const renderPage = ({ labels, size, ctx, title, skipped = [], capped = false }) => {
+/** Where the sticker page sends "printed N" (this API, as the browser reaches it). */
+const logUrlOf = (req) => {
+  const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
+  return `${proto}://${req.get('host')}/api/public/label-prints`;
+};
+
+const renderPage = ({ labels, size, ctx, title, skipped = [], capped = false, log = null }) => {
   const flat = [];
   for (const item of labels) {
     const html = renderLabel(item, ctx);
@@ -606,7 +613,10 @@ const renderPage = ({ labels, size, ctx, title, skipped = [], capped = false }) 
   }</div>`;
 
   // Only the first N labels are shown / printed; the last one shown ends the run (no blank page).
-  const countScript = `<script>(function(){var T=${total};var box=document.getElementById('tag-count');var tot=document.getElementById('tag-total');
+  const logJs = log && log.ticket && log.url
+    ? `window.__logPrint=function(n,via){try{var mode=${setPps > 1 ? `n===${perSale}?'sale':n===${total}?'piece':'custom'` : `n===${total}?'piece':'custom'`};fetch(${JSON.stringify(log.url).replace(/</g, '\\u003c')},{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticket:${JSON.stringify(log.ticket)},count:n,mode:mode,via:via}),keepalive:true}).catch(function(){});}catch(e){}};`
+    : 'window.__logPrint=function(){};';
+  const countScript = `<script>${logJs}(function(){var T=${total};var box=document.getElementById('tag-count');var tot=document.getElementById('tag-total');
 function apply(){var n=parseInt(box.value,10);if(!(n>=1))n=T;if(n>T)n=T;var ls=document.querySelectorAll('.label');
 for(var i=0;i<ls.length;i++){ls[i].style.display=i<n?'':'none';ls[i].style.breakAfter='';ls[i].style.pageBreakAfter='';}
 if(ls[n-1]){ls[n-1].style.breakAfter='auto';ls[n-1].style.pageBreakAfter='auto';}
@@ -617,9 +627,9 @@ tot.textContent=n===T?'Total: '+T+' label'+(T===1?'':'s'):'Printing '+n+' of '+T
 var ms=document.querySelectorAll('.mode');function mark(){for(var m=0;m<ms.length;m++)ms[m].className='mode'+(String(ms[m].getAttribute('data-n'))===String(box.value)?' on':'');}
 for(var m=0;m<ms.length;m++)ms[m].addEventListener('click',function(){box.value=this.getAttribute('data-n');apply();mark();});
 box.addEventListener('input',function(){mark();});
-box.addEventListener('input',apply);box.addEventListener('keydown',function(e){if(e.key==='Enter'){apply();window.print();}});
-document.getElementById('tag-print').addEventListener('click',function(){apply();window.print();});
-window.addEventListener('load',function(){apply();if(${ctx.autoPrint ? 'true' : 'false'}&&T===1){setTimeout(function(){window.print()},300);}else{box.focus();box.select();}});})();</script>`;
+box.addEventListener('input',apply);box.addEventListener('keydown',function(e){if(e.key==='Enter'){var n=apply();window.__logPrint(n,'browser');window.print();}});
+document.getElementById('tag-print').addEventListener('click',function(){var n=apply();window.__logPrint(n,'browser');window.print();});
+window.addEventListener('load',function(){apply();if(${ctx.autoPrint ? 'true' : 'false'}&&T===1){window.__logPrint(1,'browser');setTimeout(function(){window.print()},300);}else{box.focus();box.select();}});})();</script>`;
   // Direct printing through the DollarCoPos desktop app (thermal sizes only).
   const direct =
     size.kind === 'sheet'
@@ -633,7 +643,7 @@ function tspl(n){var out=[JOB.header],left=n;for(var i=0;i<JOB.labels.length&&le
 var ctl=window.AbortController?new AbortController():null;var t=setTimeout(function(){if(ctl)ctl.abort();},1500);
 fetch(AGENT+'/status',ctl?{signal:ctl.signal}:{}).then(function(r){return r.json();}).then(function(s){clearTimeout(t);if(s&&s.ok&&s.printer){printer=s.printer;btn.hidden=false;btn.textContent='Print on '+s.printer;msg.textContent='Label printer ready: no print window needed.';}else if(s&&s.ok){msg.textContent='Desktop app found, but no label printer. Install the Xprinter driver.';}}).catch(function(){var help=document.createElement('span');help.style.cssText='flex-basis:100%;color:#fde68a;font-size:12px';help.innerHTML='Sticker printing too big or blank? Open the <b>DollarCoPos</b> desktop app (get it: <a href="https://pos-one-dollar-store-frontend.vercel.app/admin/desktop-app" target="_blank" style="color:#fff">Desktop app</a>) and use the green button. '+'Or in the print window: Paper size <b>' + JOB.size + '</b> (make it once in Printer preferences), Margins <b>None</b>, untick <b>Headers and footers</b>.';document.querySelector('.toolbar').appendChild(help);});
 btn.addEventListener('click',function(){var n=count();btn.disabled=true;msg.textContent='Sending '+n+' label'+(n===1?'':'s')+'...';
-fetch(AGENT+'/print',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:tspl(n),printer:printer})}).then(function(r){return r.json();}).then(function(r){msg.textContent=r&&r.ok?'Sent '+n+' label'+(n===1?'':'s')+' to '+r.printer+'.':'Could not print: '+((r&&r.error)||'unknown error');}).catch(function(){msg.textContent='Could not reach the DollarCoPos desktop app. Open it and try again.';}).then(function(){btn.disabled=false;});});})();</script>`;
+fetch(AGENT+'/print',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:tspl(n),printer:printer})}).then(function(r){return r.json();}).then(function(r){if(r&&r.ok)window.__logPrint(n,'printer');msg.textContent=r&&r.ok?'Sent '+n+' label'+(n===1?'':'s')+' to '+r.printer+'.':'Could not print: '+((r&&r.error)||'unknown error');}).catch(function(){msg.textContent='Could not reach the DollarCoPos desktop app. Open it and try again.';}).then(function(){btn.disabled=false;});});})();</script>`;
         })();
   // Auto print only for a single label: with more, the count is chosen first.
   const autoPrint = countScript + direct;
@@ -772,6 +782,7 @@ const labelController = {
       const html = renderPage({
         labels,
         size,
+        log: { ticket: labelPrintLog.makeTicket(req, labels, size.key), url: logUrlOf(req) },
         title: `Labels - ${product.name}`,
         skipped,
         capped: state.capped,
@@ -855,6 +866,7 @@ const labelController = {
       const html = renderPage({
         labels,
         size,
+        log: { ticket: labelPrintLog.makeTicket(req, labels, size.key), url: logUrlOf(req) },
         title: `Labels - ${parsed.length} item${parsed.length === 1 ? '' : 's'}`,
         skipped,
         capped: state.capped,
