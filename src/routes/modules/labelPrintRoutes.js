@@ -41,4 +41,15 @@ router.get(
   })
 );
 
+// PATCH /label-prints/:id { ignored: true|false } -> leave a test / wrong print out of the count.
+router.patch(
+  '/label-prints/:id',
+  ...staff,
+  can('products', 'edit'),
+  handle(async (req, res) => {
+    const data = await log.setIgnored(req, req.params.id, (req.body || {}).ignored);
+    res.json({ success: true, data });
+  })
+);
+
 module.exports = router;

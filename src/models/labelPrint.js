@@ -21,6 +21,10 @@ const labelPrintSchema = new mongoose.Schema(
     size: { type: String, default: '' },
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     userName: { type: String, default: '' },
+    // Test / wrong prints the shop chose to ignore: kept, but not counted or listed.
+    ignored: { type: Boolean, default: false },
+    ignoredBy: { type: String, default: '' },
+    ignoredAt: { type: Date, default: null },
   },
   { timestamps: { createdAt: true, updatedAt: false } }
 );

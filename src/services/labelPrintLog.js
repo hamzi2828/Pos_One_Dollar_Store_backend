@@ -89,7 +89,7 @@ async function record(body = {}) {
 /** Latest prints of one product (newest first) and the total stickers printed. */
 async function listForProduct(productId, { variantId = null, limit = 50 } = {}) {
   if (!mongoose.isValidObjectId(productId)) throw bad('Invalid product');
-  const q = { product: new mongoose.Types.ObjectId(String(productId)) };
+  const q = { product: new mongoose.Types.ObjectId(String(productId)), ignored: { $ne: true } };
   if (variantId) q.variantId = String(variantId);
   const [rows, sum] = await Promise.all([
     LabelPrint.find(q).sort({ createdAt: -1 }).limit(Math.min(200, Math.max(1, Number(limit) || 50))).lean(),
@@ -112,4 +112,17 @@ async function listForProduct(productId, { variantId = null, limit = 50 } = {}) 
   };
 }
 
-module.exports = { makeTicket, record, listForProduct };
+/** Ignore (or bring back) one print: test / wrong prints are not counted. */
+async function setIgnored(req, id, ignored) {
+  if (!mongoose.isValidObjectId(id)) throw bad('Invalid print');
+  const on = ignored !== false;
+  const r = await LabelPrint.findByIdAndUpdate(
+    id,
+    { $set: { ignored: on, ignoredBy: on ? userNameOf(req) : '', ignoredAt: on ? new Date() : null } },
+    { new: true }
+  ).lean();
+  if (!r) throw Object.assign(new Error('Print not found'), { status: 404 });
+  return { id: String(r._id), ignored: r.ignored };
+}
+
+module.exports = { makeTicket, record, listForProduct, setIgnored };
