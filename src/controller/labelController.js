@@ -45,7 +45,7 @@ const MAX_BULK_ITEMS = 500;
 
 const SIZES = {
   // 1 x 0.5 inch roll: name + barcode + code only (no shop name, no extra line).
-  '25x13': { key: '25x13', label: '25.4 x 12.7 mm (1 x 0.5 inch, thermal)', widthMm: 25.4, heightMm: 12.7, kind: 'thermal', tiny: true, tsplSize: 'SIZE 1,0.5' },
+  '25x13': { key: '25x13', label: '25 x 15 mm (tiny roll, thermal)', widthMm: 25.4, heightMm: 15, gapMm: 2.5, kind: 'thermal', tiny: true },
   '38x25': { key: '38x25', label: '38 x 25 mm (thermal)', widthMm: 38, heightMm: 25, kind: 'thermal' },
   '40x30': { key: '40x30', label: '40 x 30 mm (thermal)', widthMm: 40, heightMm: 30, kind: 'thermal' },
   '50x25': { key: '50x25', label: '50 x 25 mm (thermal)', widthMm: 50, heightMm: 25, kind: 'thermal' },
@@ -597,7 +597,7 @@ const tsplLabelBody = (item, ctx, size) => {
 
 /** TSPL job header for this sticker size (gap rolls). */
 const tsplHeader = (size) =>
-  [size.tsplSize || `SIZE ${size.widthMm} mm,${size.heightMm} mm`, 'GAP 2 mm,0 mm', 'DIRECTION 1,0', 'REFERENCE 0,0', 'OFFSET 0 mm', 'SET TEAR ON', 'DENSITY 10', 'SPEED 4', 'CODEPAGE 1252'].join('\r\n');
+  [`SIZE ${size.widthMm} mm,${size.heightMm} mm`, `GAP ${size.gapMm || 2} mm,0 mm`, 'DIRECTION 1,0', 'REFERENCE 0,0', 'OFFSET 0 mm', 'SET TEAR ON', 'DENSITY 10', 'SPEED 4', 'CODEPAGE 1252'].join('\r\n');
 
 /** Where the sticker page sends "printed N" (this API, as the browser reaches it). */
 const logUrlOf = (req) => {
@@ -670,11 +670,11 @@ window.addEventListener('load',function(){apply();if(${ctx.autoPrint ? 'true' : 
     size.kind === 'sheet'
       ? ''
       : (() => {
-          const job = { size: `${size.widthMm} x ${size.heightMm} mm`, key: size.key, w: size.widthMm, h: size.heightMm, header: tsplHeader(size), labels: labels.map((it) => ({ body: tsplLabelBody(it, ctx, size), copies: it.copies })) };
+          const job = { size: `${size.widthMm} x ${size.heightMm} mm`, key: size.key, w: size.widthMm, h: size.heightMm, g: size.gapMm || 2, header: tsplHeader(size), labels: labels.map((it) => ({ body: tsplLabelBody(it, ctx, size), copies: it.copies })) };
           const json = JSON.stringify(job).replace(/</g, '\\u003c');
           return `<script>(function(){var JOB=${json};var AGENT='http://127.0.0.1:47321';var btn=document.getElementById('tag-direct');var msg=document.getElementById('tag-direct-msg');var box=document.getElementById('tag-count');var printer=null;
 function count(){var n=parseInt(box.value,10);var T=0;for(var i=0;i<JOB.labels.length;i++)T+=JOB.labels[i].copies;if(!(n>=1))n=T;return Math.min(n,T);}
-var KEY='dollarco.tspl.'+JOB.key;var D={w:JOB.w,h:JOB.h,g:2,x:0,y:0};var S={w:D.w,h:D.h,g:D.g,x:D.x,y:D.y};
+var KEY='dollarco.tspl.'+JOB.key;var D={w:JOB.w,h:JOB.h,g:JOB.g,x:0,y:0};var S={w:D.w,h:D.h,g:D.g,x:D.x,y:D.y};
 try{var o=JSON.parse(window.localStorage.getItem(KEY)||'null');if(o)for(var k in S)if(typeof o[k]==='number'&&isFinite(o[k]))S[k]=o[k];}catch(e){}
 function changed(){for(var k in D)if(S[k]!==D[k])return true;return false;}
 function hdr(){if(!changed())return JOB.header;return ['SIZE '+S.w+' mm,'+S.h+' mm','GAP '+S.g+' mm,0 mm','DIRECTION 1,0','REFERENCE '+Math.max(0,Math.round(S.x*8))+','+Math.max(0,Math.round(S.y*8)),'OFFSET 0 mm','SET TEAR ON','DENSITY 10','SPEED 4','CODEPAGE 1252'].join('\\r\\n');}
@@ -689,13 +689,14 @@ function read(){var ins=d.querySelectorAll('input[data-k]');for(var j=0;j<ins.le
 d.querySelector('[data-a=save]').addEventListener('click',function(){read();try{window.localStorage.setItem(KEY,JSON.stringify(S));note.textContent='Saved: '+S.w+' x '+S.h+' mm, gap '+S.g+' mm. Print 1 sticker to check.';}catch(e){note.textContent='Using these settings now (could not save them on this computer).';}});
 d.querySelector('[data-a=reset]').addEventListener('click',function(){for(var k in D)S[k]=D[k];try{window.localStorage.removeItem(KEY);}catch(e){}var ins=d.querySelectorAll('input[data-k]');for(var j=0;j<ins.length;j++)ins[j].value=S[ins[j].getAttribute('data-k')];note.textContent='Back to the normal settings.';});
 d.querySelector('[data-a=detect]').addEventListener('click',function(){read();if(!printer){note.textContent='Open the DollarCoPos desktop app first.';return;}note.textContent='Finding the gaps...';
-fetch(AGENT+'/print',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:'SIZE '+S.w+' mm,'+S.h+' mm\\r\\nGAP '+S.g+' mm,0 mm\\r\\nGAPDETECT\\r\\n',printer:printer})}).then(function(r){return r.json();}).then(function(r){note.textContent=r&&r.ok?'Done. The printer fed a few labels to find the gaps. Now print 1 sticker to check.':'Could not send: '+((r&&r.error)||'unknown error');}).catch(function(){note.textContent='Could not reach the DollarCoPos desktop app.';});});
+fetch(AGENT+'/print',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:'SIZE '+S.w+' mm,'+S.h+' mm\\r\\nGAP '+S.g+' mm,0 mm\\r\\nGAPDETECT\\r\\n',printer:printer})}).then(function(r){return r.json();}).then(function(r){if(r&&r.ok){try{window.localStorage.setItem(GD,'1');}catch(e){}}note.textContent=r&&r.ok?'Done. The printer fed a few labels to find the gaps. Now print 1 sticker to check.':'Could not send: '+((r&&r.error)||'unknown error');}).catch(function(){note.textContent='Could not reach the DollarCoPos desktop app.';});});
 document.querySelector('.toolbar').appendChild(d);}
-function tspl(n){var out=[hdr()],left=n;for(var i=0;i<JOB.labels.length&&left>0;i++){var k=Math.min(left,JOB.labels[i].copies);out.push('CLS',JOB.labels[i].body,'PRINT 1,'+k);left-=k;}return out.join('\\r\\n')+'\\r\\n';}
+var GD='dollarco.gapdetect.'+JOB.key;function needGap(){try{return !window.localStorage.getItem(GD);}catch(e){return false;}}
+function tspl(n){var out=[hdr()],left=n;if(needGap())out.push('GAPDETECT');for(var i=0;i<JOB.labels.length&&left>0;i++){var k=Math.min(left,JOB.labels[i].copies);out.push('CLS',JOB.labels[i].body,'PRINT 1,'+k);left-=k;}return out.join('\\r\\n')+'\\r\\n';}
 var ctl=window.AbortController?new AbortController():null;var t=setTimeout(function(){if(ctl)ctl.abort();},1500);
 fetch(AGENT+'/status',ctl?{signal:ctl.signal}:{}).then(function(r){return r.json();}).then(function(s){clearTimeout(t);if(s&&s.ok&&s.printer){printer=s.printer;btn.hidden=false;btn.textContent='Print on '+s.printer;msg.textContent='Label printer ready: no print window needed.';setupPanel();}else if(s&&s.ok){msg.textContent='Desktop app found, but no label printer. Install the Xprinter driver.';}}).catch(function(){var help=document.createElement('span');help.style.cssText='flex-basis:100%;color:#fde68a;font-size:12px';help.innerHTML='Sticker printing too big or blank? Open the <b>DollarCoPos</b> desktop app (get it: <a href="https://pos-one-dollar-store-frontend.vercel.app/admin/desktop-app" target="_blank" style="color:#fff">Desktop app</a>) and use the green button. '+'Or in the print window: Paper size <b>' + JOB.size + '</b> (make it once in Printer preferences), Margins <b>None</b>, untick <b>Headers and footers</b>.';document.querySelector('.toolbar').appendChild(help);});
 btn.addEventListener('click',function(){var n=count();btn.disabled=true;msg.textContent='Sending '+n+' label'+(n===1?'':'s')+'...';
-fetch(AGENT+'/print',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:tspl(n),printer:printer})}).then(function(r){return r.json();}).then(function(r){if(r&&r.ok)window.__logPrint(n,'printer');msg.textContent=r&&r.ok?'Sent '+n+' label'+(n===1?'':'s')+' to '+r.printer+'.':'Could not print: '+((r&&r.error)||'unknown error');}).catch(function(){msg.textContent='Could not reach the DollarCoPos desktop app. Open it and try again.';}).then(function(){btn.disabled=false;});});})();</script>`;
+fetch(AGENT+'/print',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:tspl(n),printer:printer})}).then(function(r){return r.json();}).then(function(r){if(r&&r.ok){window.__logPrint(n,'printer');try{window.localStorage.setItem(GD,'1');}catch(e){}}msg.textContent=r&&r.ok?'Sent '+n+' label'+(n===1?'':'s')+' to '+r.printer+'.':'Could not print: '+((r&&r.error)||'unknown error');}).catch(function(){msg.textContent='Could not reach the DollarCoPos desktop app. Open it and try again.';}).then(function(){btn.disabled=false;});});})();</script>`;
         })();
   // Auto print only for a single label: with more, the count is chosen first.
   const autoPrint = countScript + direct;
