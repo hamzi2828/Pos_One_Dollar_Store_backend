@@ -597,7 +597,7 @@ const tsplLabelBody = (item, ctx, size) => {
 
 /** TSPL job header for this sticker size (gap rolls). */
 const tsplHeader = (size) =>
-  [`SIZE ${size.widthMm} mm,${size.heightMm} mm`, `GAP ${size.gapMm || 2} mm,0 mm`, 'DIRECTION 1,0', 'REFERENCE 0,0', 'OFFSET 0 mm', 'SET TEAR ON', 'DENSITY 10', 'SPEED 4', 'CODEPAGE 1252'].join('\r\n');
+  [`SIZE ${size.widthMm} mm,${size.heightMm} mm`, `GAP ${size.gapMm || 2} mm,0 mm`, 'DIRECTION 1,0', 'REFERENCE 0,0', 'SHIFT 0', 'OFFSET 0 mm', 'SET TEAR ON', 'DENSITY 10', 'SPEED 4', 'CODEPAGE 1252'].join('\r\n');
 
 /** Where the sticker page sends "printed N" (this API, as the browser reaches it). */
 const logUrlOf = (req) => {
@@ -677,7 +677,7 @@ function count(){var n=parseInt(box.value,10);var T=0;for(var i=0;i<JOB.labels.l
 var KEY='dollarco.tspl.'+JOB.key;var D={w:JOB.w,h:JOB.h,g:JOB.g,x:0,y:0};var S={w:D.w,h:D.h,g:D.g,x:D.x,y:D.y};
 try{var o=JSON.parse(window.localStorage.getItem(KEY)||'null');if(o)for(var k in S)if(typeof o[k]==='number'&&isFinite(o[k]))S[k]=o[k];}catch(e){}
 function changed(){for(var k in D)if(S[k]!==D[k])return true;return false;}
-function hdr(){if(!changed())return JOB.header;return ['SIZE '+S.w+' mm,'+S.h+' mm','GAP '+S.g+' mm,0 mm','DIRECTION 1,0','REFERENCE '+Math.max(0,Math.round(S.x*8))+','+Math.max(0,Math.round(S.y*8)),'OFFSET 0 mm','SET TEAR ON','DENSITY 10','SPEED 4','CODEPAGE 1252'].join('\\r\\n');}
+function hdr(){if(!changed())return JOB.header;return ['SIZE '+S.w+' mm,'+S.h+' mm','GAP '+S.g+' mm,0 mm','DIRECTION 1,0','REFERENCE '+Math.max(0,Math.round(S.x*8))+','+Math.max(0,Math.round(S.y*8)),'SHIFT 0','OFFSET 0 mm','SET TEAR ON','DENSITY 10','SPEED 4','CODEPAGE 1252'].join('\\r\\n');}
 function setupPanel(){var d=document.createElement('details');d.style.cssText='flex-basis:100%;font-size:13px';
 var f=[['w','Label width'],['h','Label height'],['g','Gap between labels'],['x','Move right'],['y','Move up/down (minus = up)']];
 var h='<summary style="cursor:pointer;color:#fde68a;font-weight:600">Printer setup: gap and label size (stickers cut or printing across two labels? fix it here)</summary><div style="display:flex;flex-wrap:wrap;gap:8px 14px;align-items:end;margin-top:8px">';
