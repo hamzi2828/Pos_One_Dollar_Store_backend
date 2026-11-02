@@ -44,6 +44,8 @@ const MAX_LABELS = 1000;
 const MAX_BULK_ITEMS = 500;
 
 const SIZES = {
+  // 1 x 0.5 inch roll: name + barcode + code only (no shop name, no extra line).
+  '25x13': { key: '25x13', label: '25.4 x 12.7 mm (1 x 0.5 inch, thermal)', widthMm: 25.4, heightMm: 12.7, kind: 'thermal', tiny: true, tsplSize: 'SIZE 1,0.5' },
   '38x25': { key: '38x25', label: '38 x 25 mm (thermal)', widthMm: 38, heightMm: 25, kind: 'thermal' },
   '40x30': { key: '40x30', label: '40 x 30 mm (thermal)', widthMm: 40, heightMm: 30, kind: 'thermal' },
   '50x25': { key: '50x25', label: '50 x 25 mm (thermal)', widthMm: 50, heightMm: 25, kind: 'thermal' },
@@ -465,8 +467,17 @@ body{font-family:-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-ser
 .toolbar .count input{width:72px;padding:4px 6px;border:0;border-radius:6px;font:inherit;font-weight:700;color:#111827;text-align:center}
 @media print{.toolbar{display:none!important}}
 `;
+  const tinyCss = size.tiny
+    ? `
+.label{padding:0.4mm 0.8mm;line-height:1.05}
+.label .shop,.label .extra,.label .row{display:none}
+.label .name{font-size:1.75mm;-webkit-line-clamp:1;max-height:1.2em;white-space:nowrap;text-overflow:ellipsis;display:block;text-align:center}
+.label .bc{min-height:5mm;margin-top:0.2mm}
+.label .code{font-size:2.1mm;letter-spacing:.04em}
+`
+    : '';
   if (size.kind === 'sheet') {
-    return `${common}
+    return `${common}${tinyCss}
 @page{size:A4;margin:0}
 .sheet{width:${size.pageWidthMm}mm;height:${size.pageHeightMm}mm;padding-top:0.5mm;display:grid;grid-template-columns:repeat(${size.cols},${w}mm);grid-auto-rows:${h}mm;align-content:start;overflow:hidden;break-after:page;page-break-after:always;background:#fff}
 .sheet:last-child{break-after:auto;page-break-after:auto}
@@ -474,7 +485,7 @@ body{font-family:-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-ser
 @media screen{html,body{background:#e5e7eb;min-height:100%}.sheet{margin:16px auto;box-shadow:0 1px 6px rgba(0,0,0,.25)}.sheet .label{outline:1px dashed #cbd5e1;outline-offset:-1px}}
 `;
   }
-  return `${common}
+  return `${common}${tinyCss}
 @page{size:${w}mm ${h}mm;margin:0}
 @media print{html,body{width:${w}mm}.label{break-after:page;page-break-after:always}.label:last-child{break-after:auto;page-break-after:auto}}
 @media screen{html,body{background:#e5e7eb;min-height:100%}.labels{display:flex;flex-wrap:wrap;gap:8px;padding:16px}.label{box-shadow:0 1px 4px rgba(0,0,0,.3)}}
@@ -518,8 +529,32 @@ const code128Modules = (code) => {
   return 11 * (symbols + 2) + 13 + 20; // + quiet zones
 };
 
+/** 1 x 0.5 inch label (203 x 101 dots): one name line, barcode, code. */
+const tsplTinyBody = (item, size) => {
+  const W = Math.round(size.widthMm * DOTS_PER_MM);
+  const H = Math.round(size.heightMm * DOTS_PER_MM);
+  const cmds = [];
+  const text = (x, yy, font, t) => cmds.push(`TEXT ${Math.max(0, Math.round(x))},${Math.round(yy)},"${font}",0,1,1,"${t}"`);
+  const centre = (yy, font, t) => text((W - t.length * TSPL_FONTS[font][0]) / 2, yy, font, t);
+  let y = 3;
+  const name = (tsplText(item.name) || '-').slice(0, Math.floor((W - 8) / TSPL_FONTS[1][0]));
+  centre(y, 1, name);
+  y += TSPL_FONTS[1][1] + 2;
+  const code = tsplText(item.code);
+  const codeFont = code.length * TSPL_FONTS[2][0] <= W - 8 ? 2 : 1;
+  const codeH = TSPL_FONTS[codeFont][1];
+  const modules = code128Modules(code);
+  const narrow = [2, 1].find((n) => (modules - 20) * n <= W - 8) || 1;
+  const barH = Math.max(24, H - y - codeH - 6);
+  const bx = Math.max(0, Math.round((W - (modules - 20) * narrow) / 2));
+  cmds.push(`BARCODE ${bx},${y},"128",${barH},0,0,${narrow},${narrow},"${code}"`);
+  centre(y + barH + 2, codeFont, code);
+  return cmds.join('\r\n');
+};
+
 /** TSPL commands for ONE label body (between CLS and PRINT). */
 const tsplLabelBody = (item, ctx, size) => {
+  if (size.tiny) return tsplTinyBody(item, size);
   const W = size.widthMm * DOTS_PER_MM;
   const H = size.heightMm * DOTS_PER_MM;
   const big = size.heightMm >= 30;
@@ -562,7 +597,7 @@ const tsplLabelBody = (item, ctx, size) => {
 
 /** TSPL job header for this sticker size (gap rolls). */
 const tsplHeader = (size) =>
-  [`SIZE ${size.widthMm} mm,${size.heightMm} mm`, 'GAP 2 mm,0 mm', 'DIRECTION 1,0', 'REFERENCE 0,0', 'OFFSET 0 mm', 'SET TEAR ON', 'DENSITY 10', 'SPEED 4', 'CODEPAGE 1252'].join('\r\n');
+  [size.tsplSize || `SIZE ${size.widthMm} mm,${size.heightMm} mm`, 'GAP 2 mm,0 mm', 'DIRECTION 1,0', 'REFERENCE 0,0', 'OFFSET 0 mm', 'SET TEAR ON', 'DENSITY 10', 'SPEED 4', 'CODEPAGE 1252'].join('\r\n');
 
 /** Where the sticker page sends "printed N" (this API, as the browser reaches it). */
 const logUrlOf = (req) => {
