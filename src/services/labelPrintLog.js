@@ -34,6 +34,7 @@ function makeTicket(req, labels, size) {
       c: String(l.code || '').slice(0, 60),
       k: Math.max(0, Math.floor(Number(l.copies) || 0)),
       s: l.kind === 'box' ? 1 : Math.max(1, Math.floor(Number(l.pps) || 1)),
+      b: l.bill && mongoose.isValidObjectId(l.bill) ? String(l.bill) : null,
     }));
     const u = userIdOf(req);
     return jwt.sign({ t: 'lp', u: u ? String(u) : null, un: userNameOf(req).slice(0, 80), z: size || '', i: items }, keyOf(), { expiresIn: TICKET_LIFE });
@@ -69,6 +70,7 @@ async function record(body = {}) {
     docs.push({
       product: x.p,
       variantId: x.v || null,
+      bill: x.b && mongoose.isValidObjectId(x.b) ? x.b : null,
       productName: x.n,
       code: x.c,
       count: n,
@@ -87,17 +89,18 @@ async function record(body = {}) {
 }
 
 /** Latest prints of one product (newest first) and the total stickers printed. */
-async function listForProduct(productId, { variantId = null, limit = 50 } = {}) {
+async function listForProduct(productId, { variantId = null, bill = null, limit = 50 } = {}) {
   if (!mongoose.isValidObjectId(productId)) throw bad('Invalid product');
   const q = { product: new mongoose.Types.ObjectId(String(productId)), ignored: { $ne: true } };
   if (variantId) q.variantId = String(variantId);
+  if (bill && mongoose.isValidObjectId(bill)) q.bill = new mongoose.Types.ObjectId(String(bill));
   const [rows, sum] = await Promise.all([
     LabelPrint.find(q).sort({ createdAt: -1 }).limit(Math.min(200, Math.max(1, Number(limit) || 50))).lean(),
     LabelPrint.aggregate([{ $match: q }, { $group: { _id: null, stickers: { $sum: '$count' }, runs: { $sum: 1 } } }]),
   ]);
   return {
     totalStickers: sum[0]?.stickers || 0,
-    runs: sum[0]?.runs || 0,
+    runs: rows.filter((r) => r.mode !== 'moved').length,
     prints: rows.map((r) => ({
       id: String(r._id),
       count: r.count,
@@ -107,6 +110,7 @@ async function listForProduct(productId, { variantId = null, limit = 50 } = {}) 
       via: r.via,
       size: r.size,
       userName: r.userName,
+      note: r.note || '',
       at: r.createdAt,
     })),
   };
@@ -120,11 +124,34 @@ async function printedFor(labels) {
     const { productId, variantId } = labels[0];
     if (!mongoose.isValidObjectId(productId)) return null;
     const q = { product: new mongoose.Types.ObjectId(String(productId)), ignored: { $ne: true }, variantId: variantId ? String(variantId) : null };
+    if (labels[0].bill && mongoose.isValidObjectId(labels[0].bill)) q.bill = new mongoose.Types.ObjectId(String(labels[0].bill));
     const sum = await LabelPrint.aggregate([{ $match: q }, { $group: { _id: null, n: { $sum: '$count' } } }]);
     return sum[0]?.n || 0;
   } catch {
     return null; // never block printing because of the log
   }
+}
+
+/**
+ * Pieces moved from one vendor bill to another took their stickers with them:
+ * up to `count` printed stickers go with them (never more than were printed on fromBill).
+ * -> number moved
+ */
+async function moveBetweenBills({ productId, variantId = null, fromBill, toBill, count, userName = '', fromName = '', toName = '' }) {
+  const product = new mongoose.Types.ObjectId(String(productId));
+  const v = variantId ? String(variantId) : null;
+  const from = new mongoose.Types.ObjectId(String(fromBill));
+  const to = new mongoose.Types.ObjectId(String(toBill));
+  const sum = await LabelPrint.aggregate([{ $match: { product, variantId: v, bill: from, ignored: { $ne: true } } }, { $group: { _id: null, n: { $sum: '$count' } } }]);
+  const n = Math.min(Math.max(0, Math.floor(Number(count) || 0)), Math.max(0, sum[0]?.n || 0));
+  if (n < 1) return 0;
+  const p = await LabelPrint.findOne({ product, variantId: v }).sort({ createdAt: -1 }).lean();
+  const base = { product, variantId: v, productName: p?.productName || '', code: p?.code || '', total: 0, mode: 'moved', piecesPerSale: p?.piecesPerSale || 1, via: 'browser', size: '', userName };
+  await LabelPrint.insertMany([
+    { ...base, bill: from, count: -n, note: `Moved to ${toName || 'another vendor'} with the pieces` },
+    { ...base, bill: to, count: n, note: `Moved from ${fromName || 'another vendor'} with the pieces` },
+  ]);
+  return n;
 }
 
 /** Ignore (or bring back) one print: test / wrong prints are not counted. */
@@ -140,4 +167,4 @@ async function setIgnored(req, id, ignored) {
   return { id: String(r._id), ignored: r.ignored };
 }
 
-module.exports = { makeTicket, record, listForProduct, setIgnored, printedFor };
+module.exports = { makeTicket, record, listForProduct, setIgnored, printedFor, moveBetweenBills };

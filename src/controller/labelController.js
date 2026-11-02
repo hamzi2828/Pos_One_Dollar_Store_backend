@@ -838,7 +838,8 @@ const labelController = {
       if (!entries.length) throw badRequest(skipped.length ? `Nothing to print. ${skipped.join('; ')}` : 'Nothing to print');
 
       const state = { count: 0, capped: false };
-      const labels = applyCopies(entries, copies, state);
+      const billQ = asString(q.bill);
+      const labels = applyCopies(entries, copies, state).map((l) => (billQ && mongoose.isValidObjectId(billQ) ? { ...l, bill: billQ } : l));
       const settings = await getShopSettings(q);
       const html = renderPage({
         labels,
@@ -885,6 +886,7 @@ const labelController = {
             batchNo: asString(it.batchNo),
             code: asString(it.code),
             copies: parseCopies(it.copies, `items[${index}].copies`),
+            bill: mongoose.isValidObjectId(asString(it.bill) || '') ? asString(it.bill) : null,
           };
         } catch (e) {
           e.index = index;
@@ -920,7 +922,7 @@ const labelController = {
           if (built.entries.length) state.capped = true;
           continue;
         }
-        labels.push(...applyCopies(built.entries, p.copies, state));
+        labels.push(...applyCopies(built.entries, p.copies, state).map((l) => (p.bill ? { ...l, bill: p.bill } : l)));
       }
       if (!labels.length) throw badRequest(skipped.length ? `Nothing to print. ${skipped.join('; ')}` : 'Nothing to print');
 

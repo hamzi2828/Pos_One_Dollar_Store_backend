@@ -36,7 +36,7 @@ router.get(
   ...staff,
   can('products', 'view'),
   handle(async (req, res) => {
-    const data = await log.listForProduct(req.query.productId, { variantId: req.query.variantId || null, limit: req.query.limit });
+    const data = await log.listForProduct(req.query.productId, { variantId: req.query.variantId || null, bill: req.query.bill || null, limit: req.query.limit });
     res.json({ success: true, data });
   })
 );

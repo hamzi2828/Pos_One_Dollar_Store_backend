@@ -11,10 +11,14 @@ const labelPrintSchema = new mongoose.Schema(
     productName: { type: String, default: '' },
     code: { type: String, default: '' },
     // stickers printed of this product in this run / stickers on the page
-    count: { type: Number, required: true, min: 1 },
+    // negative on a "moved" row: printed stickers that left with pieces moved to another vendor
+    count: { type: Number, required: true },
     total: { type: Number, default: 0 },
     // sale = one per sale (set items), piece = all pieces, custom = a typed number
-    mode: { type: String, enum: ['sale', 'piece', 'custom'], default: 'custom' },
+    mode: { type: String, enum: ['sale', 'piece', 'custom', 'moved'], default: 'custom' },
+    // Vendor bill (receiving) the stickers were printed for; null = printed outside receiving.
+    bill: { type: mongoose.Schema.Types.ObjectId, default: null },
+    note: { type: String, default: '' },
     piecesPerSale: { type: Number, default: 1 },
     // printer = straight to the label printer (desktop app), browser = print window
     via: { type: String, enum: ['printer', 'browser'], default: 'browser' },
