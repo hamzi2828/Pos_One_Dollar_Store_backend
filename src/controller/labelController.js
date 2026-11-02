@@ -464,6 +464,7 @@ body{font-family:-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-ser
 .toolbar .count{display:inline-flex;align-items:center;gap:6px;font-weight:600}
 .toolbar .mode{background:#374151!important;padding:6px 12px!important}
 .toolbar .mode.on{background:#facc15!important;color:#111827!important}
+.toolbar .printed{padding:4px 10px;border-radius:6px;font-size:14px}.toolbar .printed.some{background:#fde68a;color:#111827}.toolbar .printed.all{background:#16a34a;color:#fff}
 .toolbar .count input{width:72px;padding:4px 6px;border:0;border-radius:6px;font:inherit;font-weight:700;color:#111827;text-align:center}
 @media print{.toolbar{display:none!important}}
 `;
@@ -605,7 +606,7 @@ const logUrlOf = (req) => {
   return `${proto}://${req.get('host')}/api/public/label-prints`;
 };
 
-const renderPage = ({ labels, size, ctx, title, skipped = [], capped = false, log = null }) => {
+const renderPage = ({ labels, size, ctx, title, skipped = [], capped = false, log = null, printed = null }) => {
   const flat = [];
   for (const item of labels) {
     const html = renderLabel(item, ctx);
@@ -636,14 +637,20 @@ const renderPage = ({ labels, size, ctx, title, skipped = [], capped = false, lo
   // One product sold in sets (e.g. 10 pcs · scan once): print one per piece or one per sale.
   const setPps = labels.length === 1 && labels[0].kind !== 'box' ? Math.max(1, Math.floor(Number(labels[0].pps) || 1)) : 1;
   const perSale = setPps > 1 ? Math.max(1, Math.ceil(total / setPps)) : total;
-  const start = perSale;
+  // Owner, 2026-11-02: already printed (print log) -> start at what's left; all done -> 0, type a number to print more.
+  const done = Number.isFinite(printed) && printed > 0 ? printed : 0;
+  const left = Math.max(0, total - done);
+  const start = done ? left : perSale;
+  const printedNote = done
+    ? `<strong class="printed ${left ? 'some' : 'all'}">${left ? `Already printed ${done} · ${left} left` : `All ${total} already printed${done > total ? ` (${done} in all)` : ""}. Type how many to print more.`}</strong>`
+    : '';
   const modes =
     setPps > 1
       ? `<span class="modes"><button type="button" class="mode${start === total ? ' on' : ''}" data-n="${total}">All pieces (${total})</button> <button type="button" class="mode${start === perSale ? ' on' : ''}" data-n="${perSale}">By sale (${perSale}) · 1 per ${setPps} pcs</button></span>`
       : '';
 
   // Owner, 2026-10-31: choose how many of the stickers to print (the first N), total always shown.
-  const toolbar = `<div class="toolbar">${modes}<label class="count">Print <input id="tag-count" type="number" min="1" max="${total}" value="${start}" inputmode="numeric" aria-label="How many to print"> of ${total}</label><button type="button" id="tag-print">Print</button><button type="button" id="tag-direct" hidden style="background:#16a34a">Print on label printer</button><span id="tag-direct-msg" class="tip"></span><strong id="tag-total">Total: ${total} label${total === 1 ? '' : 's'}</strong><span>${escapeHtml(size.label)}${size.kind === 'sheet' ? ` · ${pages} sheet${pages === 1 ? '' : 's'}` : ''}</span><span class="tip">${escapeHtml(tip)}</span>${
+  const toolbar = `<div class="toolbar">${modes}<label class="count">Print <input id="tag-count" type="number" min="${done ? 0 : 1}" max="${total}" value="${start}" inputmode="numeric" aria-label="How many to print"> of ${total}</label>${printedNote}<button type="button" id="tag-print">Print</button><button type="button" id="tag-direct" hidden style="background:#16a34a">Print on label printer</button><span id="tag-direct-msg" class="tip"></span><strong id="tag-total">Total: ${total} label${total === 1 ? '' : 's'}</strong><span>${escapeHtml(size.label)}${size.kind === 'sheet' ? ` · ${pages} sheet${pages === 1 ? '' : 's'}` : ''}</span><span class="tip">${escapeHtml(tip)}</span>${
     warnings.length ? `<ul class="warn">${warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join('')}</ul>` : ''
   }</div>`;
 
@@ -652,28 +659,28 @@ const renderPage = ({ labels, size, ctx, title, skipped = [], capped = false, lo
     ? `window.__logPrint=function(n,via){try{var mode=${setPps > 1 ? `n===${perSale}?'sale':n===${total}?'piece':'custom'` : `n===${total}?'piece':'custom'`};fetch(${JSON.stringify(log.url).replace(/</g, '\\u003c')},{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticket:${JSON.stringify(log.ticket)},count:n,mode:mode,via:via}),keepalive:true}).catch(function(){});}catch(e){}};`
     : 'window.__logPrint=function(){};';
   const countScript = `<script>${logJs}(function(){var T=${total};var box=document.getElementById('tag-count');var tot=document.getElementById('tag-total');
-function apply(){var n=parseInt(box.value,10);if(!(n>=1))n=T;if(n>T)n=T;var ls=document.querySelectorAll('.label');
+var Z=${done ? 'true' : 'false'};function apply(){var n=parseInt(box.value,10);if(!(n>=1))n=Z?0:T;if(n>T)n=T;var ls=document.querySelectorAll('.label');
 for(var i=0;i<ls.length;i++){ls[i].style.display=i<n?'':'none';ls[i].style.breakAfter='';ls[i].style.pageBreakAfter='';}
 if(ls[n-1]){ls[n-1].style.breakAfter='auto';ls[n-1].style.pageBreakAfter='auto';}
 var sh=document.querySelectorAll('.sheet'),last=null;for(var j=0;j<sh.length;j++){var on=false,k=sh[j].querySelectorAll('.label');for(var x=0;x<k.length;x++)if(k[x].style.display!=='none'){on=true;break;}
 sh[j].style.display=on?'':'none';sh[j].style.breakAfter='';sh[j].style.pageBreakAfter='';if(on)last=sh[j];}
 if(last){last.style.breakAfter='auto';last.style.pageBreakAfter='auto';}
-tot.textContent=n===T?'Total: '+T+' label'+(T===1?'':'s'):'Printing '+n+' of '+T+' labels';return n;}
+tot.textContent=n<1?'Nothing to print: type how many':n===T?'Total: '+T+' label'+(T===1?'':'s'):'Printing '+n+' of '+T+' labels';return n;}
 var ms=document.querySelectorAll('.mode');function mark(){for(var m=0;m<ms.length;m++)ms[m].className='mode'+(String(ms[m].getAttribute('data-n'))===String(box.value)?' on':'');}
 for(var m=0;m<ms.length;m++)ms[m].addEventListener('click',function(){box.value=this.getAttribute('data-n');apply();mark();});
 box.addEventListener('input',function(){mark();});
-box.addEventListener('input',apply);box.addEventListener('keydown',function(e){if(e.key==='Enter'){var n=apply();window.__logPrint(n,'browser');window.print();}});
-document.getElementById('tag-print').addEventListener('click',function(){var n=apply();window.__logPrint(n,'browser');window.print();});
-window.addEventListener('load',function(){apply();if(${ctx.autoPrint ? 'true' : 'false'}&&T===1){window.__logPrint(1,'browser');setTimeout(function(){window.print()},300);}else{box.focus();box.select();}});})();</script>`;
+box.addEventListener('input',apply);box.addEventListener('keydown',function(e){if(e.key==='Enter'){var n=apply();if(n<1){box.focus();return;}window.__logPrint(n,'browser');window.print();}});
+document.getElementById('tag-print').addEventListener('click',function(){var n=apply();if(n<1){box.focus();box.select();return;}window.__logPrint(n,'browser');window.print();});
+window.addEventListener('load',function(){apply();if(${ctx.autoPrint ? 'true' : 'false'}&&T===1&&!Z){window.__logPrint(1,'browser');setTimeout(function(){window.print()},300);}else{box.focus();box.select();}});})();</script>`;
   // Direct printing through the DollarCoPos desktop app (thermal sizes only).
   const direct =
     size.kind === 'sheet'
       ? ''
       : (() => {
-          const job = { size: `${size.widthMm} x ${size.heightMm} mm`, key: size.key, w: size.widthMm, h: size.heightMm, g: size.gapMm || 2, header: tsplHeader(size), labels: labels.map((it) => ({ body: tsplLabelBody(it, ctx, size), copies: it.copies })) };
+          const job = { size: `${size.widthMm} x ${size.heightMm} mm`, key: size.key, w: size.widthMm, h: size.heightMm, g: size.gapMm || 2, z: !!done, header: tsplHeader(size), labels: labels.map((it) => ({ body: tsplLabelBody(it, ctx, size), copies: it.copies })) };
           const json = JSON.stringify(job).replace(/</g, '\\u003c');
           return `<script>(function(){var JOB=${json};var AGENT='http://127.0.0.1:47321';var btn=document.getElementById('tag-direct');var msg=document.getElementById('tag-direct-msg');var box=document.getElementById('tag-count');var printer=null;
-function count(){var n=parseInt(box.value,10);var T=0;for(var i=0;i<JOB.labels.length;i++)T+=JOB.labels[i].copies;if(!(n>=1))n=T;return Math.min(n,T);}
+function count(){var n=parseInt(box.value,10);var T=0;for(var i=0;i<JOB.labels.length;i++)T+=JOB.labels[i].copies;if(!(n>=1))n=JOB.z?0:T;return Math.min(n,T);}
 var KEY='dollarco.tspl.'+JOB.key;var D={w:JOB.w,h:JOB.h,g:JOB.g,x:0,y:0};var S={w:D.w,h:D.h,g:D.g,x:D.x,y:D.y};
 try{var o=JSON.parse(window.localStorage.getItem(KEY)||'null');if(o)for(var k in S)if(typeof o[k]==='number'&&isFinite(o[k]))S[k]=o[k];}catch(e){}
 function changed(){for(var k in D)if(S[k]!==D[k])return true;return false;}
@@ -696,7 +703,7 @@ function up(body){if(!(S.y<0))return body;var d=Math.round(-S.y*8),by=null;retur
 function tspl(n){var out=[hdr()],left=n;if(needGap())out.push('GAPDETECT');for(var i=0;i<JOB.labels.length&&left>0;i++){var k=Math.min(left,JOB.labels[i].copies);out.push('CLS',up(JOB.labels[i].body),'PRINT 1,'+k);left-=k;}return out.join('\\r\\n')+'\\r\\n';}
 var ctl=window.AbortController?new AbortController():null;var t=setTimeout(function(){if(ctl)ctl.abort();},1500);
 fetch(AGENT+'/status',ctl?{signal:ctl.signal}:{}).then(function(r){return r.json();}).then(function(s){clearTimeout(t);if(s&&s.ok&&s.printer){printer=s.printer;btn.hidden=false;btn.textContent='Print on '+s.printer;msg.textContent='Label printer ready: no print window needed.';setupPanel();}else if(s&&s.ok){msg.textContent='Desktop app found, but no label printer. Install the Xprinter driver.';}}).catch(function(){var help=document.createElement('span');help.style.cssText='flex-basis:100%;color:#fde68a;font-size:12px';help.innerHTML='Sticker printing too big or blank? Open the <b>DollarCoPos</b> desktop app (get it: <a href="https://pos-one-dollar-store-frontend.vercel.app/admin/desktop-app" target="_blank" style="color:#fff">Desktop app</a>) and use the green button. '+'Or in the print window: Paper size <b>' + JOB.size + '</b> (make it once in Printer preferences), Margins <b>None</b>, untick <b>Headers and footers</b>.';document.querySelector('.toolbar').appendChild(help);});
-btn.addEventListener('click',function(){var n=count();btn.disabled=true;msg.textContent='Sending '+n+' label'+(n===1?'':'s')+'...';
+btn.addEventListener('click',function(){var n=count();if(n<1){msg.textContent='Type how many to print.';box.focus();return;}btn.disabled=true;msg.textContent='Sending '+n+' label'+(n===1?'':'s')+'...';
 fetch(AGENT+'/print',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:tspl(n),printer:printer})}).then(function(r){return r.json();}).then(function(r){if(r&&r.ok){window.__logPrint(n,'printer');try{window.localStorage.setItem(GD,'1');}catch(e){}}msg.textContent=r&&r.ok?'Sent '+n+' label'+(n===1?'':'s')+' to '+r.printer+'.':'Could not print: '+((r&&r.error)||'unknown error');}).catch(function(){msg.textContent='Could not reach the DollarCoPos desktop app. Open it and try again.';}).then(function(){btn.disabled=false;});});})();</script>`;
         })();
   // Auto print only for a single label: with more, the count is chosen first.
@@ -837,6 +844,7 @@ const labelController = {
         labels,
         size,
         log: { ticket: labelPrintLog.makeTicket(req, labels, size.key), url: logUrlOf(req) },
+        printed: await labelPrintLog.printedFor(labels),
         title: `Labels - ${product.name}`,
         skipped,
         capped: state.capped,
@@ -921,6 +929,7 @@ const labelController = {
         labels,
         size,
         log: { ticket: labelPrintLog.makeTicket(req, labels, size.key), url: logUrlOf(req) },
+        printed: await labelPrintLog.printedFor(labels),
         title: `Labels - ${parsed.length} item${parsed.length === 1 ? '' : 's'}`,
         skipped,
         capped: state.capped,

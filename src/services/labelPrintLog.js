@@ -112,6 +112,21 @@ async function listForProduct(productId, { variantId = null, limit = 50 } = {}) 
   };
 }
 
+/** Stickers already printed for a page of ONE product / variant (ignored prints left out). null = mixed page or no log. */
+async function printedFor(labels) {
+  try {
+    const keys = new Set(labels.map((l) => `${l.productId}|${l.variantId || ''}`));
+    if (keys.size !== 1 || !labels.length) return null;
+    const { productId, variantId } = labels[0];
+    if (!mongoose.isValidObjectId(productId)) return null;
+    const q = { product: new mongoose.Types.ObjectId(String(productId)), ignored: { $ne: true }, variantId: variantId ? String(variantId) : null };
+    const sum = await LabelPrint.aggregate([{ $match: q }, { $group: { _id: null, n: { $sum: '$count' } } }]);
+    return sum[0]?.n || 0;
+  } catch {
+    return null; // never block printing because of the log
+  }
+}
+
 /** Ignore (or bring back) one print: test / wrong prints are not counted. */
 async function setIgnored(req, id, ignored) {
   if (!mongoose.isValidObjectId(id)) throw bad('Invalid print');
@@ -125,4 +140,4 @@ async function setIgnored(req, id, ignored) {
   return { id: String(r._id), ignored: r.ignored };
 }
 
-module.exports = { makeTicket, record, listForProduct, setIgnored };
+module.exports = { makeTicket, record, listForProduct, setIgnored, printedFor };
