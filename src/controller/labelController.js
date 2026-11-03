@@ -40,7 +40,9 @@ const {
   getMainBranchId,
 } = require('../helper/productCodes');
 
-const MAX_LABELS = 1000;
+// Owner, 2026-11-03: no limit on how many stickers. The page builds only the
+// stickers being printed (each sticker's HTML once, repeated in the browser).
+const MAX_LABELS = Infinity;
 const MAX_BULK_ITEMS = 500;
 
 const SIZES = {
@@ -105,8 +107,8 @@ const parseBool = (value, fallback) => {
 const parseCopies = (value, where = 'copies') => {
   if (value === undefined || value === null || value === '') return undefined;
   const n = Number(value);
-  if (!Number.isInteger(n) || n < 1 || n > MAX_LABELS) {
-    throw badRequest(`${where} must be a whole number from 1 to ${MAX_LABELS}`);
+  if (!Number.isInteger(n) || n < 1) {
+    throw badRequest(`${where} must be a whole number, 1 or more`);
   }
   return n;
 };
@@ -381,7 +383,7 @@ const buildEntries = (product, opts) => {
   return { entries, skipped };
 };
 
-// Expand entries to individual labels, honouring `copies` and the 1000 cap.
+// Expand entries to individual labels, honouring `copies`.
 const applyCopies = (entries, copiesOverride, state) => {
   const labels = [];
   for (const e of entries) {
@@ -607,26 +609,13 @@ const logUrlOf = (req) => {
 };
 
 const renderPage = ({ labels, size, ctx, title, skipped = [], capped = false, log = null, printed = null }) => {
-  const flat = [];
-  for (const item of labels) {
-    const html = renderLabel(item, ctx);
-    for (let i = 0; i < item.copies; i++) flat.push(html);
-  }
-  const total = flat.length;
-
-  let body;
-  if (size.kind === 'sheet') {
-    const per = size.cols * size.rows;
-    const sheets = [];
-    for (let i = 0; i < flat.length; i += per) sheets.push(`<div class="sheet">${flat.slice(i, i + per).join('')}</div>`);
-    body = sheets.join('\n');
-  } else {
-    body = `<div class="labels">${flat.join('\n')}</div>`;
-  }
+  // Each sticker's HTML once + how many; the browser builds the first N (any number).
+  const tpl = labels.map((item) => ({ h: renderLabel(item, ctx), n: item.copies }));
+  const total = tpl.reduce((t, x) => t + x.n, 0);
+  const body = `<div id="tag-body" data-per="${size.kind === 'sheet' ? size.cols * size.rows : 0}"></div><script type="application/json" id="tag-tpl">${JSON.stringify(tpl).replace(/</g, '\\u003c')}</script>`;
 
   const pages = size.kind === 'sheet' ? Math.ceil(total / (size.cols * size.rows)) : total;
   const warnings = [];
-  if (capped) warnings.push(`Only the first ${MAX_LABELS} labels are shown (limit per print).`);
   for (const s of skipped) warnings.push(`Skipped ${s}`);
 
   const tip =
@@ -659,19 +648,19 @@ const renderPage = ({ labels, size, ctx, title, skipped = [], capped = false, lo
     ? `window.__logPrint=function(n,via){try{var mode=${setPps > 1 ? `n===${perSale}?'sale':n===${total}?'piece':'custom'` : `n===${total}?'piece':'custom'`};fetch(${JSON.stringify(log.url).replace(/</g, '\\u003c')},{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticket:${JSON.stringify(log.ticket)},count:n,mode:mode,via:via}),keepalive:true}).catch(function(){});}catch(e){}};`
     : 'window.__logPrint=function(){};';
   const countScript = `<script>${logJs}(function(){var T=${total};var box=document.getElementById('tag-count');var tot=document.getElementById('tag-total');
-var Z=${done ? 'true' : 'false'};function apply(){var n=parseInt(box.value,10);if(!(n>=1))n=Z?0:T;if(n>T)n=T;var ls=document.querySelectorAll('.label');
-for(var i=0;i<ls.length;i++){ls[i].style.display=i<n?'':'none';ls[i].style.breakAfter='';ls[i].style.pageBreakAfter='';}
-if(ls[n-1]){ls[n-1].style.breakAfter='auto';ls[n-1].style.pageBreakAfter='auto';}
-var sh=document.querySelectorAll('.sheet'),last=null;for(var j=0;j<sh.length;j++){var on=false,k=sh[j].querySelectorAll('.label');for(var x=0;x<k.length;x++)if(k[x].style.display!=='none'){on=true;break;}
-sh[j].style.display=on?'':'none';sh[j].style.breakAfter='';sh[j].style.pageBreakAfter='';if(on)last=sh[j];}
-if(last){last.style.breakAfter='auto';last.style.pageBreakAfter='auto';}
+var Z=${done ? 'true' : 'false'};var built=-1,wait=null;
+function build(n){if(n===built)return;built=n;var L=JSON.parse(document.getElementById('tag-tpl').textContent),P=+document.getElementById('tag-body').getAttribute('data-per')||0,out=[],left=n;for(var i=0;i<L.length&&left>0;i++){var k=Math.min(left,L[i].n);for(var j=0;j<k;j++)out.push(L[i].h);left-=k;}
+var html;if(P){var sh=[];for(var s=0;s<out.length;s+=P)sh.push('<div class="sheet">'+out.slice(s,s+P).join('')+'</div>');html=sh.join('');}else html='<div class="labels">'+out.join('')+'</div>';
+document.getElementById('tag-body').innerHTML=html;}
+function apply(now){var n=parseInt(box.value,10);if(!(n>=1))n=Z?0:T;if(n>T)n=T;
+if(now===true)build(n);else{clearTimeout(wait);wait=setTimeout(function(){build(n);},250);}
 tot.textContent=n<1?'Nothing to print: type how many':n===T?'Total: '+T+' label'+(T===1?'':'s'):'Printing '+n+' of '+T+' labels';return n;}
 var ms=document.querySelectorAll('.mode');function mark(){for(var m=0;m<ms.length;m++)ms[m].className='mode'+(String(ms[m].getAttribute('data-n'))===String(box.value)?' on':'');}
-for(var m=0;m<ms.length;m++)ms[m].addEventListener('click',function(){box.value=this.getAttribute('data-n');apply();mark();});
+for(var m=0;m<ms.length;m++)ms[m].addEventListener('click',function(){box.value=this.getAttribute('data-n');apply(true);mark();});
 box.addEventListener('input',function(){mark();});
-box.addEventListener('input',apply);box.addEventListener('keydown',function(e){if(e.key==='Enter'){var n=apply();if(n<1){box.focus();return;}window.__logPrint(n,'browser');window.print();}});
-document.getElementById('tag-print').addEventListener('click',function(){var n=apply();if(n<1){box.focus();box.select();return;}window.__logPrint(n,'browser');window.print();});
-window.addEventListener('load',function(){apply();if(${ctx.autoPrint ? 'true' : 'false'}&&T===1&&!Z){window.__logPrint(1,'browser');setTimeout(function(){window.print()},300);}else{box.focus();box.select();}});})();</script>`;
+box.addEventListener('input',apply);box.addEventListener('keydown',function(e){if(e.key==='Enter'){var n=apply(true);if(n<1){box.focus();return;}window.__logPrint(n,'browser');window.print();}});
+document.getElementById('tag-print').addEventListener('click',function(){var n=apply(true);if(n<1){box.focus();box.select();return;}window.__logPrint(n,'browser');window.print();});
+window.addEventListener('load',function(){apply(true);if(${ctx.autoPrint ? 'true' : 'false'}&&T===1&&!Z){window.__logPrint(1,'browser');setTimeout(function(){window.print()},300);}else{box.focus();box.select();}});})();</script>`;
   // Direct printing through the DollarCoPos desktop app (thermal sizes only).
   const direct =
     size.kind === 'sheet'
@@ -809,7 +798,7 @@ const labelController = {
             perPage: s.kind === 'sheet' ? s.cols * s.rows : 1,
           })),
           defaultSize: DEFAULT_SIZE,
-          maxLabels: MAX_LABELS,
+          maxLabels: null, // no limit
         },
       });
     } catch (err) {
@@ -918,10 +907,6 @@ const labelController = {
           continue;
         }
         skipped.push(...built.skipped);
-        if (state.count >= MAX_LABELS) {
-          if (built.entries.length) state.capped = true;
-          continue;
-        }
         labels.push(...applyCopies(built.entries, p.copies, state).map((l) => (p.bill ? { ...l, bill: p.bill } : l)));
       }
       if (!labels.length) throw badRequest(skipped.length ? `Nothing to print. ${skipped.join('; ')}` : 'Nothing to print');
