@@ -46,6 +46,7 @@ router.get('/vendor-payments', ...staff, can('vendor_payments', 'view'), handle(
 router.get('/vendor-payments/banks', ...staff, can('vendor_payments', 'view'), handle(payments.banks));
 router.get('/vendor-payments/:id', ...staff, can('vendor_payments', 'view'), handle(payments.get));
 router.post('/vendor-payments', ...staff, can('vendor_payments', 'create'), photos('attachments', 5), handle(payments.create));
+router.put('/vendor-payments/:id', ...staff, can('vendor_payments', 'edit'), photos('attachments', 5), handle(payments.update));
 router.post('/vendor-payments/:id/void', ...staff, can('vendor_payments', 'delete'), handle(payments.void));
 
 // ----- Vendor returns (debit notes) -----

@@ -194,6 +194,105 @@ async function getById(req, id) {
   return row;
 }
 
+/**
+ * PUT /api/vendor-payments/:id (multipart) — change amount, method, bank,
+ * reference, date, notes; add photos (`attachments`) or drop some (`removeAttachments`).
+ * The payment's ledger row follows. Every change is written to the payment's history
+ * (old -> new), so nothing is lost.
+ */
+async function updatePayment(req, id, body = {}, newAttachments = []) {
+  const p = await VendorPayment.findById(requireId(id, 'payment')).lean();
+  if (!p) throw httpError('Payment not found', 404);
+  assertInScope(req, p, 'Payment');
+  if (p.status !== 'active') throw httpError('A voided payment cannot be edited', 409, 'PAYMENT_VOIDED');
+  if (p.settlement) throw httpError('This payment belongs to a consignment settlement; change it there.', 409);
+
+  const has = (k) => body[k] !== undefined && body[k] !== null;
+  const next = {};
+  if (has('amount')) next.amount = money(body.amount, 'Amount', { positive: true });
+  if (has('method')) {
+    const m = String(body.method).toLowerCase();
+    if (!VendorPayment.METHODS.includes(m)) throw httpError(`Payment method must be one of: ${VendorPayment.METHODS.join(', ')}`);
+    next.method = m;
+  }
+  if (has('reference')) next.reference = str(body.reference, 100);
+  if (has('notes')) next.notes = str(body.notes, 1000);
+  if (has('date') && body.date !== '') next.date = docDate(body.date);
+  const method = next.method || p.method;
+  if (has('bankId') || has('method')) {
+    const bankId = has('bankId') ? body.bankId : p.bank;
+    if (bankId && (method === 'bank' || method === 'cheque')) {
+      const bank = await Bank.findOne({ _id: requireId(bankId, 'bank'), isDeleted: { $ne: true } }).select('_id').lean();
+      if (!bank) throw httpError('Bank account not found', 404);
+      next.bank = bank._id;
+    } else {
+      next.bank = null;
+    }
+  }
+  if (method === 'cheque' && !(next.reference ?? p.reference)) throw httpError('Please enter the cheque number');
+
+  let remove = body.removeAttachments || [];
+  if (typeof remove === 'string') {
+    try {
+      remove = JSON.parse(remove);
+    } catch {
+      remove = [remove];
+    }
+  }
+  const kept = (p.attachments || []).filter((a) => !remove.includes(a));
+  const attachments = [...kept, ...(newAttachments || []).filter(Boolean)];
+  if (attachments.length > 10) throw httpError('Up to 10 photos per payment');
+  if (attachments.length !== (p.attachments || []).length || kept.length !== (p.attachments || []).length) next.attachments = attachments;
+
+  // What changed, old -> new, for the history.
+  const fmt = (k, v) => {
+    if (v === null || v === undefined || v === '') return '—';
+    if (k === 'amount') return `Rs ${Number(v).toLocaleString('en-PK')}`;
+    if (k === 'method') return METHOD_LABELS[v] || v;
+    if (k === 'date') return new Date(v).toISOString().slice(0, 10);
+    return String(v);
+  };
+  const changes = [];
+  for (const k of ['amount', 'method', 'reference', 'notes', 'date']) {
+    if (next[k] === undefined) continue;
+    const a = fmt(k, p[k]);
+    const b = fmt(k, next[k]);
+    if (a === b) delete next[k];
+    else changes.push(`${k}: ${a} → ${b}`);
+  }
+  if (next.bank !== undefined) {
+    if (String(next.bank || '') === String(p.bank || '')) delete next.bank;
+    else changes.push('bank account changed');
+  }
+  if (next.attachments) {
+    const added = (newAttachments || []).length;
+    const dropped = (p.attachments || []).length - kept.length;
+    changes.push([added && `${added} photo${added === 1 ? '' : 's'} added`, dropped && `${dropped} photo${dropped === 1 ? '' : 's'} removed`].filter(Boolean).join(', '));
+  }
+  if (!changes.length) return getById(req, p._id);
+
+  const reason = str(body.reason, 300);
+  const userId = req.access.userId;
+  const note = `${changes.join('; ')}${reason ? ` (why: ${reason})` : ''}`;
+  await VendorPayment.updateOne({ _id: p._id, status: 'active' }, { $set: next, $push: { history: historyRow(userId, 'edited', note) } });
+
+  // Keep the ledger row in step (it is what the balance adds up).
+  const VendorLedgerEntry = require('../../models/vendorLedgerEntry');
+  const set = {};
+  if (next.amount !== undefined) set.debit = next.amount;
+  if (next.date !== undefined) set.date = next.date;
+  if (next.method !== undefined) set.method = next.method;
+  if (next.bank !== undefined) set.bank = next.bank;
+  if (next.reference !== undefined) set.reference = next.reference;
+  if (next.attachments !== undefined) set.attachments = next.attachments;
+  if (next.notes !== undefined && next.notes) set.description = str(next.notes, 300);
+  if (Object.keys(set).length) {
+    const q = p.ledgerEntry ? { _id: p.ledgerEntry } : { refType: 'VendorPayment', refId: p._id, isVoided: false };
+    await VendorLedgerEntry.updateOne(q, { $set: set });
+  }
+  return getById(req, p._id);
+}
+
 /** POST /api/vendor-payments/:id/void { reason } — payment + its ledger row voided, both kept. */
 async function voidPayment(req, id, body = {}) {
   const p = await VendorPayment.findById(requireId(id, 'payment')).lean();
@@ -224,4 +323,4 @@ async function bankOptions() {
     .lean();
 }
 
-module.exports = { METHOD_LABELS, recordPayment, create, list, getById, voidPayment, bankOptions };
+module.exports = { METHOD_LABELS, recordPayment, create, list, getById, updatePayment, voidPayment, bankOptions };

@@ -20,6 +20,12 @@ module.exports = {
     res.status(201).json({ success: true, data, message: `Payment ${data.paymentNo} recorded` });
   },
 
+  async update(req, res) {
+    const attachments = await saveUploads(req, 'vendors/payments');
+    const data = await paymentService.updatePayment(req, req.params.id, req.body || {}, attachments);
+    res.json({ success: true, data, message: `Payment ${data.paymentNo} updated` });
+  },
+
   async void(req, res) {
     const data = await paymentService.voidPayment(req, req.params.id, req.body || {});
     res.json({ success: true, data, message: `Payment ${data.paymentNo} voided` });
