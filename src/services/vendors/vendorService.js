@@ -174,9 +174,23 @@ const LIST_SORTS = {
 async function allBalances() {
   const rows = await VendorLedgerEntry.aggregate([
     { $match: { isVoided: false } },
-    { $group: { _id: '$vendor', credit: { $sum: '$credit' }, debit: { $sum: '$debit' } } },
+    {
+      $group: {
+        _id: '$vendor',
+        credit: { $sum: '$credit' },
+        debit: { $sum: '$debit' },
+        paid: { $sum: { $cond: [{ $eq: ['$type', 'payment'] }, '$debit', 0] } },
+      },
+    },
   ]);
-  return rows.map((r) => ({ vendor: r._id, balance: round2(r.credit - r.debit) }));
+  // total = everything we owe them (bills ...); paid = payments only; adjusted = other reductions (adjustments, returns, discounts).
+  return rows.map((r) => ({
+    vendor: r._id,
+    balance: round2(r.credit - r.debit),
+    total: round2(r.credit),
+    paid: round2(r.paid),
+    adjusted: round2(r.debit - r.paid),
+  }));
 }
 
 /**
@@ -213,19 +227,36 @@ async function list(query = {}) {
   ]);
 
   const balanceMap = await ledger.getBalances(items.map((v) => v._id));
+  const split = new Map(balances.map((b) => [String(b.vendor), b]));
   const data = items.map((v) => {
     const b = balanceMap.get(String(v._id)) || { credit: 0, debit: 0, balance: 0 };
-    return { ...v, city: v.city || (v.address && v.address.city) || '', balance: b.balance, totalCredit: b.credit, totalDebit: b.debit };
+    const x = split.get(String(v._id)) || { paid: 0, adjusted: 0 };
+    return {
+      ...v,
+      city: v.city || (v.address && v.address.city) || '',
+      balance: b.balance,
+      totalCredit: b.credit,
+      totalDebit: b.debit,
+      totalPaid: x.paid,
+      totalAdjusted: x.adjusted,
+    };
   });
 
   const live = new Set(liveIds.map((v) => String(v._id)));
-  const summary = { vendorCount: liveIds.length, activeCount: 0, consignmentCount: 0, totalPayable: 0, totalReceivable: 0, payableCount: 0, receivableCount: 0 };
+  const summary = {
+    vendorCount: liveIds.length, activeCount: 0, consignmentCount: 0, totalPayable: 0, totalReceivable: 0, payableCount: 0, receivableCount: 0,
+    totalBilled: 0, totalPaid: 0, totalAdjusted: 0, totalLeft: 0,
+  };
   for (const v of liveIds) {
     if (v.isActive !== false) summary.activeCount += 1;
     if (v.isConsignment) summary.consignmentCount += 1;
   }
   for (const b of balances) {
     if (!live.has(String(b.vendor))) continue;
+    summary.totalBilled = round2(summary.totalBilled + b.total);
+    summary.totalPaid = round2(summary.totalPaid + b.paid);
+    summary.totalAdjusted = round2(summary.totalAdjusted + b.adjusted);
+    summary.totalLeft = round2(summary.totalLeft + b.balance);
     if (b.balance > 0) {
       summary.totalPayable = round2(summary.totalPayable + b.balance);
       summary.payableCount += 1;
