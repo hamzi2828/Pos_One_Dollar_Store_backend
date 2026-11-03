@@ -83,10 +83,27 @@ const expenseController = {
         }
     },
 
+    // GET /expenses/banks - our bank accounts for the "Bank" dropdown
+    getBankOptions: async (req, res) => {
+        try {
+            const Bank = require('../models/bank');
+            const data = await Bank.find({ isDeleted: { $ne: true }, isActive: { $ne: false } })
+                .select('name accountTitle accountNumber')
+                .sort({ name: 1 })
+                .lean();
+            return res.json({ success: true, data });
+        } catch (error) {
+            console.error('Error loading banks:', error);
+            return res.status(500).json({ message: 'Failed to load bank accounts' });
+        }
+    },
+
     // POST /expenses - Create new expense
     createExpense: async (req, res) => {
         try {
             const { title, amount, category, categories, date, paymentMethod, reference, notes } = req.body;
+            const bankPick = await bankFor(paymentMethod, req.body.bankId);
+            if (bankPick.error) return res.status(400).json({ message: bankPick.error });
 
             if (!title || !title.trim()) {
                 return res.status(400).json({ message: 'Expense title is required' });
@@ -142,6 +159,8 @@ const expenseController = {
                 categories: parsedCategories,
                 date: date ? new Date(date) : new Date(),
                 paymentMethod: paymentMethod?.trim() || 'Cash',
+                bank: bankPick.bank,
+                bankName: bankPick.bankName,
                 reference: reference?.trim() || '',
                 notes: notes?.trim() || '',
                 receipt: receiptUrl,
@@ -179,6 +198,12 @@ const expenseController = {
             if (category !== undefined) expense.category = category.trim();
             if (date !== undefined) expense.date = new Date(date);
             if (paymentMethod !== undefined) expense.paymentMethod = paymentMethod?.trim() || 'Cash';
+            if (paymentMethod !== undefined || req.body.bankId !== undefined) {
+                const bankPick = await bankFor(expense.paymentMethod, req.body.bankId !== undefined ? req.body.bankId : expense.bank);
+                if (bankPick.error) return res.status(400).json({ message: bankPick.error });
+                expense.bank = bankPick.bank;
+                expense.bankName = bankPick.bankName;
+            }
             if (reference !== undefined) expense.reference = reference?.trim() || '';
             if (notes !== undefined) expense.notes = notes?.trim() || '';
             if (isActive !== undefined) expense.isActive = isActive;
@@ -403,5 +428,17 @@ const expenseController = {
         }
     },
 };
+
+// Bank Transfer -> the chosen bank account (must exist); any other method -> no bank.
+async function bankFor(paymentMethod, bankId) {
+    const method = String(paymentMethod || 'Cash').trim();
+    if (method !== 'Bank Transfer' || !bankId || bankId === 'null') return { bank: null, bankName: '' };
+    const mongoose = require('mongoose');
+    if (!mongoose.isValidObjectId(String(bankId))) return { error: 'Choose a valid bank account' };
+    const Bank = require('../models/bank');
+    const b = await Bank.findOne({ _id: bankId, isDeleted: { $ne: true } }).select('name accountNumber').lean();
+    if (!b) return { error: 'Bank account not found' };
+    return { bank: b._id, bankName: `${b.name}${b.accountNumber ? ` (${String(b.accountNumber).slice(-4)})` : ''}` };
+}
 
 module.exports = expenseController;

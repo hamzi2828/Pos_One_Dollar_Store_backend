@@ -33,6 +33,9 @@ const expenseSchema = new mongoose.Schema({
         enum: ['Cash', 'Credit Card', 'Debit Card', 'Bank Transfer', 'Check', 'Other'],
         default: 'Cash'
     },
+    // Our bank account the money left from (Bank Transfer); name kept for lists.
+    bank: { type: mongoose.Schema.Types.ObjectId, ref: 'Bank', default: null },
+    bankName: { type: String, default: '', trim: true },
     reference: {
         type: String,
         default: '',
