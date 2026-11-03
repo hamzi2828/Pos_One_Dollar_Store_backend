@@ -95,9 +95,16 @@ async function printedSummary(productIds) {
   if (!ids.length) return [];
   const rows = await LabelPrint.aggregate([
     { $match: { product: { $in: ids.map((id) => new mongoose.Types.ObjectId(id)) }, ignored: { $ne: true } } },
-    { $group: { _id: { p: '$product', v: '$variantId', b: '$bill' }, printed: { $sum: '$count' } } },
+    {
+      $group: {
+        _id: { p: '$product', v: '$variantId', b: '$bill' },
+        printed: { $sum: '$count' },
+        scanned: { $sum: { $cond: [{ $eq: ['$mode', 'scanned'] }, '$count', 0] } },
+      },
+    },
   ]);
-  return rows.map((r) => ({ productId: String(r._id.p), variantId: r._id.v || null, bill: r._id.b ? String(r._id.b) : null, printed: r.printed }));
+  // printed = all covered pieces (stickers + own barcode); scanned = the own-barcode part.
+  return rows.map((r) => ({ productId: String(r._id.p), variantId: r._id.v || null, bill: r._id.b ? String(r._id.b) : null, printed: r.printed, scanned: r.scanned }));
 }
 
 async function listForProduct(productId, { variantId = null, bill = null, limit = 50 } = {}) {
@@ -107,11 +114,15 @@ async function listForProduct(productId, { variantId = null, bill = null, limit 
   if (bill && mongoose.isValidObjectId(bill)) q.bill = new mongoose.Types.ObjectId(String(bill));
   const [rows, sum] = await Promise.all([
     LabelPrint.find(q).sort({ createdAt: -1 }).limit(Math.min(200, Math.max(1, Number(limit) || 50))).lean(),
-    LabelPrint.aggregate([{ $match: q }, { $group: { _id: null, stickers: { $sum: '$count' }, runs: { $sum: 1 } } }]),
+    LabelPrint.aggregate([
+      { $match: q },
+      { $group: { _id: null, stickers: { $sum: '$count' }, scanned: { $sum: { $cond: [{ $eq: ['$mode', 'scanned'] }, '$count', 0] } } } },
+    ]),
   ]);
   return {
     totalStickers: sum[0]?.stickers || 0,
-    runs: rows.filter((r) => r.mode !== 'moved').length,
+    totalScanned: sum[0]?.scanned || 0,
+    runs: rows.filter((r) => r.mode !== 'moved' && r.mode !== 'scanned').length,
     prints: rows.map((r) => ({
       id: String(r._id),
       count: r.count,
@@ -165,6 +176,39 @@ async function moveBetweenBills({ productId, variantId = null, fromBill, toBill,
   return n;
 }
 
+/**
+ * Pieces that already carry their own (manufacturer) barcode: no sticker needed.
+ * Counted like printed stickers, so the entry shows done. body { productId, variantId, bill, count, total }.
+ */
+async function markScanned(req, body = {}) {
+  if (!mongoose.isValidObjectId(body.productId)) throw bad('Invalid product');
+  if (body.bill && !mongoose.isValidObjectId(body.bill)) throw bad('Invalid vendor bill');
+  const count = Math.floor(Number(body.count) || 0);
+  if (count < 1 || count > 1000000) throw bad('Enter how many pieces have their own barcode');
+  const product = await mongoose.connection.db.collection('products').findOne(
+    { _id: new mongoose.Types.ObjectId(String(body.productId)) },
+    { projection: { name: 1, shortCode: 1 } }
+  );
+  if (!product) throw Object.assign(new Error('Product not found'), { status: 404 });
+  const u = userIdOf(req);
+  const doc = await LabelPrint.create({
+    product: product._id,
+    variantId: body.variantId ? String(body.variantId) : null,
+    bill: body.bill || null,
+    productName: product.name || '',
+    code: product.shortCode || '',
+    count,
+    total: Math.max(0, Math.floor(Number(body.total) || 0)),
+    mode: 'scanned',
+    note: 'Own barcode on the pack (scanned), no sticker needed',
+    piecesPerSale: 1,
+    via: 'browser',
+    user: u && mongoose.isValidObjectId(u) ? u : null,
+    userName: userNameOf(req),
+  });
+  return { id: String(doc._id), count };
+}
+
 /** Ignore (or bring back) one print: test / wrong prints are not counted. */
 async function setIgnored(req, id, ignored) {
   if (!mongoose.isValidObjectId(id)) throw bad('Invalid print');
@@ -178,4 +222,4 @@ async function setIgnored(req, id, ignored) {
   return { id: String(r._id), ignored: r.ignored };
 }
 
-module.exports = { makeTicket, record, listForProduct, printedSummary, setIgnored, printedFor, moveBetweenBills };
+module.exports = { makeTicket, record, listForProduct, printedSummary, setIgnored, printedFor, moveBetweenBills, markScanned };

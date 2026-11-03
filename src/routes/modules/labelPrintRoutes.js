@@ -52,6 +52,17 @@ router.get(
   })
 );
 
+// POST /label-prints/scanned { productId, variantId, bill, count, total } -> pieces covered by their own barcode.
+router.post(
+  '/label-prints/scanned',
+  ...staff,
+  can('products', 'edit'),
+  handle(async (req, res) => {
+    const data = await log.markScanned(req, req.body || {});
+    res.json({ success: true, data });
+  })
+);
+
 // PATCH /label-prints/:id { ignored: true|false } -> leave a test / wrong print out of the count.
 router.patch(
   '/label-prints/:id',
