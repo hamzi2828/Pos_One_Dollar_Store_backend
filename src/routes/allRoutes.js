@@ -146,6 +146,11 @@ router.post('/settings/favicon', ...staff, superAdmin, uploadFields([{ name: 'fa
 router.delete('/settings/favicon', ...staff, superAdmin, settingsController.removeFavicon);
 router.post('/settings/reset', ...staff, superAdmin, settingsController.resetSettings);
 router.post('/settings/cache/reset', ...staff, superAdmin, settingsController.resetCaches);
+// Email (SMTP): super admin only; the password never comes back.
+const mailSettingsController = require('../controller/mailSettingsController');
+router.get('/settings/smtp', ...staff, superAdmin, mailSettingsController.get);
+router.put('/settings/smtp', ...staff, superAdmin, mailSettingsController.save);
+router.post('/settings/smtp/test', ...staff, superAdmin, mailSettingsController.test);
 
 // ----- Procurement (older vendor / purchase screens) -----
 router.get('/admin/procurement/vendors', ...staff, can('procurement', 'view'), vendorController.list);
