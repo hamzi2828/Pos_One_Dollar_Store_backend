@@ -89,6 +89,17 @@ async function record(body = {}) {
 }
 
 /** Latest prints of one product (newest first) and the total stickers printed. */
+/** Stickers printed per product / variant / vendor bill, for many products at once. */
+async function printedSummary(productIds) {
+  const ids = [...new Set((productIds || []).map(String))].filter((id) => mongoose.isValidObjectId(id)).slice(0, 500);
+  if (!ids.length) return [];
+  const rows = await LabelPrint.aggregate([
+    { $match: { product: { $in: ids.map((id) => new mongoose.Types.ObjectId(id)) }, ignored: { $ne: true } } },
+    { $group: { _id: { p: '$product', v: '$variantId', b: '$bill' }, printed: { $sum: '$count' } } },
+  ]);
+  return rows.map((r) => ({ productId: String(r._id.p), variantId: r._id.v || null, bill: r._id.b ? String(r._id.b) : null, printed: r.printed }));
+}
+
 async function listForProduct(productId, { variantId = null, bill = null, limit = 50 } = {}) {
   if (!mongoose.isValidObjectId(productId)) throw bad('Invalid product');
   const q = { product: new mongoose.Types.ObjectId(String(productId)), ignored: { $ne: true } };
@@ -167,4 +178,4 @@ async function setIgnored(req, id, ignored) {
   return { id: String(r._id), ignored: r.ignored };
 }
 
-module.exports = { makeTicket, record, listForProduct, setIgnored, printedFor, moveBetweenBills };
+module.exports = { makeTicket, record, listForProduct, printedSummary, setIgnored, printedFor, moveBetweenBills };

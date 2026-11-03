@@ -41,6 +41,17 @@ router.get(
   })
 );
 
+// GET /label-prints/summary?productIds=a,b -> [{ productId, variantId, bill, printed }]
+router.get(
+  '/label-prints/summary',
+  ...staff,
+  can('products', 'view'),
+  handle(async (req, res) => {
+    const data = await log.printedSummary(String(req.query.productIds || '').split(','));
+    res.json({ success: true, data });
+  })
+);
+
 // PATCH /label-prints/:id { ignored: true|false } -> leave a test / wrong print out of the count.
 router.patch(
   '/label-prints/:id',
