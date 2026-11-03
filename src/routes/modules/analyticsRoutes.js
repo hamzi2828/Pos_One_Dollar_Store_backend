@@ -32,6 +32,23 @@ router.put('/analytics/slow-moving/settings', ...staff, can('report_slow_moving'
 
 // Expenses by day / week / month (shop use shown separately)
 router.get('/analytics/expenses', ...staff, can('report_expenses', 'view'), handle(ctrl.expenses));
+// Money left since the owner's starting balance (cash + bank together).
+router.get(
+  '/analytics/funds',
+  ...staff,
+  can('report_expenses', 'view'),
+  handle(async (req, res) => {
+    res.json({ success: true, data: await require('../../services/reports/fundsReport').funds() });
+  })
+);
+router.post(
+  '/analytics/funds/baseline',
+  ...staff,
+  superAdmin,
+  handle(async (req, res) => {
+    res.json({ success: true, data: await require('../../services/reports/fundsReport').setBaseline(req, req.body || {}) });
+  })
+);
 // Spending: bought from vendors, paid, trip costs, shop expenses for a period.
 router.get(
   '/analytics/spending',
