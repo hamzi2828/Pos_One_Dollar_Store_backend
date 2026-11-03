@@ -479,7 +479,7 @@ async function openSession(req, { counterId, denominations, note } = {}) {
   const access = req.access;
   const userId = access.userId;
   const branchId = String(await resolveWriteBranch(req));
-  const float = parseCashCount(denominations || {}, await getDenominations());
+  let float = parseCashCount(denominations || {}, await getDenominations());
 
   const counters = await SaleCounter.find({ branch: toId(branchId), isActive: true }).lean();
   let counter = null;
@@ -500,6 +500,10 @@ async function openSession(req, { counterId, denominations, note } = {}) {
   ) {
     throw httpError(403, `You are not assigned to ${counter.name}. Ask the admin.`);
   }
+
+  // Fixed float: the counter's notes, whatever was typed.
+  const fixedFloat = !!(counter && counter.floatFixed && counter.floatDenominations && Object.keys(counter.floatDenominations).length);
+  if (fixedFloat) float = parseCashCount(counter.floatDenominations, await getDenominations());
 
   const mine = await CashSession.findOne({ cashier: userId, status: 'open' }).lean();
   if (mine) throw httpError(409, `Your till is already open (${mine.sessionNo}). Close it first.`, 'TILL_ALREADY_OPEN');
@@ -529,7 +533,7 @@ async function openSession(req, { counterId, denominations, note } = {}) {
       openingFloat: float,
       openNote: typeof note === 'string' ? note.trim().slice(0, 500) : '',
       lateOpen,
-      history: [{ at: now, by: userId, action: 'open', note: `Opening float Rs ${float.total}` }],
+      history: [{ at: now, by: userId, action: 'open', note: `Opening float Rs ${float.total}${fixedFloat ? ' (fixed float)' : ''}` }],
     });
   } catch (err) {
     if (err && err.code === 11000) {
@@ -711,6 +715,8 @@ async function myStatus(req) {
         name: c.name,
         code: c.code,
         defaultFloat: round2(c.defaultFloat),
+        floatFixed: !!c.floatFixed,
+        floatDenominations: c.floatDenominations || {},
         openCutoff: c.openCutoff || '',
         closeCutoff: c.closeCutoff || '',
         busy: !!b,

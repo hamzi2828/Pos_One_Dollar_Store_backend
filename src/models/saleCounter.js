@@ -19,6 +19,10 @@ const saleCounterSchema = new mongoose.Schema(
     closeCutoff: { type: String, default: '', validate: { validator: (v) => !v || HHMM.test(v), message: 'Use HH:mm, e.g. 22:00' } },
     // Suggested opening float (change money). Never part of sales.
     defaultFloat: { type: Number, default: 0, min: 0 },
+    // Fixed float (owner, 2026-11-04): the till always opens with exactly these
+    // notes ({ "100": 150, "500": 2 }); the cashier does not count or change it.
+    floatFixed: { type: Boolean, default: false },
+    floatDenominations: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
     // Only these users may open a till on this counter (empty = anyone with till permission).
     assignedUsers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     notes: { type: String, trim: true, default: '', maxlength: 300 },

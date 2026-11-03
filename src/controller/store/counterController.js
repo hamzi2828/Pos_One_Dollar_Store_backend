@@ -43,6 +43,16 @@ async function cleanInput(body) {
     if (!Number.isFinite(f) || f < 0) throw httpError(400, 'Default float must be 0 or more');
     out.defaultFloat = round2(f);
   }
+  if (body.floatDenominations !== undefined) {
+    const count = tillService.parseCashCount(body.floatDenominations || {}, await tillService.getDenominations());
+    out.floatDenominations = count.denominations;
+    // The notes decide the float amount.
+    if (count.total > 0) out.defaultFloat = round2(count.total);
+  }
+  if (body.floatFixed !== undefined) out.floatFixed = body.floatFixed === true || body.floatFixed === 'true';
+  if (out.floatFixed && body.floatDenominations !== undefined && !(out.defaultFloat > 0)) {
+    throw httpError(400, 'Enter the notes of the fixed float.');
+  }
   if (body.notes !== undefined) out.notes = String(body.notes || '').trim().slice(0, 300);
   if (body.assignedUsers !== undefined) {
     const ids = [...new Set((Array.isArray(body.assignedUsers) ? body.assignedUsers : []).map(String))].filter(isId);
@@ -131,6 +141,8 @@ const counterController = {
       openCutoff: input.openCutoff || '',
       closeCutoff: input.closeCutoff || '',
       defaultFloat: input.defaultFloat || 0,
+      floatFixed: !!input.floatFixed,
+      floatDenominations: input.floatDenominations || {},
       assignedUsers: input.assignedUsers || [],
       notes: input.notes || '',
       createdBy: req.access.userId,
