@@ -32,6 +32,16 @@ router.put('/analytics/slow-moving/settings', ...staff, can('report_slow_moving'
 
 // Expenses by day / week / month (shop use shown separately)
 router.get('/analytics/expenses', ...staff, can('report_expenses', 'view'), handle(ctrl.expenses));
+// Spending: bought from vendors, paid, trip costs, shop expenses for a period.
+router.get(
+  '/analytics/spending',
+  ...staff,
+  can('report_expenses', 'view'),
+  handle(async (req, res) => {
+    const data = await require('../../services/reports/spendingReport').spending(req.query || {});
+    res.json({ success: true, data });
+  })
+);
 router.get('/analytics/expenses/export', ...staff, can('report_expenses', 'export'), handle(ctrl.expensesExport));
 
 // Footfall + daily visitor counts
