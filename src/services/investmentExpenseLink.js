@@ -6,6 +6,7 @@
 
 const mongoose = require('mongoose');
 const Investment = require('../models/investment');
+require('../models/investmentPartner'); // for the partner name (populate)
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const err = (status, message) => Object.assign(new Error(message), { status });
