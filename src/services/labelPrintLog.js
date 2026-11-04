@@ -200,7 +200,7 @@ async function markScanned(req, body = {}) {
     count,
     total: Math.max(0, Math.floor(Number(body.total) || 0)),
     mode: 'scanned',
-    note: 'Own barcode on the pack (scanned), no sticker needed',
+    note: (typeof body.note === 'string' && body.note.trim() ? body.note.trim().slice(0, 500) : 'Own barcode on the pack (scanned), no sticker needed'),
     piecesPerSale: 1,
     via: 'browser',
     user: u && mongoose.isValidObjectId(u) ? u : null,
