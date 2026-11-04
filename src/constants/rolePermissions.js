@@ -240,7 +240,7 @@ const DEFAULT_ROLES = [
     {
         name: 'Cashier',
         description: 'Sells at the counter and closes their own till (blind count). Cannot see sales totals.',
-        permissions: { pos: VC, till: VCE, customers: VC, desktop_pos: VC },
+        permissions: { pos: VC, till: VCE, customers: VC, desktop_pos: VC, desktop_download: V },
     },
     {
         name: 'Warehouse Assistant',
