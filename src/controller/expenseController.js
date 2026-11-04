@@ -15,6 +15,8 @@ const USE_BLOB_STORAGE = !!process.env.BLOB_READ_WRITE_TOKEN;
 const EXPENSE_SORTABLE = ['date', 'createdAt', 'amount', 'title', 'category'];
 const EXPENSE_SEARCH_FIELDS = ['title', 'category', 'reference', 'notes'];
 
+const invLink = require('../services/investmentExpenseLink');
+
 const expenseController = {
     // GET /expenses
     getAllExpenses: async (req, res) => {
@@ -83,6 +85,16 @@ const expenseController = {
         }
     },
 
+    // GET /expenses/investment-bills - investment bills with something left to pay
+    getInvestmentBills: async (req, res) => {
+        try {
+            return res.json({ success: true, data: await invLink.openBills() });
+        } catch (error) {
+            console.error('Error loading investment bills:', error);
+            return res.status(500).json({ message: 'Failed to load investment bills' });
+        }
+    },
+
     // GET /expenses/banks - our bank accounts for the "Bank" dropdown
     getBankOptions: async (req, res) => {
         try {
@@ -104,6 +116,12 @@ const expenseController = {
             const { title, amount, category, categories, date, paymentMethod, reference, notes } = req.body;
             const bankPick = await bankFor(paymentMethod, req.body.bankId);
             if (bankPick.error) return res.status(400).json({ message: bankPick.error });
+            let invPick = null;
+            try {
+                invPick = await invLink.checkLink(req.body.investmentId, Number(amount));
+            } catch (e) {
+                return res.status(e.status || 400).json({ message: e.message });
+            }
 
             if (!title || !title.trim()) {
                 return res.status(400).json({ message: 'Expense title is required' });
@@ -161,10 +179,13 @@ const expenseController = {
                 paymentMethod: paymentMethod?.trim() || 'Cash',
                 bank: bankPick.bank,
                 bankName: bankPick.bankName,
+                investment: invPick ? invPick._id : null,
+                investmentTitle: invPick ? invPick.title : '',
                 reference: reference?.trim() || '',
                 notes: notes?.trim() || '',
                 receipt: receiptUrl,
             });
+            if (invPick) await invLink.sync(expense);
 
             return res.status(201).json({
                 message: 'Expense created successfully',
@@ -198,6 +219,17 @@ const expenseController = {
             if (category !== undefined) expense.category = category.trim();
             if (date !== undefined) expense.date = new Date(date);
             if (paymentMethod !== undefined) expense.paymentMethod = paymentMethod?.trim() || 'Cash';
+            const invChanged = req.body.investmentId !== undefined;
+            if (invChanged || amount !== undefined) {
+                const want = invChanged ? req.body.investmentId : expense.investment;
+                try {
+                    const pick = await invLink.checkLink(want, expense.amount, expense._id);
+                    expense.investment = pick ? pick._id : null;
+                    expense.investmentTitle = pick ? pick.title : '';
+                } catch (e) {
+                    return res.status(e.status || 400).json({ message: e.message });
+                }
+            }
             if (paymentMethod !== undefined || req.body.bankId !== undefined) {
                 const bankPick = await bankFor(expense.paymentMethod, req.body.bankId !== undefined ? req.body.bankId : expense.bank);
                 if (bankPick.error) return res.status(400).json({ message: bankPick.error });
@@ -234,6 +266,7 @@ const expenseController = {
             }
 
             await expense.save();
+            await invLink.sync(expense);
 
             return res.status(200).json({
                 message: 'Expense updated successfully',
@@ -260,6 +293,8 @@ const expenseController = {
             expense.deletedAt = new Date();
             expense.deletedBy = req.user?.id || req.user?._id || null;
             await expense.save();
+            // Its payment comes off the investment bill again.
+            await invLink.sync(expense);
 
             return res.status(200).json({
                 message: 'Expense deleted successfully',

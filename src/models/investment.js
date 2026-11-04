@@ -27,9 +27,25 @@ const investmentSchema = new mongoose.Schema(
     // Who put the money in (required for new bills).
     partner: { type: mongoose.Schema.Types.ObjectId, ref: 'InvestmentPartner', default: null },
     payments: { type: [paymentSchema], default: [] },
-    // Sum of payments, and what is still to pay (amount - paidAmount).
+    // Sum of payments, and what is still to pay (amount - paidAmount - expensePaid).
     paidAmount: { type: Number, min: 0 },
     balance: { type: Number, min: 0 },
+    // Paid later from the shop's money as expenses (not partner money, so not "invested").
+    expensePaid: { type: Number, default: 0, min: 0 },
+    expenseLinks: {
+      type: [
+        new mongoose.Schema(
+          {
+            expense: { type: mongoose.Schema.Types.ObjectId, ref: 'Expense', required: true },
+            amount: { type: Number, required: true, min: 0 },
+            date: { type: Date, default: Date.now },
+            title: { type: String, default: '', trim: true },
+          },
+          { _id: false }
+        ),
+      ],
+      default: [],
+    },
     billNo: { type: String, default: '', trim: true, maxlength: 80 },
     paidTo: { type: String, default: '', trim: true, maxlength: 120 }, // vendor / shop
     // Bill photos or PDFs.
@@ -48,7 +64,8 @@ investmentSchema.pre('validate', function syncPaid() {
     this.payments.push({ amount: this.amount, date: this.date, createdBy: this.createdBy });
   }
   this.paidAmount = round2(this.payments.reduce((t, p) => t + (Number(p.amount) || 0), 0));
-  this.balance = round2((Number(this.amount) || 0) - this.paidAmount);
+  this.expensePaid = round2((this.expenseLinks || []).reduce((t, l) => t + (Number(l.amount) || 0), 0));
+  this.balance = round2((Number(this.amount) || 0) - this.paidAmount - this.expensePaid);
   if (this.balance < 0) this.invalidate('amount', 'The bill total cannot be less than what is already paid');
 });
 

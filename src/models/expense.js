@@ -35,6 +35,9 @@ const expenseSchema = new mongoose.Schema({
     },
     // Our bank account the money left from (Bank Transfer); name kept for lists.
     bank: { type: mongoose.Schema.Types.ObjectId, ref: 'Bank', default: null },
+    // Paying what is left on an investment bill (services/investmentExpenseLink.js).
+    investment: { type: mongoose.Schema.Types.ObjectId, ref: 'Investment', default: null, index: true },
+    investmentTitle: { type: String, default: '', trim: true },
     bankName: { type: String, default: '', trim: true },
     reference: {
         type: String,

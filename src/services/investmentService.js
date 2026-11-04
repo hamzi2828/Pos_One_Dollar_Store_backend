@@ -289,8 +289,9 @@ async function update(id, body, { userId, attachments = [] }) {
       paid = want;
     }
   }
-  if (total < paid) {
-    throw httpError(400, `${rs(paid)} is already paid on this bill, so the total cannot be less. Remove or change a payment first.`);
+  const byExp = round2(current.expensePaid || 0);
+  if (total < paid + byExp) {
+    throw httpError(400, `${rs(paid + byExp)} is already paid on this bill${byExp ? ` (${rs(byExp)} from expenses)` : ''}, so the total cannot be less. Remove or change a payment first.`);
   }
   // A lone payment made on the bill date moves with the bill date.
   if (set.date && current.payments.length === 1) {
@@ -303,7 +304,7 @@ async function update(id, body, { userId, attachments = [] }) {
     set.payments = payments;
     set.paidAmount = paid;
   }
-  set.balance = round2(total - paid);
+  set.balance = round2(total - paid - byExp);
   // Keep the bills the user did not remove (`keepAttachments` = JSON array of urls).
   let keep = null;
   if (body.keepAttachments !== undefined) {
@@ -346,7 +347,7 @@ async function addPayment(id, body = {}, { userId }) {
     { _id: bill._id, amount: bill.amount, paidAmount: bill.paidAmount },
     {
       $push: { payments: { amount, date, note: str(body.note, 300), createdBy: userId || null } },
-      $set: { paidAmount, balance: round2(bill.amount - paidAmount), updatedBy: userId || null },
+      $set: { paidAmount, balance: round2(bill.amount - paidAmount - (bill.expensePaid || 0)), updatedBy: userId || null },
     }
   );
   if (!res.modifiedCount) throw httpError(409, CHANGED);
@@ -364,12 +365,13 @@ async function editPayment(id, paymentId, body = {}, { userId }) {
     const amount = round2(Number(body.amount));
     if (!Number.isFinite(amount) || amount <= 0) throw httpError(400, 'Enter an amount more than 0');
     paidAmount = round2(bill.paidAmount - payment.amount + amount);
-    if (paidAmount > bill.amount) {
-      throw httpError(400, `That makes ${rs(paidAmount)} paid on a ${rs(bill.amount)} bill. At most ${rs(bill.amount - bill.paidAmount + payment.amount)} for this payment.`);
+    const byExp = round2(bill.expensePaid || 0);
+    if (paidAmount + byExp > bill.amount) {
+      throw httpError(400, `That makes ${rs(paidAmount + byExp)} paid on a ${rs(bill.amount)} bill. At most ${rs(bill.amount - bill.paidAmount - byExp + payment.amount)} for this payment.`);
     }
     set['payments.$.amount'] = amount;
     set.paidAmount = paidAmount;
-    set.balance = round2(bill.amount - paidAmount);
+    set.balance = round2(bill.amount - paidAmount - byExp);
   }
   if (body.date !== undefined) set['payments.$.date'] = paymentDate(body.date);
   if (body.note !== undefined) set['payments.$.note'] = str(body.note, 300);
@@ -391,7 +393,7 @@ async function removePayment(id, paymentId, { userId }) {
     { _id: bill._id, amount: bill.amount, paidAmount: bill.paidAmount, 'payments._id': payment._id },
     {
       $pull: { payments: { _id: payment._id } },
-      $set: { paidAmount, balance: round2(bill.amount - paidAmount), updatedBy: userId || null },
+      $set: { paidAmount, balance: round2(bill.amount - paidAmount - (bill.expensePaid || 0)), updatedBy: userId || null },
     }
   );
   if (!res.modifiedCount) throw httpError(409, CHANGED);
