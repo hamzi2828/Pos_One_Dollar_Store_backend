@@ -133,6 +133,7 @@ async function listForProduct(productId, { variantId = null, bill = null, limit 
       size: r.size,
       userName: r.userName,
       note: r.note || '',
+      codes: r.codes || null,
       at: r.createdAt,
     })),
   };
@@ -184,7 +185,17 @@ async function markScanned(req, body = {}) {
   if (!mongoose.isValidObjectId(body.productId)) throw bad('Invalid product');
   if (body.bill && !mongoose.isValidObjectId(body.bill)) throw bad('Invalid vendor bill');
   const count = Math.floor(Number(body.count) || 0);
-  if (count < 1 || count > 1000000) throw bad('Enter how many pieces have their own barcode');
+  // Pieces per barcode (optional); a row may only update this breakdown (count 0).
+  let codes = null;
+  if (body.codes && typeof body.codes === 'object') {
+    codes = {};
+    for (const [k, v] of Object.entries(body.codes)) {
+      const n = Math.floor(Number(v) || 0);
+      if (n > 0 && String(k).length <= 64) codes[String(k)] = n;
+    }
+    if (!Object.keys(codes).length) codes = null;
+  }
+  if (count < (codes ? 0 : 1) || count > 1000000) throw bad('Enter how many pieces have their own barcode');
   const product = await mongoose.connection.db.collection('products').findOne(
     { _id: new mongoose.Types.ObjectId(String(body.productId)) },
     { projection: { name: 1, shortCode: 1 } }
@@ -200,6 +211,7 @@ async function markScanned(req, body = {}) {
     count,
     total: Math.max(0, Math.floor(Number(body.total) || 0)),
     mode: 'scanned',
+    codes,
     note: (typeof body.note === 'string' && body.note.trim() ? body.note.trim().slice(0, 500) : 'Own barcode on the pack (scanned), no sticker needed'),
     piecesPerSale: 1,
     via: 'browser',

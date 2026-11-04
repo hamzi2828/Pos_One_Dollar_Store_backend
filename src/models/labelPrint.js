@@ -29,6 +29,8 @@ const labelPrintSchema = new mongoose.Schema(
     ignored: { type: Boolean, default: false },
     ignoredBy: { type: String, default: '' },
     ignoredAt: { type: Date, default: null },
+    // Own-barcode rows: pieces per scanned barcode on this trip ({ "6971326241177": 40 }).
+    codes: { type: mongoose.Schema.Types.Mixed, default: null },
   },
   { timestamps: { createdAt: true, updatedAt: false } }
 );
