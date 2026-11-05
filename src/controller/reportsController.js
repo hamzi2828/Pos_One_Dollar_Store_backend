@@ -331,12 +331,14 @@ const reportsController = {
         summary.totalSales += o.total || 0;
         summary.totalPaid += o.paidAmount || 0;
         summary.totalPending += o.pendingAmount || 0;
-        summary.itemsSold += (o.items || []).length;
+        // Pieces on the bill (quantity), not lines.
+        const itemCount = (o.items || []).reduce((n, it) => n + (Number(it.quantity) || 0), 0);
+        summary.itemsSold += itemCount;
         const m = normalizePOSMethod(o.paymentMethod);
         if (m === 'cash') summary.cashSales += o.total || 0;
         else if (m === 'card') summary.cardSales += o.total || 0;
         else if (m === 'bank') summary.bankSales += o.total || 0;
-        return { ...o, costPrice: orderCost, profit };
+        return { ...o, costPrice: orderCost, profit, itemCount };
       });
 
       summary.totalOrders = rows.length;
