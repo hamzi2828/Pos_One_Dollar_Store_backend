@@ -13,6 +13,8 @@
 //     only when the line says priceOverride and the user has `pos` 'edit'
 //     (going BELOW the list price also needs `discounts` 'edit').
 //   - Line cost = the unit's weighted-average landed cost (client value ignored).
+//   - Manual lines ({ manual: true, name, price, quantity }) are not in the
+//     catalog: typed name + price, no stock, unknown cost, never a gift.
 //   - Gift lines (isGift) need `pos_gifts` 'create' + a reason; they sell at 0
 //     but their cost still counts in cogs (and giftCost).
 //   - Subtotal = sale lines only (gifts excluded). Discount rules: best
@@ -195,6 +197,41 @@ const cleanScannedCode = (v) => (typeof v === 'string' || typeof v === 'number' 
 
 const toPlain = (doc) => (doc && typeof doc.toObject === 'function' ? doc.toObject({ flattenMaps: true }) : doc);
 
+const MAX_MANUAL_NAME = 80;
+
+/** Manual line { manual: true, name, price, quantity }: sold at the typed price, cost unknown. */
+function manualLine(raw, index, quantity) {
+  const name = String(raw.name || '').trim().replace(/\s+/g, ' ').slice(0, MAX_MANUAL_NAME);
+  if (!name) throw httpError(400, 'Enter a name for the manual item', 'MANUAL_NAME_REQUIRED');
+  const price = Number(raw.price);
+  if (!Number.isFinite(price) || price < 0) throw httpError(400, `Enter a valid price for ${name}`, 'INVALID_PRICE');
+  if (raw.isGift) throw httpError(400, `${name} is a manual item and cannot be a gift`, 'MANUAL_GIFT_NOT_ALLOWED');
+  const p = round2(price);
+  return {
+    index,
+    product: null,
+    variantId: undefined,
+    name,
+    variantLabel: '',
+    sku: '',
+    category: 'Manual',
+    quantity,
+    price: p,
+    listPrice: p,
+    priceOverride: false,
+    costPrice: undefined,
+    discount: 0,
+    scannedCode: '',
+    batchNo: undefined,
+    isGift: false,
+    giftReason: undefined,
+    isManual: true,
+    priceTier: null,
+    available: null, // no stock check
+    lineTotal: round2(p * quantity),
+  };
+}
+
 /**
  * Turn the cart lines from the browser into priced lines. Loads every product
  * in one query; scanned codes fill product / variant / batch.
@@ -214,6 +251,11 @@ async function resolveLines(rawItems, { branchId, access } = {}) {
     const quantity = Number(raw.quantity);
     if (!Number.isInteger(quantity) || quantity < 1) {
       throw httpError(400, 'Item quantity must be a whole number of at least 1', 'INVALID_QUANTITY');
+    }
+    // ----- manual line: typed name + price, not in the catalog, no stock
+    if (raw.manual === true) {
+      lines.push(manualLine(raw, index, quantity));
+      continue;
     }
     // ----- stock line: product + unit
     const productRef = idOf(raw.product);
@@ -311,7 +353,9 @@ async function resolveLines(rawItems, { branchId, access } = {}) {
 /** Fields stored on POSOrder.items (models/posOrder.js). */
 function toOrderItem(line) {
   return {
-    product: line.product,
+    product: line.product || null,
+    name: line.isManual ? line.name : undefined,
+    isManual: !!line.isManual,
     variantId: line.variantId,
     quantity: line.quantity,
     price: line.price,
@@ -450,6 +494,7 @@ module.exports = {
   normalizeManualDiscount,
   manualLimits,
   resolveLines,
+  manualLine,
   toOrderItem,
   computeBill,
   publicBill,

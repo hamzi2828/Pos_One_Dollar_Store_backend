@@ -30,6 +30,9 @@ const posOrderItemSchema = new mongoose.Schema({
   giftReason: { type: String, required: false },
   // Product category at sale time (category performance reports).
   category: { type: String, required: false },
+  // Manual item: typed at the counter, not in the catalog (product null, no stock).
+  isManual: { type: Boolean, default: false },
+  name: { type: String, required: false, trim: true },
 });
 
 const posOrderSchema = new mongoose.Schema(

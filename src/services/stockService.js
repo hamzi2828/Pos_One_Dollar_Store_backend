@@ -603,7 +603,7 @@ const costFields = (product, unit, index, stockBefore, qty, cost) => {
   return set;
 };
 
-// Every order line is a product line (no service lines in the dollar store).
+// Lines without a product (manual items) have no stock.
 const isStockItem = (item) => !!(item && item.product);
 
 const itemProductId = (item) => (item.product && item.product._id ? item.product._id : item.product);

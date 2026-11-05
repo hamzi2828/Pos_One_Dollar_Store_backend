@@ -62,7 +62,9 @@ const heldOrderController = {
       const branch = await resolveWriteBranch(req);
 
       const items = cart.items.map((item) => ({
-        product: item.product?._id || null,
+        // Manual item (typed name + price): no catalog product.
+        product: item.isManual ? null : item.product?._id || null,
+        isManual: !!item.isManual,
         productName: item.product?.name || 'Unknown Product',
         productThumbnail: item.product?.thumbnailUrl || null,
         costPrice: item.costPrice,

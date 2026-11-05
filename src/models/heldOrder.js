@@ -20,6 +20,8 @@ const heldOrderItemSchema = new mongoose.Schema({
   isGift: { type: Boolean, default: false },
   giftReason: { type: String, required: false },
   priceOverride: { type: Boolean, default: false },
+  // Manual item: typed name + price, not in the catalog (product null).
+  isManual: { type: Boolean, default: false },
   // Barcode scanned for this line (kept so the completed sale records it).
   scannedCode: { type: String, trim: true, default: '' },
 });
