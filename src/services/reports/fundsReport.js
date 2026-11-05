@@ -79,7 +79,7 @@ async function funds() {
 
   const expenses = await db
     .collection('expenses')
-    .find({ createdAt: { $gte: since }, isDeleted: { $ne: true } })
+    .find({ createdAt: { $gte: since }, isDeleted: { $ne: true }, source: { $ne: 'shop_use' } }) // shop use = own stock, no money out
     .project({ title: 1, amount: 1, paymentMethod: 1, createdAt: 1 })
     .toArray();
   for (const e of expenses) movements.push({ at: e.createdAt, kind: 'expense', label: `Expense · ${e.title || ''} (${e.paymentMethod || ''})`, amount: -round2(e.amount) });
