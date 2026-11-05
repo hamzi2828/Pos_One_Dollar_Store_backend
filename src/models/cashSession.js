@@ -60,6 +60,8 @@ const cashSessionSchema = new mongoose.Schema(
       cashSales: { type: Number, default: 0 },
       cashReceivedOnCredit: { type: Number, default: 0 },
       cashRefunds: { type: Number, default: 0 },
+      // All expenses dated the till's day (owner 2026-11-06: taken off the expected cash).
+      expenses: { type: Number, default: 0 },
       expectedCash: { type: Number, default: 0 },
       // Not cash: what the system took by POS machine (card) and bank transfer.
       card: { type: Number, default: 0 },

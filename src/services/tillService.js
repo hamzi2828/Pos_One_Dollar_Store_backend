@@ -290,6 +290,40 @@ const ORDER_FIELDS =
  *
  * Returns { expected, bills, voided, nonCash }.
  */
+/**
+ * Expenses that belong to a till: every expense (not shop use) DATED the day the
+ * till was opened (shop time). When several tills were opened that day, an
+ * expense goes to the till that was open when it was entered, else the first one.
+ */
+async function sessionExpenses(session) {
+  const tz = await getTimeZone();
+  const day = zonedParts(session.openedAt, tz).dayKey;
+  const dayDate = new Date(`${day}T00:00:00.000Z`);
+  const rows = await mongoose.connection.db
+    .collection('expenses')
+    .find({ date: { $gte: dayDate, $lt: new Date(dayDate.getTime() + 86400000) }, isDeleted: { $ne: true }, source: { $ne: 'shop_use' } })
+    .project({ title: 1, amount: 1, paymentMethod: 1, createdAt: 1, branch: 1 })
+    .sort({ createdAt: 1 })
+    .toArray();
+  if (!rows.length) return [];
+  const branchId = toId(session.branch);
+  const start = zonedDayStart(day, tz);
+  const sameDay = await CashSession.find({ branch: branchId, openedAt: { $gte: start, $lt: new Date(start.getTime() + 86400000) } })
+    .select('openedAt closedAt')
+    .sort({ openedAt: 1 })
+    .lean();
+  const tills = sameDay.length ? sameDay : [session];
+  const owner = (x) => {
+    const at = new Date(x.createdAt).getTime();
+    const hit = tills.find((t) => at >= new Date(t.openedAt).getTime() && (!t.closedAt || at <= new Date(t.closedAt).getTime()));
+    return String((hit || tills[0])._id);
+  };
+  return rows
+    .filter((x) => !x.branch || String(x.branch) === String(branchId))
+    .filter((x) => owner(x) === String(session._id))
+    .map((x) => ({ _id: x._id, title: x.title || '', amount: round2(x.amount), paymentMethod: x.paymentMethod || '', createdAt: x.createdAt, shopUse: false }));
+}
+
 async function computeExpected(session, until = new Date()) {
   const start = new Date(session.openedAt);
   const end = new Date(until);
@@ -400,18 +434,22 @@ async function computeExpected(session, until = new Date()) {
   cashReceivedOnCredit = round2(cashReceivedOnCredit);
   cashRefunds = round2(cashRefunds);
   const list = [...bills.values()].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  const expenses = await sessionExpenses(session);
+  const expenseTotal = round2(expenses.reduce((t, x) => t + x.amount, 0));
   return {
     expected: {
       float,
       cashSales,
       cashReceivedOnCredit,
       cashRefunds,
-      expectedCash: round2(float + cashSales + cashReceivedOnCredit - cashRefunds),
+      expenses: expenseTotal,
+      expectedCash: round2(float + cashSales + cashReceivedOnCredit - cashRefunds - expenseTotal),
       billCount: list.length,
     },
     bills: list,
     voided,
     nonCash,
+    expenses,
   };
 }
 
@@ -928,6 +966,7 @@ module.exports = {
   addDayCash,
   reviewSession,
   computeExpected,
+  sessionExpenses,
   myStatus,
   serializeSession,
   canSeeExpected,

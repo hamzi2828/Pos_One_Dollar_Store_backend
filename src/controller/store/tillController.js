@@ -196,20 +196,8 @@ const tillController = {
       total: Math.round((o.total || 0) * 100) / 100,
       reason: o.discountReason || (o.appliedDiscounts || []).map((d) => d.name || d.label).filter(Boolean).join(', '),
     }));
-    const expRows = await db
-      .collection('expenses')
-      .find({ createdAt: { $gte: new Date(s.openedAt), $lte: new Date(until) }, isDeleted: { $ne: true } })
-      .project({ title: 1, amount: 1, paymentMethod: 1, createdAt: 1, source: 1, category: 1 })
-      .sort({ createdAt: 1 })
-      .toArray();
-    const expenses = expRows.map((x) => ({
-      _id: x._id,
-      title: x.title || '',
-      amount: Math.round((x.amount || 0) * 100) / 100,
-      paymentMethod: x.paymentMethod || '',
-      createdAt: x.createdAt,
-      shopUse: x.source === 'shop_use',
-    }));
+    // The day's expenses (by expense date), taken off the expected cash.
+    const expenses = live.expenses || [];
     res.json({
       success: true,
       data: {
