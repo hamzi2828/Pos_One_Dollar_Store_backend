@@ -565,7 +565,7 @@ async function openSession(req, { counterId, denominations, note } = {}) {
   return session.toObject({ flattenMaps: true });
 }
 
-async function closeSession(req, id, { denominations, note } = {}) {
+async function closeSession(req, id, { denominations, note, dayCashTotal } = {}) {
   const access = req.access;
   if (!mongoose.Types.ObjectId.isValid(String(id))) throw httpError(404, 'Till session not found');
   const session = await CashSession.findById(id).lean();
@@ -575,7 +575,11 @@ async function closeSession(req, id, { denominations, note } = {}) {
   if (!own && !access.can('till_verify', 'edit')) throw httpError(403, 'You can only close your own till.');
   if (session.status !== 'open') throw httpError(409, 'This till is already closed.', 'TILL_ALREADY_CLOSED');
 
-  const count = parseCashCount(denominations || {}, await getDenominations());
+  const drawer = parseCashCount(denominations || {}, await getDenominations());
+  // Day's sales cash taken out of the drawer, typed as one total (owner 2026-11-06).
+  const day = round2(Number(dayCashTotal) || 0);
+  if (day < 0 || day > 100000000) throw httpError(400, "Enter a valid total for the day's cash.");
+  const count = day > 0 ? { denominations: drawer.denominations, total: round2(drawer.total + day) } : drawer;
   const closedAt = new Date();
   const { expected } = await computeExpected(session, closedAt);
   const variance = round2(count.total - expected.expectedCash);
@@ -601,6 +605,8 @@ async function closeSession(req, id, { denominations, note } = {}) {
         closedAt,
         closedBy: access.userId,
         closingCount: count,
+        drawerCount: drawer,
+        ...(day > 0 ? { dayCash: { denominations: {}, total: day }, dayCashAt: closedAt } : {}),
         closeNote: closerNote,
         expected,
         variance,
@@ -635,7 +641,7 @@ async function closeSession(req, id, { denominations, note } = {}) {
  * (handed to the owner). The count becomes drawer + day's cash and the variance is
  * worked out again. Can be entered again (replaces it) until the admin verifies.
  */
-async function addDayCash(req, id, { denominations, note } = {}) {
+async function addDayCash(req, id, { denominations, note, amount } = {}) {
   const access = req.access;
   if (!mongoose.Types.ObjectId.isValid(String(id))) throw httpError(404, 'Till session not found');
   const session = await CashSession.findById(id).lean();
@@ -647,7 +653,8 @@ async function addDayCash(req, id, { denominations, note } = {}) {
   if (session.status !== 'closed') throw httpError(409, `This till is already ${session.status}.`);
 
   const allowed = await getDenominations();
-  const cash = parseCashCount(denominations || {}, allowed);
+  // One typed total (`amount`) or note by note (`denominations`).
+  const cash = Number(amount) > 0 ? { denominations: {}, total: round2(Number(amount)) } : parseCashCount(denominations || {}, allowed);
   if (!(cash.total > 0)) throw httpError(400, "Enter the day's cash note by note.");
   const drawer = session.drawerCount || session.closingCount || { denominations: {}, total: 0 };
   const merged = {};
