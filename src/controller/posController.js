@@ -328,50 +328,51 @@ const posController = {
     }
   },
 
-  // POST /api/pos/customers — find by email or phone, otherwise create.
-  // Email is required (matches the /admin/users profile flow).
+  // POST /api/pos/customers — find by phone or email, otherwise create.
+  // Only the name is required (owner, 2026-11-05); phone and email are optional.
   createOrFindCustomer: async (req, res) => {
     try {
       const { firstName, lastName, email, phone } = req.body;
       if (!firstName || !firstName.trim()) {
         return res.status(400).json({ success: false, message: 'Customer name is required' });
       }
-      if (!phone || !String(phone).trim()) {
-        return res.status(400).json({ success: false, message: 'Mobile number is required' });
-      }
-      const phoneDigits = String(phone).replace(/\D/g, '');
-      if (phoneDigits.length < 7) {
+      const typedPhone = phone && String(phone).trim() ? String(phone).trim() : '';
+      const phoneDigits = typedPhone.replace(/\D/g, '');
+      if (typedPhone && phoneDigits.length < 7) {
         return res.status(400).json({ success: false, message: 'Enter a valid mobile number' });
       }
-      // E-mail is optional at the counter. User.email is required + unique, so a
-      // customer without one gets an internal placeholder built from the phone.
       const typedEmail = email && String(email).trim() ? String(email).trim().toLowerCase() : '';
       if (typedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(typedEmail)) {
         return res.status(400).json({ success: false, message: 'Enter a valid email address' });
       }
-      const normalizedEmail = typedEmail || `${phoneDigits}@customer.dollarandco.local`;
+      // User.email is required + unique: no email -> internal placeholder from the
+      // phone, or a new id when there is no phone either.
+      const newId = new mongoose.Types.ObjectId();
+      const normalizedEmail =
+        typedEmail || (phoneDigits ? `${phoneDigits}@customer.dollarandco.local` : `walkin-${newId}@customer.dollarandco.local`);
 
       // A shop knows its customers by mobile number: phone first, then e-mail.
-      let customer = await User.findOne({ phone: String(phone).trim(), isDeleted: { $ne: true } });
-      if (!customer) {
+      let customer = typedPhone ? await User.findOne({ phone: typedPhone, isDeleted: { $ne: true } }) : null;
+      if (!customer && (typedEmail || phoneDigits)) {
         customer = await User.findOne({ email: normalizedEmail, isDeleted: { $ne: true } });
       }
 
       if (customer) {
         // Back-fill phone if it was missing before.
-        if (!customer.phone) {
-          customer.phone = phone.trim();
+        if (!customer.phone && typedPhone) {
+          customer.phone = typedPhone;
           await customer.save();
         }
         return res.status(200).json({ success: true, data: customer, message: 'Existing customer found', isNew: false });
       }
 
       customer = new User({
+        _id: newId,
         firstName: firstName.trim(),
         lastName: lastName?.trim() || 'Customer',
         email: normalizedEmail,
         role: 'user',
-        phone: phone.trim(),
+        phone: typedPhone || null,
         customerType: 'walk-in',
         isActive: true,
       });
