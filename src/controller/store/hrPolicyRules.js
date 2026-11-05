@@ -117,7 +117,8 @@ function summaryParts(p) {
 
   if (ot.enabled) {
     const rate = Number(ot.rate) || 0;
-    parts.push(`overtime ×${rate}${ot.needsApproval ? ' after approval' : ''}${Number(ot.minMinutes) ? ` (min ${ot.minMinutes} min)` : ''}`);
+    const hrs = Number(pay.hoursPerDay) > 0 ? `${pay.hoursPerDay} h` : 'shift hours';
+    parts.push(`overtime per hour = salary ÷ ${divisor} ÷ ${hrs} × ${rate}${ot.needsApproval ? ', after approval' : ''}${Number(ot.minMinutes) ? ` (min ${ot.minMinutes} min)` : ''}`);
   } else parts.push('no overtime pay');
 
   const paid = Number(lv.paidPerMonth) || 0;
