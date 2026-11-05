@@ -443,6 +443,9 @@ function serializeSession(s, { full = false } = {}) {
     lateOpen: !!s.lateOpen,
     closedAt: s.closedAt || null,
     closingCount: countView(s.closingCount),
+    drawerCount: countView(s.drawerCount),
+    dayCash: countView(s.dayCash),
+    dayCashAt: s.dayCashAt || null,
     closeNote: s.closeNote || '',
     lateClose: !!s.lateClose,
     verifiedAt: s.verifiedAt || null,
@@ -627,6 +630,67 @@ async function closeSession(req, id, { denominations, note } = {}) {
   return updated;
 }
 
+/**
+ * Day's cash: after closing, add the sales cash that was taken out of the drawer
+ * (handed to the owner). The count becomes drawer + day's cash and the variance is
+ * worked out again. Can be entered again (replaces it) until the admin verifies.
+ */
+async function addDayCash(req, id, { denominations, note } = {}) {
+  const access = req.access;
+  if (!mongoose.Types.ObjectId.isValid(String(id))) throw httpError(404, 'Till session not found');
+  const session = await CashSession.findById(id).lean();
+  if (!session) throw httpError(404, 'Till session not found');
+  assertSessionBranch(access, session);
+  const own = sameId(session.cashier, access.userId);
+  if (!own && !access.can('till_verify', 'edit')) throw httpError(403, 'You can only add cash to your own till.');
+  if (session.status === 'open') throw httpError(409, 'Close the till first.');
+  if (session.status !== 'closed') throw httpError(409, `This till is already ${session.status}.`);
+
+  const allowed = await getDenominations();
+  const cash = parseCashCount(denominations || {}, allowed);
+  if (!(cash.total > 0)) throw httpError(400, "Enter the day's cash note by note.");
+  const drawer = session.drawerCount || session.closingCount || { denominations: {}, total: 0 };
+  const merged = {};
+  const plain = (m) => (m instanceof Map ? Object.fromEntries(m) : m || {});
+  for (const src of [plain(drawer.denominations), cash.denominations])
+    for (const [v, c] of Object.entries(src)) merged[v] = (merged[v] || 0) + (Number(c) || 0);
+  const closingCount = { denominations: merged, total: round2((Number(drawer.total) || 0) + cash.total) };
+  const variance = round2(closingCount.total - (Number(session.expected && session.expected.expectedCash) || 0));
+  const now = new Date();
+  const cleanNote = typeof note === 'string' ? note.trim().slice(0, 500) : '';
+  const updated = await CashSession.findOneAndUpdate(
+    { _id: session._id, status: 'closed' },
+    {
+      $set: {
+        drawerCount: { denominations: plain(drawer.denominations), total: round2(drawer.total) },
+        dayCash: cash,
+        dayCashAt: now,
+        dayCashNote: cleanNote,
+        closingCount,
+        variance,
+      },
+      $push: { history: { at: now, by: access.userId, action: 'day_cash', note: `Day's cash Rs ${cash.total}${cleanNote ? ` · ${cleanNote}` : ''}` } },
+    },
+    { new: true }
+  ).lean();
+  if (!updated) throw httpError(409, 'This till was just changed. Refresh.');
+
+  const off = Math.abs(variance) >= 1;
+  await notificationService.notify({
+    type: 'till_closed',
+    level: off ? 'warning' : 'info',
+    title: `Day's cash added: ${updated.counterName || updated.sessionNo}`,
+    message:
+      `${updated.cashierName} added Rs ${cash.total} day's cash to ${updated.sessionNo}. Counted now Rs ${closingCount.total}, expected Rs ${updated.expected ? updated.expected.expectedCash : 0}` +
+      (off ? ` (${variance < 0 ? 'short' : 'over'} Rs ${Math.abs(variance)}).` : ' (matches).'),
+    link: `/admin/till?session=${updated._id}`,
+    branchId: updated.branch,
+    audience: 'till_verify',
+    meta: { sessionId: updated._id, variance },
+  });
+  return updated;
+}
+
 /** verify | dispute a closed session (admin side). */
 async function reviewSession(req, id, { action, note } = {}) {
   const access = req.access;
@@ -687,11 +751,15 @@ async function myStatus(req) {
   const access = req.access;
   const userId = access.userId;
   const branchId = String(await resolveWriteBranch(req));
-  const [session, required, counters, denominations] = await Promise.all([
+  const [session, required, counters, denominations, lastClosed] = await Promise.all([
     CashSession.findOne({ cashier: userId, status: 'open' }).lean(),
     isTillRequired(branchId),
     SaleCounter.find({ branch: toId(branchId), isActive: true }).sort({ name: 1 }).lean(),
     getDenominations(),
+    // Last closed (not yet verified) till: the cashier can still add the day's cash.
+    CashSession.findOne({ cashier: userId, status: 'closed', closedAt: { $gte: new Date(Date.now() - 36 * 3600 * 1000) } })
+      .sort({ closedAt: -1 })
+      .lean(),
   ]);
   const busy = counters.length
     ? await CashSession.find({ counter: { $in: counters.map((c) => c._id) }, status: 'open' })
@@ -705,6 +773,7 @@ async function myStatus(req) {
     open: inThisBranch,
     openElsewhere: !!session && !inThisBranch,
     session: serializeSession(session),
+    lastClosed: serializeSession(lastClosed),
     branch: branchId,
     denominations,
     counters: counters.map((c) => {
@@ -820,6 +889,7 @@ module.exports = {
   // till workflow
   openSession,
   closeSession,
+  addDayCash,
   reviewSession,
   computeExpected,
   myStatus,

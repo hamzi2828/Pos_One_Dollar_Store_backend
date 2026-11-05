@@ -42,6 +42,12 @@ const cashSessionSchema = new mongoose.Schema(
     closedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     // Blind count entered by the cashier (they never see the expected amount).
     closingCount: { type: cashCountSchema, default: null },
+    // Day's cash (owner 2026-11-06): after closing, the cashier adds the sales cash
+    // taken out of the drawer (handed over). closingCount = drawerCount + dayCash.
+    drawerCount: { type: cashCountSchema, default: null }, // what was in the drawer at close
+    dayCash: { type: cashCountSchema, default: null },
+    dayCashAt: { type: Date, default: null },
+    dayCashNote: { type: String, default: '' },
     closeNote: { type: String, default: '' },
     lateClose: { type: Boolean, default: false },
 

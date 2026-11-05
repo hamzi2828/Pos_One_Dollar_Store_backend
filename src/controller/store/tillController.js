@@ -130,6 +130,16 @@ const tillController = {
     });
   },
 
+  // POST /api/till-sessions/:id/day-cash { denominations, note? } — sales cash taken out, added after closing.
+  async dayCash(req, res) {
+    const session = await tillService.addDayCash(req, req.params.id, req.body || {});
+    res.json({
+      success: true,
+      data: tillService.serializeSession(session, { full: tillService.canSeeExpected(req.access) }),
+      message: "Day's cash added. The admin will verify it.",
+    });
+  },
+
   // GET /api/till-sessions?from=&to=&counter=&cashier=&status=&search=&page=&limit=
   async list(req, res) {
     const { page, limit, skip } = paging(req.query);
