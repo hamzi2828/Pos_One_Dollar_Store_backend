@@ -14,7 +14,7 @@
 //     (going BELOW the list price also needs `discounts` 'edit').
 //   - Line cost = the unit's weighted-average landed cost (client value ignored).
 //   - Manual lines ({ manual: true, name, price, quantity }) are not in the
-//     catalog: typed name + price, no stock, unknown cost, never a gift.
+//     catalog: typed name + price, no stock, cost Rs 240 each, never a gift.
 //   - Gift lines (isGift) need `pos_gifts` 'create' + a reason; they sell at 0
 //     but their cost still counts in cogs (and giftCost).
 //   - Subtotal = sale lines only (gifts excluded). Discount rules: best
@@ -198,8 +198,10 @@ const cleanScannedCode = (v) => (typeof v === 'string' || typeof v === 'number' 
 const toPlain = (doc) => (doc && typeof doc.toObject === 'function' ? doc.toObject({ flattenMaps: true }) : doc);
 
 const MAX_MANUAL_NAME = 80;
+// Owner, 2026-11-05: every manual item costs Rs 240 (per piece) for profit reports.
+const MANUAL_ITEM_COST = 240;
 
-/** Manual line { manual: true, name, price, quantity }: sold at the typed price, cost unknown. */
+/** Manual line { manual: true, name, price, quantity }: sold at the typed price, cost Rs 240. */
 function manualLine(raw, index, quantity) {
   const name = String(raw.name || '').trim().replace(/\s+/g, ' ').slice(0, MAX_MANUAL_NAME);
   if (!name) throw httpError(400, 'Enter a name for the manual item', 'MANUAL_NAME_REQUIRED');
@@ -219,7 +221,7 @@ function manualLine(raw, index, quantity) {
     price: p,
     listPrice: p,
     priceOverride: false,
-    costPrice: undefined,
+    costPrice: MANUAL_ITEM_COST,
     discount: 0,
     scannedCode: '',
     batchNo: undefined,
