@@ -40,7 +40,9 @@ router.get(
     const used = await Employee.distinct('designation', { designation: { $nin: [null, ''] } });
     const seen = new Set();
     const data = [];
-    for (const [name, source] of [...roles.map((r) => [r.name, 'role']), ...used.sort().map((d) => [d, 'used'])]) {
+    // Always offered, even before anyone has them (owner, 2026-11-05).
+    const fixed = ['Salesman'];
+    for (const [name, source] of [...roles.map((r) => [r.name, 'role']), ...fixed.map((d) => [d, 'used']), ...used.sort().map((d) => [d, 'used'])]) {
       const key = String(name || '').trim().toLowerCase();
       if (!key || seen.has(key)) continue;
       seen.add(key);
