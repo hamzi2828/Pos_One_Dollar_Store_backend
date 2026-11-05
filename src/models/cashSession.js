@@ -48,6 +48,9 @@ const cashSessionSchema = new mongoose.Schema(
     dayCash: { type: cashCountSchema, default: null },
     dayCashAt: { type: Date, default: null },
     dayCashNote: { type: String, default: '' },
+    // Entered by the cashier at close (owner 2026-11-06): POS machine slip total and bank transfers.
+    cardTotal: { type: Number, default: null },
+    bankTransferTotal: { type: Number, default: null },
     closeNote: { type: String, default: '' },
     lateClose: { type: Boolean, default: false },
 
@@ -58,6 +61,9 @@ const cashSessionSchema = new mongoose.Schema(
       cashReceivedOnCredit: { type: Number, default: 0 },
       cashRefunds: { type: Number, default: 0 },
       expectedCash: { type: Number, default: 0 },
+      // Not cash: what the system took by POS machine (card) and bank transfer.
+      card: { type: Number, default: 0 },
+      bankTransfer: { type: Number, default: 0 },
       billCount: { type: Number, default: 0 },
     },
     // counted − expected (negative = short, positive = over).

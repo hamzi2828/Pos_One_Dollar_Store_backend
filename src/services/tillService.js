@@ -446,6 +446,8 @@ function serializeSession(s, { full = false } = {}) {
     drawerCount: countView(s.drawerCount),
     dayCash: countView(s.dayCash),
     dayCashAt: s.dayCashAt || null,
+    cardTotal: s.cardTotal ?? null,
+    bankTransferTotal: s.bankTransferTotal ?? null,
     closeNote: s.closeNote || '',
     lateClose: !!s.lateClose,
     verifiedAt: s.verifiedAt || null,
@@ -565,7 +567,7 @@ async function openSession(req, { counterId, denominations, note } = {}) {
   return session.toObject({ flattenMaps: true });
 }
 
-async function closeSession(req, id, { denominations, note, dayCashTotal } = {}) {
+async function closeSession(req, id, { denominations, note, dayCashTotal, cardTotal, bankTransferTotal } = {}) {
   const access = req.access;
   if (!mongoose.Types.ObjectId.isValid(String(id))) throw httpError(404, 'Till session not found');
   const session = await CashSession.findById(id).lean();
@@ -581,8 +583,18 @@ async function closeSession(req, id, { denominations, note, dayCashTotal } = {})
   if (day < 0 || day > 100000000) throw httpError(400, "Enter a valid total for the day's cash.");
   const count = day > 0 ? { denominations: drawer.denominations, total: round2(drawer.total + day) } : drawer;
   const closedAt = new Date();
-  const { expected } = await computeExpected(session, closedAt);
+  const { expected, nonCash } = await computeExpected(session, closedAt);
+  expected.card = round2(nonCash.card);
+  expected.bankTransfer = round2(nonCash.bank_transfer);
   const variance = round2(count.total - expected.expectedCash);
+  const money = (v, label) => {
+    if (v === undefined || v === null || v === '') return null;
+    const n = round2(Number(v));
+    if (!Number.isFinite(n) || n < 0 || n > 100000000) throw httpError(400, `Enter a valid ${label} total.`);
+    return n;
+  };
+  const card = money(cardTotal, 'POS machine');
+  const bank = money(bankTransferTotal, 'bank transfer');
 
   // Late close: after the counter's close cut-off, or on a later day than it opened.
   let lateClose = false;
@@ -607,6 +619,8 @@ async function closeSession(req, id, { denominations, note, dayCashTotal } = {})
         closingCount: count,
         drawerCount: drawer,
         ...(day > 0 ? { dayCash: { denominations: {}, total: day }, dayCashAt: closedAt } : {}),
+        cardTotal: card,
+        bankTransferTotal: bank,
         closeNote: closerNote,
         expected,
         variance,
@@ -641,7 +655,7 @@ async function closeSession(req, id, { denominations, note, dayCashTotal } = {})
  * (handed to the owner). The count becomes drawer + day's cash and the variance is
  * worked out again. Can be entered again (replaces it) until the admin verifies.
  */
-async function addDayCash(req, id, { denominations, note, amount } = {}) {
+async function addDayCash(req, id, { denominations, note, amount, cardTotal, bankTransferTotal } = {}) {
   const access = req.access;
   if (!mongoose.Types.ObjectId.isValid(String(id))) throw httpError(404, 'Till session not found');
   const session = await CashSession.findById(id).lean();
@@ -655,23 +669,38 @@ async function addDayCash(req, id, { denominations, note, amount } = {}) {
   const allowed = await getDenominations();
   // One typed total (`amount`) or note by note (`denominations`).
   const cash = Number(amount) > 0 ? { denominations: {}, total: round2(Number(amount)) } : parseCashCount(denominations || {}, allowed);
-  if (!(cash.total > 0)) throw httpError(400, "Enter the day's cash note by note.");
+  const extra = {};
+  for (const [k, v] of [['cardTotal', cardTotal], ['bankTransferTotal', bankTransferTotal]]) {
+    if (v === undefined || v === null || v === '') continue;
+    const n = round2(Number(v));
+    if (!Number.isFinite(n) || n < 0 || n > 100000000) throw httpError(400, 'Enter a valid amount.');
+    extra[k] = n;
+  }
+  if (!(cash.total > 0) && !Object.keys(extra).length) throw httpError(400, "Enter the day's cash.");
   const drawer = session.drawerCount || session.closingCount || { denominations: {}, total: 0 };
   const merged = {};
   const plain = (m) => (m instanceof Map ? Object.fromEntries(m) : m || {});
-  for (const src of [plain(drawer.denominations), cash.denominations])
+  // Only card / bank given: keep the day's cash already entered.
+  const dayC = cash.total > 0 ? cash : session.dayCash || { denominations: {}, total: 0 };
+  for (const src of [plain(drawer.denominations), plain(dayC.denominations)])
     for (const [v, c] of Object.entries(src)) merged[v] = (merged[v] || 0) + (Number(c) || 0);
-  const closingCount = { denominations: merged, total: round2((Number(drawer.total) || 0) + cash.total) };
+  const closingCount = { denominations: merged, total: round2((Number(drawer.total) || 0) + (Number(dayC.total) || 0)) };
   const variance = round2(closingCount.total - (Number(session.expected && session.expected.expectedCash) || 0));
   const now = new Date();
   const cleanNote = typeof note === 'string' ? note.trim().slice(0, 500) : '';
+  // Tills closed before card / bank were recorded: work out the system figures now.
+  if (session.expected && session.expected.card === undefined && session.closedAt) {
+    const { nonCash } = await computeExpected(session, session.closedAt);
+    extra['expected.card'] = round2(nonCash.card);
+    extra['expected.bankTransfer'] = round2(nonCash.bank_transfer);
+  }
   const updated = await CashSession.findOneAndUpdate(
     { _id: session._id, status: 'closed' },
     {
       $set: {
         drawerCount: { denominations: plain(drawer.denominations), total: round2(drawer.total) },
-        dayCash: cash,
-        dayCashAt: now,
+        ...(cash.total > 0 ? { dayCash: cash, dayCashAt: now } : {}),
+        ...extra,
         dayCashNote: cleanNote,
         closingCount,
         variance,
