@@ -176,6 +176,40 @@ const tillController = {
     const stored = s.expected || {};
     // Bills can change after close (late refund / delete): show the recount when it differs.
     const changed = s.status !== 'open' && Math.abs((live.expected.expectedCash || 0) - (stored.expectedCash || 0)) >= 0.01;
+    // Discounts given on this till's bills, and expenses entered while it was open (owner 2026-11-06).
+    const db = mongoose.connection.db;
+    const billIds = live.bills.map((b) => b._id);
+    const discBills = billIds.length
+      ? await db
+          .collection('posorders')
+          .find({ _id: { $in: billIds }, discount: { $gt: 0 } })
+          .project({ orderNumber: 1, subtotal: 1, discount: 1, discountReason: 1, appliedDiscounts: 1, total: 1, createdAt: 1 })
+          .sort({ createdAt: 1 })
+          .toArray()
+      : [];
+    const discounts = discBills.map((o) => ({
+      _id: o._id,
+      orderNumber: o.orderNumber,
+      createdAt: o.createdAt,
+      subtotal: Math.round((o.subtotal || 0) * 100) / 100,
+      discount: Math.round((o.discount || 0) * 100) / 100,
+      total: Math.round((o.total || 0) * 100) / 100,
+      reason: o.discountReason || (o.appliedDiscounts || []).map((d) => d.name || d.label).filter(Boolean).join(', '),
+    }));
+    const expRows = await db
+      .collection('expenses')
+      .find({ createdAt: { $gte: new Date(s.openedAt), $lte: new Date(until) }, isDeleted: { $ne: true } })
+      .project({ title: 1, amount: 1, paymentMethod: 1, createdAt: 1, source: 1, category: 1 })
+      .sort({ createdAt: 1 })
+      .toArray();
+    const expenses = expRows.map((x) => ({
+      _id: x._id,
+      title: x.title || '',
+      amount: Math.round((x.amount || 0) * 100) / 100,
+      paymentMethod: x.paymentMethod || '',
+      createdAt: x.createdAt,
+      shopUse: x.source === 'shop_use',
+    }));
     res.json({
       success: true,
       data: {
@@ -184,6 +218,8 @@ const tillController = {
         voided: live.voided,
         nonCash: live.nonCash,
         liveExpected: s.status === 'open' || changed ? live.expected : null,
+        discounts,
+        expenses,
       },
     });
   },
