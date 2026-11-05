@@ -25,6 +25,8 @@ const posOrderItemSchema = new mongoose.Schema({
       quantity: { type: Number },
     },
   ],
+  // Pieces sold while out of stock (not taken from stock). 0 / missing = all in stock.
+  outOfStockQty: { type: Number, default: undefined },
   // Free gift: sold at 0, its cost (costPrice * quantity) goes to cost of sales.
   isGift: { type: Boolean, default: false },
   giftReason: { type: String, required: false },

@@ -87,10 +87,11 @@ const posController = {
       const branchId = await shopBranch(req);
       const mainBranchId = await getMainBranchId();
 
-      const query = {
-        status: 'published',
-        $and: [branchStockQuery(branchId, mainBranchId)],
-      };
+      // Owner, 2026-11-05: out of stock still sells. The plain list shows items in
+      // stock; a search also finds out-of-stock items.
+      const searching = !!String(search || '').trim();
+      const query = { status: { $in: ['published', 'out_of_stock'] } };
+      if (!searching) query.$and = [branchStockQuery(branchId, mainBranchId)];
 
       if (category) query.category = category;
 
@@ -121,7 +122,7 @@ const posController = {
       const found = await productsQuery.lean();
       const products = (found || [])
         .map((p) => withBranchStock(p, branchId, mainBranchId))
-        .filter((p) => (Number(p.stock) || 0) > 0)
+        .filter((p) => searching || (Number(p.stock) || 0) > 0)
         .map((p) => productForViewer(p, req.access));
       // Where each item lives in the shop (shelf chips on the results).
       await attachShelfCodes(products, branchId);
@@ -224,23 +225,14 @@ const posController = {
       };
 
       const label = match.variantLabel ? `${product.name} (${match.variantLabel})` : product.name;
-      if (available <= 0) {
-        return res.status(400).json({
-          success: false,
-          data: here,
-          match,
-          message: `${label} is out of stock`,
-        });
-      }
-      if (available < match.qty) {
-        return res.status(400).json({
-          success: false,
-          data: here,
-          match,
-          message: `Not enough stock for ${label}. Available: ${available}, this code sells ${match.qty}`,
-        });
-      }
-      return res.status(200).json({ success: true, data: here, match, message: 'Product fetched successfully' });
+      // Owner, 2026-11-05: out of stock still sells (the sale records the shortage).
+      const stockWarning =
+        available <= 0
+          ? `${label} is out of stock (sold anyway)`
+          : available < match.qty
+          ? `Only ${available} of ${label} in stock (sold anyway)`
+          : undefined;
+      return res.status(200).json({ success: true, data: here, match, stockWarning, message: 'Product fetched successfully' });
     } catch (error) {
       console.error('Get product by barcode error:', error);
       return res.status(400).json({ success: false, message: 'Error fetching product', error: error.message });
@@ -497,7 +489,9 @@ const posController = {
       // so two counters can never sell the same last piece.
       let deducted;
       try {
-        deducted = await stockService.deductOrderItems(orderItems, { branchId, movement });
+        // Owner, 2026-11-05: sell even when out of stock. What is there is taken;
+        // the rest is saved on the line as outOfStockQty (ledger note too).
+        deducted = await stockService.deductOrderItems(orderItems, { branchId, movement, allowShort: true });
       } catch (stockErr) {
         if (stockErr.isStockError) {
           return res.status(stockErr.status || 400).json({ success: false, message: stockErr.message, code: stockErr.code });
@@ -505,8 +499,19 @@ const posController = {
         throw stockErr;
       }
       orderItems.forEach((item, i) => {
-        if (deducted[i]) item.batchAllocations = deducted[i].allocations;
+        const d = deducted[i];
+        if (!d) return;
+        item.batchAllocations = d.allocations;
+        if (d.short > 0) item.outOfStockQty = d.short;
       });
+      // Undo exactly what was taken (short lines took less than their quantity).
+      const restoreTaken = (note) =>
+        stockService.restoreOrderItems(
+          orderItems
+            .map((item, i) => ({ ...item, quantity: deducted[i] ? deducted[i].taken : 0 }))
+            .filter((item) => item.quantity > 0),
+          { branchId, movement: { ...movement, note } }
+        );
 
       let order;
       try {
@@ -567,12 +572,12 @@ const posController = {
         // Same bill number drawn at the same moment -> retried; same sale sent twice -> the saved one.
         const { winner } = await saveNewOrder(order, clientId, '_id');
         if (winner) {
-          await stockService.restoreOrderItems(orderItems, { branchId, movement: { ...movement, note: 'Sale sent twice' } });
+          await restoreTaken('Sale sent twice');
           return sendExisting(winner);
         }
       } catch (saveErr) {
         // Order was not saved -> give the pieces back (same refs).
-        await stockService.restoreOrderItems(orderItems, { branchId, movement: { ...movement, note: 'Sale not saved' } });
+        await restoreTaken('Sale not saved');
         throw saveErr;
       }
 

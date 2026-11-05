@@ -662,7 +662,7 @@ const deductOrderItems = async (items, { branchId, movement, allowShort = false 
             type: d.item.isGift ? 'gift' : ctx.type || 'sale',
             unitPrice: d.item.isGift ? 0 : d.item.price,
             ...(d.item.costPrice !== undefined && d.item.costPrice !== null ? { unitCost: d.item.costPrice } : {}),
-            ...(short > 0 ? { note: [ctx.note, `${short} more sold than in stock (offline sale)`].filter(Boolean).join(' · ') } : {}),
+            ...(short > 0 ? { note: [ctx.note, `${short} sold while out of stock`].filter(Boolean).join(' · ') } : {}),
           },
           defaultType: 'sale',
         });
