@@ -53,6 +53,8 @@ const hrPolicySchema = new mongoose.Schema(
       fixedDays: { type: Number, min: 1, max: 31, default: 30 },
       absentCutDays: { type: Number, min: 0, max: 3, default: 1 }, // days cut per absent day
       halfDayCut: { type: Number, min: 0, max: 1, default: 0.5 }, // fraction of a day cut per half day
+      // Hourly rate (overtime, late minutes) = day rate ÷ these hours. 0 = the person's shift hours (8 if none).
+      hoursPerDay: { type: Number, min: 0, max: 24, default: 0 },
       paidWeeklyOff: { type: Boolean, default: true }, // monthly staff: offs are paid (daily-wage: never)
       paidHolidays: { type: Boolean, default: true },
     },

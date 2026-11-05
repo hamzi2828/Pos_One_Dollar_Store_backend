@@ -22,6 +22,7 @@ const FIELDS = {
   'pay.fixedDays': 'Salary divided by',
   'pay.absentCutDays': 'Days cut per absent day',
   'pay.halfDayCut': 'Cut per half day',
+  'pay.hoursPerDay': 'Hours in a day (hourly rate)',
   'pay.paidWeeklyOff': 'Weekly off is paid',
   'pay.paidHolidays': 'Holidays are paid',
   'overtime.enabled': 'Overtime pay',
@@ -37,7 +38,7 @@ const FIELDS = {
 };
 const SECTIONS = ['attendance', 'pay', 'overtime', 'leave', 'tillShortage'];
 // Fractions allowed here; every other number is whole.
-const DECIMAL = new Set(['attendance.lateRule.cutDays', 'pay.absentCutDays', 'pay.halfDayCut', 'overtime.rate', 'tillShortage.maxPerMonth']);
+const DECIMAL = new Set(['attendance.lateRule.cutDays', 'pay.absentCutDays', 'pay.halfDayCut', 'pay.hoursPerDay', 'overtime.rate', 'tillShortage.maxPerMonth']);
 const MONEY_MAX = 10000000;
 
 /** { path: { kind: 'number'|'boolean'|'enum', min, max, options, label, decimal } } from the schema. */

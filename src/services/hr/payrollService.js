@@ -517,7 +517,7 @@ function baseLine({ employee: e, summary: s, policy: p, period, workMinutes = 0,
     divisorLabel = `salary ÷ ${divisor} (no working days planned)`;
   }
   const dayRate = payType === 'daily' ? dailyRate : salary / divisor;
-  const workHours = workMinutes > 0 ? workMinutes / 60 : 8;
+  const workHours = Number(pay.hoursPerDay) > 0 ? Number(pay.hoursPerDay) : workMinutes > 0 ? workMinutes / 60 : 8;
   const hourlyRate = dayRate / workHours;
 
   // ---- overtime minutes (daily wage: work on an off day / holiday is paid as a day, not as overtime) ----
