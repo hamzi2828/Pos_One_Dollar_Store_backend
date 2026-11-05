@@ -28,6 +28,8 @@ const FIELDS = {
   'overtime.enabled': 'Overtime pay',
   'overtime.rate': 'Overtime rate',
   'overtime.minMinutes': 'Minimum overtime',
+  'overtime.doubleAfterHours': 'Higher rate after (hours in a day)',
+  'overtime.doubleRate': 'Higher overtime rate',
   'overtime.maxMinutesPerDay': 'Most overtime a day',
   'overtime.needsApproval': 'Overtime needs approval',
   'leave.paidPerMonth': 'Paid leave a month',
@@ -38,7 +40,7 @@ const FIELDS = {
 };
 const SECTIONS = ['attendance', 'pay', 'overtime', 'leave', 'tillShortage'];
 // Fractions allowed here; every other number is whole.
-const DECIMAL = new Set(['attendance.lateRule.cutDays', 'pay.absentCutDays', 'pay.halfDayCut', 'pay.hoursPerDay', 'overtime.rate', 'tillShortage.maxPerMonth']);
+const DECIMAL = new Set(['attendance.lateRule.cutDays', 'pay.absentCutDays', 'pay.halfDayCut', 'pay.hoursPerDay', 'overtime.rate', 'overtime.doubleAfterHours', 'overtime.doubleRate', 'tillShortage.maxPerMonth']);
 const MONEY_MAX = 10000000;
 
 /** { path: { kind: 'number'|'boolean'|'enum', min, max, options, label, decimal } } from the schema. */
@@ -119,6 +121,7 @@ function summaryParts(p) {
     const rate = Number(ot.rate) || 0;
     const hrs = Number(pay.hoursPerDay) > 0 ? `${pay.hoursPerDay} h` : 'shift hours';
     parts.push(`overtime per hour = salary ÷ ${divisor} ÷ ${hrs} × ${rate}${ot.needsApproval ? ', after approval' : ''}${Number(ot.minMinutes) ? ` (min ${ot.minMinutes} min)` : ''}`);
+    if (Number(ot.doubleAfterHours) > 0) parts.push(`after ${ot.doubleAfterHours} h in a day: overtime × ${Number(ot.doubleRate) || 0}`);
   } else parts.push('no overtime pay');
 
   const paid = Number(lv.paidPerMonth) || 0;

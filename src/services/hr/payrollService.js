@@ -537,6 +537,18 @@ function baseLine({ employee: e, summary: s, policy: p, period, workMinutes = 0,
     }
   }
   const otRate = ot.enabled === false ? 0 : Number(ot.rate ?? 1) || 0;
+  // Approved overtime past `doubleAfterHours` worked in one day is paid at `doubleRate`.
+  let otDouble = 0;
+  const dblAfter = Number(ot.doubleAfterHours) || 0;
+  const dblRate = Number(ot.doubleRate ?? 2) || 0;
+  if (dblAfter > 0 && otPaid > 0) {
+    for (const d of days) {
+      if (!past(d) || d.overtimeApproved !== true || !(d.overtimeMinutes > 0)) continue;
+      if (payType === 'daily' && (d.planned === 'off' || d.planned === 'holiday')) continue;
+      otDouble += Math.min(d.overtimeMinutes, Math.max(0, (Number(d.workedMinutes) || 0) - dblAfter * 60));
+    }
+    otDouble = Math.min(otDouble, otPaid);
+  }
 
   // ---- earnings ----
   const earnings = [];
@@ -567,15 +579,25 @@ function baseLine({ employee: e, summary: s, policy: p, period, workMinutes = 0,
       detail: `${parts.length > 1 ? `${parts.join(' + ')} = ` : ''}${plural(s.daysWorked, 'day')} × ${fmtRate(dailyRate)} = ${fmtRs(wage)}`,
     });
   }
-  if (otPaid > 0 && otRate > 0) {
-    const amount = (otPaid / 60) * hourlyRate * otRate;
+  const otNormal = otPaid - otDouble;
+  if (otNormal > 0 && otRate > 0) {
+    const amount = (otNormal / 60) * hourlyRate * otRate;
     earnings.push({
       key: 'overtime',
       label: 'Overtime',
       amount: rs(amount),
       detail:
-        `${hoursText(otPaid)} approved × ${fmtRate(hourlyRate)}/hour${otRate !== 1 ? ` × ${num(otRate)}` : ''} = ${fmtRs(amount)}` +
+        `${hoursText(otNormal)} approved × ${fmtRate(hourlyRate)}/hour${otRate !== 1 ? ` × ${num(otRate)}` : ''} = ${fmtRs(amount)}` +
         (otPending > 0 ? ` (${hoursText(otPending)} still waiting for approval, not paid)` : ''),
+    });
+  }
+  if (otDouble > 0 && dblRate > 0 && ot.enabled !== false) {
+    const amount = (otDouble / 60) * hourlyRate * dblRate;
+    earnings.push({
+      key: 'overtime_double',
+      label: `Overtime after ${num(dblAfter)} h`,
+      amount: rs(amount),
+      detail: `${hoursText(otDouble)} past ${num(dblAfter)} h in a day × ${fmtRate(hourlyRate)}/hour × ${num(dblRate)} = ${fmtRs(amount)}`,
     });
   }
 

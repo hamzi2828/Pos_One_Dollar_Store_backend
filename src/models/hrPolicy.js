@@ -62,6 +62,9 @@ const hrPolicySchema = new mongoose.Schema(
     overtime: {
       enabled: { type: Boolean, default: true },
       rate: { type: Number, min: 0, max: 5, default: 1 }, // × hourly rate (1 = normal, 1.5 = time and a half)
+      // Overtime worked after this many hours in one day is paid at `doubleRate` instead (0 = off). Owner 2026-11-05: 12 h → ×2.
+      doubleAfterHours: { type: Number, min: 0, max: 24, default: 0 },
+      doubleRate: { type: Number, min: 0, max: 5, default: 2 },
       minMinutes: { type: Number, min: 0, max: 600, default: 30 }, // shorter extra time is ignored
       maxMinutesPerDay: { type: Number, min: 0, max: 1440, default: 240 },
       needsApproval: { type: Boolean, default: true },
