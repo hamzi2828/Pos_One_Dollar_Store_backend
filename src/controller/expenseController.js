@@ -54,6 +54,8 @@ const expenseController = {
                 allowedSortFields: EXPENSE_SORTABLE,
             });
 
+            // Same date -> newest entry first (dates have no time, so ties are common).
+            paging.sort = { ...paging.sort, createdAt: -1, _id: -1 };
             const { items, pagination } = await paginate(Expense, { filter, ...paging });
 
             return res.status(200).json({
