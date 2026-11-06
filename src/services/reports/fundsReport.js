@@ -33,6 +33,21 @@ async function setBaseline(req, body = {}) {
   return funds();
 }
 
+/**
+ * Where a row sits in the list: on its own date (e.g. expense dated 5 Nov but
+ * entered 6 Nov -> 5 Nov, end of that day). Same day -> the time it was entered.
+ * Never before the start. `day` = UTC midnight of the Pakistan day.
+ */
+function placeOn(day, enteredAt, since) {
+  if (!day) return enteredAt;
+  const dayEnd = new Date(new Date(day).getTime() + 19 * 3600000 - 1); // 23:59:59 Pakistan time
+  const dayStart = new Date(dayEnd.getTime() - 86400000 + 1);
+  const t = new Date(enteredAt);
+  if (t >= dayStart && t <= dayEnd) return t;
+  const at = t > dayEnd ? dayEnd : dayStart;
+  return at < since ? new Date(since) : at;
+}
+
 async function funds() {
   const db = mongoose.connection.db;
   const base = await currentBaseline();
@@ -80,20 +95,20 @@ async function funds() {
   const expenses = await db
     .collection('expenses')
     .find({ createdAt: { $gte: since }, isDeleted: { $ne: true }, source: { $ne: 'shop_use' } }) // shop use = own stock, no money out
-    .project({ title: 1, amount: 1, paymentMethod: 1, createdAt: 1 })
+    .project({ title: 1, amount: 1, paymentMethod: 1, createdAt: 1, date: 1 })
     .toArray();
-  for (const e of expenses) movements.push({ at: e.createdAt, kind: 'expense', label: `Expense · ${e.title || ''} (${e.paymentMethod || ''})`, amount: -round2(e.amount) });
+  for (const e of expenses) movements.push({ at: placeOn(e.date, e.createdAt, since), kind: 'expense', label: `Expense · ${e.title || ''} (${e.paymentMethod || ''})`, amount: -round2(e.amount) });
 
   // Loans: money borrowed comes in, paying it back goes out (owner 2026-11-06).
   const loans = await db
     .collection('loans')
     .find({ isDeleted: { $ne: true }, $or: [{ createdAt: { $gte: since } }, { 'repayments.at': { $gte: since } }] })
-    .project({ loanNo: 1, lenderName: 1, amount: 1, createdAt: 1, repayments: 1 })
+    .project({ loanNo: 1, lenderName: 1, amount: 1, createdAt: 1, date: 1, repayments: 1 })
     .toArray();
   for (const l of loans) {
-    if (l.createdAt >= since) movements.push({ at: l.createdAt, kind: 'loan_in', label: `Loan ${l.loanNo} from ${l.lenderName}`, amount: round2(l.amount) });
+    if (l.createdAt >= since) movements.push({ at: placeOn(l.date, l.createdAt, since), kind: 'loan_in', label: `Loan ${l.loanNo} from ${l.lenderName}`, amount: round2(l.amount) });
     for (const r of l.repayments || [])
-      if (r.at && r.at >= since) movements.push({ at: r.at, kind: 'loan_out', label: `Loan ${l.loanNo} paid back to ${l.lenderName} (${r.method || ''})`, amount: -round2(r.amount) });
+      if (r.at && r.at >= since) movements.push({ at: placeOn(r.date, r.at, since), kind: 'loan_out', label: `Loan ${l.loanNo} paid back to ${l.lenderName} (${r.method || ''})`, amount: -round2(r.amount) });
   }
 
   movements.sort((a, b) => new Date(a.at) - new Date(b.at));
