@@ -255,9 +255,23 @@ const tillController = {
         { $limit: 100 },
       ]),
     ]);
+    // Discounts given on each till's bills (owner 2026-11-06).
+    const disc = rows.length
+      ? await mongoose.connection.db
+          .collection('posorders')
+          .aggregate([
+            { $match: { cashSession: { $in: rows.map((r) => r._id) }, isDeleted: { $ne: true }, discount: { $gt: 0 } } },
+            { $group: { _id: '$cashSession', amount: { $sum: '$discount' }, bills: { $sum: 1 } } },
+          ])
+          .toArray()
+      : [];
+    const discBy = new Map(disc.map((d) => [String(d._id), d]));
     res.json({
       success: true,
-      data: rows.map((s) => tillService.serializeSession(s, { full: true })),
+      data: rows.map((s) => {
+        const d = discBy.get(String(s._id));
+        return { ...tillService.serializeSession(s, { full: true }), discountTotal: d ? Math.round(d.amount * 100) / 100 : 0, discountBills: d ? d.bills : 0 };
+      }),
       meta: { page, limit, total, pages: Math.max(1, Math.ceil(total / limit)), summary, byCashier },
     });
   },
