@@ -59,7 +59,7 @@ async function funds() {
   const sales = await db
     .collection('posorders')
     .aggregate([
-      { $match: { createdAt: { $gte: since }, orderStatus: { $ne: 'cancelled' } } },
+      { $match: { createdAt: { $gte: since }, orderStatus: { $ne: 'cancelled' }, isDeleted: { $ne: true } } },
       {
         $group: {
           _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: 'Asia/Karachi' } },
@@ -74,7 +74,7 @@ async function funds() {
 
   const refunds = await db
     .collection('posorders')
-    .find({ refundedAt: { $gte: since } })
+    .find({ refundedAt: { $gte: since }, isDeleted: { $ne: true } })
     .project({ orderNumber: 1, invoiceNumber: 1, paidAmount: 1, total: 1, refundedAt: 1 })
     .toArray();
   for (const r of refunds) movements.push({ at: r.refundedAt, kind: 'refund', label: `Refund ${r.orderNumber || r.invoiceNumber || ''}`.trim(), amount: -round2(r.paidAmount || r.total) });
