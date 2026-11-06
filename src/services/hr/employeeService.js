@@ -3,6 +3,7 @@
 // who may EDIT employees; view-only users get the rest (see serialize()).
 const Employee = require('../../models/employee');
 const User = require('../../models/user');
+const EmployeeFingerprint = require('../../models/employeeFingerprint');
 const staffService = require('../staffService');
 const u = require('./util');
 
@@ -254,8 +255,16 @@ async function list(req) {
     Employee.countDocuments(filter),
     Employee.distinct('department', { isDeleted: { $ne: true } }),
   ]);
+  // Enrolled fingerprints per employee (one query for the whole page).
+  const fpRows = rows.length
+    ? await EmployeeFingerprint.aggregate([
+        { $match: { employee: { $in: rows.map((r) => r._id) }, deletedAt: null } },
+        { $group: { _id: '$employee', n: { $sum: 1 } } },
+      ])
+    : [];
+  const fpCount = new Map(fpRows.map((f) => [String(f._id), f.n]));
   return {
-    data: rows.map((r) => serialize(r, { sensitive })),
+    data: rows.map((r) => ({ ...serialize(r, { sensitive }), fingerprints: fpCount.get(String(r._id)) || 0 })),
     meta: { ...u.pageMeta(p, total), departments: departments.filter(Boolean).sort(), canSeeSensitive: sensitive },
   };
 }
