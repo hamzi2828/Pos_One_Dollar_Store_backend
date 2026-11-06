@@ -8,6 +8,7 @@
 // Money on a payroll line is in whole rupees.
 //
 //   Advances    createAdvance, listAdvances, getAdvance, cancelAdvance
+//   Lists of advances / deductions take ?from=&to= (PKT days) and return meta.byDay.
 //   Deductions  listDeductions, createDeduction, approveDeduction, waiveDeduction,
 //               recordTillShortage(session)   ← tillService calls this on verify
 //   Runs        listRuns, getRun, generateRun, regenerateRun, updateLine, deleteRun,
@@ -147,6 +148,26 @@ const method = (v, fallback = 'cash') => {
 
 const historyRow = (userId, action, note = '', at = new Date()) => ({ at, by: userId || null, action, note });
 
+/** Optional ?from=&to= (PKT days, inclusive) as a Mongo date condition, or null. */
+function dayRange(query = {}) {
+  if (!query.from && !query.to) return null;
+  const cond = {};
+  if (query.from) cond.$gte = T.dayStart(String(query.from));
+  if (query.to) cond.$lt = T.dayStart(T.addDays(String(query.to), 1));
+  return cond;
+}
+
+/** Count and sum of `amount` per PKT day for a filter, newest day first: [{ day, count, amount }]. */
+async function sumByDay(Model, filter, maxDays = 400) {
+  const rows = await Model.aggregate([
+    { $match: filter },
+    { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$date', timezone: T.TZ } }, count: { $sum: 1 }, amount: { $sum: '$amount' } } },
+    { $sort: { _id: -1 } },
+    { $limit: maxDays },
+  ]);
+  return rows.map((r) => ({ day: r._id, count: r.count, amount: rs(r.amount) }));
+}
+
 async function employeeMap(ids, fields = 'firstName lastName employeeCode designation phone') {
   const list = await Employee.find({ _id: { $in: ids } }).select(fields).lean();
   return new Map(list.map((e) => [String(e._id), e]));
@@ -223,13 +244,23 @@ async function listAdvances(query = {}) {
     const re = containsRe(query.search);
     filter.$or = [{ employeeName: re }, { advanceNo: re }, { employeeCode: re }];
   }
-  const [total, rows, open] = await Promise.all([
+  const range = dayRange(query);
+  if (range) filter.date = range;
+  const [total, rows, open, byDay] = await Promise.all([
     SalaryAdvance.countDocuments(filter),
     SalaryAdvance.find(filter).sort({ date: -1, _id: -1 }).skip(skip).limit(limit).lean(),
     SalaryAdvance.aggregate([{ $match: { status: 'open' } }, { $group: { _id: null, count: { $sum: 1 }, balance: { $sum: '$balance' } } }]),
+    sumByDay(SalaryAdvance, filter),
   ]);
   const o = open[0] || { count: 0, balance: 0 };
-  return { data: rows.map(advanceView), meta: { ...pageMeta({ page, limit }, total), summary: { openCount: o.count, openBalance: rs(o.balance) } } };
+  return {
+    data: rows.map(advanceView),
+    meta: {
+      ...pageMeta({ page, limit }, total),
+      summary: { openCount: o.count, openBalance: rs(o.balance), listed: { count: total, amount: rs(sum(byDay, (d) => d.amount)) } },
+      byDay,
+    },
+  };
 }
 
 async function getAdvance(id) {
@@ -327,14 +358,18 @@ async function listDeductions(query = {}) {
     if (!isId(id)) throw httpError(400, 'Invalid employee');
     filter.employee = new ObjectId(String(id));
   }
-  const [total, rows, counts] = await Promise.all([
+  const range = dayRange(query);
+  if (range) filter.date = range;
+  const [total, rows, counts, byDay] = await Promise.all([
     PayrollDeduction.countDocuments(filter),
     PayrollDeduction.find(filter).sort({ date: -1, _id: -1 }).skip(skip).limit(limit).lean(),
     PayrollDeduction.aggregate([{ $group: { _id: '$status', count: { $sum: 1 }, amount: { $sum: '$amount' } } }]),
+    sumByDay(PayrollDeduction, filter),
   ]);
   const summary = { pending: { count: 0, amount: 0 }, approved: { count: 0, amount: 0 }, applied: { count: 0, amount: 0 }, waived: { count: 0, amount: 0 } };
   for (const c of counts) if (summary[c._id]) summary[c._id] = { count: c.count, amount: r2(c.amount) };
-  return { data: await deductionViews(rows), meta: { ...pageMeta({ page, limit }, total), summary } };
+  summary.listed = { count: total, amount: rs(sum(byDay, (d) => d.amount)) };
+  return { data: await deductionViews(rows), meta: { ...pageMeta({ page, limit }, total), summary, byDay } };
 }
 
 async function getDeductionDoc(id) {
@@ -1598,4 +1633,6 @@ module.exports = {
   totalsOf,
   nextInstallment,
   LOCK_NOTE,
+  // shared with tipService
+  helpers: { rupees, shopDate, method, loadEmployee, nameOf, dayRange, sumByDay, ACTIVE, METHOD_LABEL, EXPENSE_METHOD },
 };

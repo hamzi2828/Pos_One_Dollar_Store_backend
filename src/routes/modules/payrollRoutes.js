@@ -1,4 +1,4 @@
-// Payroll: advances, deductions (till shortage), payroll runs, payslips (/api/payroll/..., /api/salary-advances, /api/payroll-deductions). OWNER: Payroll module.
+// Payroll: advances, deductions (till shortage), staff tips (/api/staff-tips), payroll runs, payslips (/api/payroll/..., /api/salary-advances, /api/payroll-deductions). OWNER: Payroll module.
 // Mounted at /api by routes/modules/index.js — define sub-paths relative to /api.
 //
 // Permission `payroll`: GET view, POST create, PUT edit, DELETE delete, CSV export.
@@ -9,6 +9,7 @@ const { staff, can, superAdmin, handle } = require('./_access');
 const runs = require('../../controller/store/payrollController');
 const advances = require('../../controller/store/salaryAdvanceController');
 const deductions = require('../../controller/store/payrollDeductionController');
+const tips = require('../../controller/store/staffTipController');
 
 const router = express.Router();
 
@@ -39,5 +40,10 @@ router.get('/payroll-deductions', ...staff, can('payroll', 'view'), handle(deduc
 router.post('/payroll-deductions', ...staff, can('payroll', 'create'), handle(deductions.create));
 router.post('/payroll-deductions/:id/approve', ...staff, can('payroll', 'edit'), handle(deductions.approve));
 router.post('/payroll-deductions/:id/waive', ...staff, can('payroll', 'edit'), handle(deductions.waive));
+
+// ----- Staff tips (each one is an expense in "Staff Tips", not salary) -----
+router.get('/staff-tips', ...staff, can('payroll', 'view'), handle(tips.list));
+router.post('/staff-tips', ...staff, can('payroll', 'create'), handle(tips.create));
+router.delete('/staff-tips/:id', ...staff, can('payroll', 'delete'), handle(tips.remove));
 
 module.exports = router;
