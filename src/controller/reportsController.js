@@ -184,9 +184,12 @@ const reportsController = {
       paymentsReceived.total = paymentsReceived.cash + paymentsReceived.card + paymentsReceived.bank;
 
       // ---------- 3. Expenses in window ----------
+      // Shop use (own stock) and personal-money expenses never take shop cash.
       const expenses = await Expense.find({
         isDeleted: { $ne: true },
         date: { $gte: start, $lte: end },
+        source: { $ne: 'shop_use' },
+        fromPersonal: { $ne: true },
       })
         .select('amount paymentMethod')
         .lean();
@@ -834,9 +837,11 @@ const reportsController = {
         for (const it of o.items || []) itemCount += Number(it.quantity) || 0;
       }
 
+      // Shop use (own stock) is only shown in the expenses report, never subtracted.
       const expenses = await Expense.find({
         isDeleted: { $ne: true },
         date: { $gte: start, $lte: end },
+        source: { $ne: 'shop_use' },
       })
         .select('amount')
         .lean();

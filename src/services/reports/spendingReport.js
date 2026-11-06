@@ -97,7 +97,7 @@ async function spending(query = {}) {
   const exp = await db
     .collection('expenses')
     .aggregate([
-      { $match: { isDeleted: { $ne: true }, date: { $gte: start, $lte: end } } },
+      { $match: { isDeleted: { $ne: true }, date: { $gte: start, $lte: end }, source: { $ne: 'shop_use' } } }, // shop use = own stock, never money out
       { $group: { _id: '$category', total: { $sum: '$amount' }, count: { $sum: 1 } } },
       { $sort: { total: -1 } },
     ])
