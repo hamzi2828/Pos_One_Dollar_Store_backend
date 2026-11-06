@@ -1198,6 +1198,88 @@ const posController = {
     }
   },
 
+  // POST /api/pos/orders/:id/discount — body { amount, reason? }. Discount after the sale:
+  // the bill total goes down and the customer gets the amount back (same payment method).
+  // A closed (not yet verified) till is brought up to date.
+  giveDiscount: async (req, res) => {
+    try {
+      const amt = Math.round(Number((req.body || {}).amount) * 100) / 100;
+      const reason = String((req.body || {}).reason || '').trim().slice(0, 200);
+      const order = await POSOrder.findOne({ _id: req.params.id, isDeleted: { $ne: true } });
+      if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+      if (['refunded', 'cancelled'].includes(order.orderStatus) || order.paymentStatus === 'refunded') {
+        return res.status(400).json({ success: false, message: 'This bill is refunded / cancelled' });
+      }
+      if (!(amt > 0) || amt >= Number(order.total || 0)) {
+        return res.status(400).json({ success: false, message: `Enter a discount between 1 and ${Number(order.total || 0) - 1}` });
+      }
+      const CashSession = require('../models/cashSession');
+      const session = order.cashSession ? await CashSession.findById(order.cashSession).lean() : null;
+      if (session && session.status === 'verified') {
+        return res.status(409).json({ success: false, message: 'The till of this bill is already verified, so the bill cannot change.' });
+      }
+
+      // Owed money first (nothing to give back), the rest comes back from the last payment.
+      const fromPending = Math.min(amt, Number(order.pendingAmount || 0));
+      const back = Math.round((amt - fromPending) * 100) / 100;
+      const pays = order.paymentHistory || [];
+      const last = pays.length ? pays[pays.length - 1] : null;
+      const method = (last && last.paymentMethod) || order.paymentMethod || 'cash';
+      if (back > 0 && last && Number(last.amount) < back) {
+        return res.status(400).json({ success: false, message: 'The discount is more than the last payment on this bill' });
+      }
+
+      const userId = userIdOf(req);
+      order.discount = Math.round((Number(order.discount || 0) + amt) * 100) / 100;
+      if (!order.discountType) order.discountType = 'fixed';
+      if (reason) order.discountReason = order.discountReason ? `${order.discountReason} · ${reason}` : reason;
+      order.appliedDiscounts = [
+        ...(order.appliedDiscounts || []),
+        { kind: 'manual', name: reason ? `Discount after sale (${reason})` : 'Discount after sale', valueType: 'fixed', value: amt, amount: amt },
+      ];
+      order.total = Math.round((Number(order.total) - amt) * 100) / 100;
+      order.pendingAmount = Math.round((Number(order.pendingAmount || 0) - fromPending) * 100) / 100;
+      if (back > 0) {
+        order.paidAmount = Math.round((Number(order.paidAmount || 0) - back) * 100) / 100;
+        if (last) {
+          last.amount = Math.round((Number(last.amount) - back) * 100) / 100;
+          last.note = `${last.note || ''} · Rs ${back} given back (discount after sale)`.replace(/^ · /, '');
+        }
+        if (method === 'cash') order.changeGiven = Math.round((Number(order.changeGiven || 0) + back) * 100) / 100;
+      }
+      if (!(order.pendingAmount > 0) && order.paymentStatus !== 'full') order.paymentStatus = 'full';
+      const by = (req.user && (req.user.firstName || req.user.email)) || 'admin';
+      order.notes = `${order.notes ? `${order.notes}\n` : ''}Discount Rs ${amt} after sale by ${by}${reason ? `: ${reason}` : ''}`;
+      order.markModified('paymentHistory');
+      await order.save();
+
+      // Closed till: its saved figures change with the bill.
+      if (session && session.status === 'closed' && session.expected && back > 0) {
+        const e = session.expected;
+        const set = {};
+        if (method === 'cash') {
+          set['expected.cashSales'] = Math.round((Number(e.cashSales || 0) - back) * 100) / 100;
+          set['expected.expectedCash'] = Math.round((Number(e.expectedCash || 0) - back) * 100) / 100;
+          const counted = session.closingCount ? Number(session.closingCount.total || 0) : null;
+          if (counted !== null) set.variance = Math.round((counted - set['expected.expectedCash']) * 100) / 100;
+        } else if (method === 'card' && e.card !== undefined) set['expected.card'] = Math.round((Number(e.card) - back) * 100) / 100;
+        else if (method === 'bank_transfer' && e.bankTransfer !== undefined) set['expected.bankTransfer'] = Math.round((Number(e.bankTransfer) - back) * 100) / 100;
+        if (Object.keys(set).length) {
+          await CashSession.updateOne(
+            { _id: session._id, status: 'closed' },
+            { $set: set, $push: { history: { at: new Date(), by: userId, action: 'bill_discount', note: `${order.orderNumber}: Rs ${amt} discount after sale` } } }
+          );
+        }
+      }
+
+      const populatedOrder = await loadOrderForResponse(order._id);
+      return res.status(200).json({ success: true, data: orderForViewer(populatedOrder, req.access), message: `Rs ${amt} discount given` });
+    } catch (error) {
+      console.error('Give discount error:', error);
+      return res.status(400).json({ success: false, message: 'Could not give the discount', error: error.message });
+    }
+  },
+
   // POST /api/pos/orders/:id/refund — body { reason? }. Marks the order refunded
   // and puts its pieces back into stock (only once, ledger rows 'sale_return' with the order refs).
   refundOrder: async (req, res) => {
