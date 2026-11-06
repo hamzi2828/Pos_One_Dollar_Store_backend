@@ -84,6 +84,18 @@ async function funds() {
     .toArray();
   for (const e of expenses) movements.push({ at: e.createdAt, kind: 'expense', label: `Expense · ${e.title || ''} (${e.paymentMethod || ''})`, amount: -round2(e.amount) });
 
+  // Loans: money borrowed comes in, paying it back goes out (owner 2026-11-06).
+  const loans = await db
+    .collection('loans')
+    .find({ isDeleted: { $ne: true }, $or: [{ createdAt: { $gte: since } }, { 'repayments.at': { $gte: since } }] })
+    .project({ loanNo: 1, lenderName: 1, amount: 1, createdAt: 1, repayments: 1 })
+    .toArray();
+  for (const l of loans) {
+    if (l.createdAt >= since) movements.push({ at: l.createdAt, kind: 'loan_in', label: `Loan ${l.loanNo} from ${l.lenderName}`, amount: round2(l.amount) });
+    for (const r of l.repayments || [])
+      if (r.at && r.at >= since) movements.push({ at: r.at, kind: 'loan_out', label: `Loan ${l.loanNo} paid back to ${l.lenderName} (${r.method || ''})`, amount: -round2(r.amount) });
+  }
+
   movements.sort((a, b) => new Date(a.at) - new Date(b.at));
   let run = base.amount;
   for (const m of movements) {
@@ -97,6 +109,8 @@ async function funds() {
     vendorPayments: -sum('vendor_payment'),
     tripCosts: -sum('trip_cost'),
     expenses: -sum('expense'),
+    loansIn: sum('loan_in'),
+    loansPaid: -sum('loan_out'),
   };
   return {
     baseline: { amount: base.amount, at: base.at, setByName: base.setByName || '', note: base.note || '' },

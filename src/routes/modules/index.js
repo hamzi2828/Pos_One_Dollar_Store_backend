@@ -22,6 +22,7 @@ const MODULES = [
   'attendanceRoutes',
   'payrollRoutes',
   'investmentsRoutes',
+  'loansRoutes',
   'desktopRoutes',
   'labelPrintRoutes',
   'websiteRoutes',

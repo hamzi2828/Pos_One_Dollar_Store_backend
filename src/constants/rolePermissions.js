@@ -110,6 +110,8 @@ const PERMISSION_SECTIONS = [
             { key: 'assets', label: 'Assets', actions: ['view', 'create', 'edit', 'delete', 'export'] },
             // Money put into the shop (setup / growth bills) and the total invested.
             { key: 'investments', label: 'Investment', actions: ['view', 'create', 'edit', 'delete', 'export'] },
+            // Loans the company has taken and pays back (vendor / customer / employee / other).
+            { key: 'loans', label: 'Loans', actions: ['view', 'create', 'edit', 'delete'] },
         ],
     },
     {
