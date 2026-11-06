@@ -224,6 +224,56 @@ const reportsController = {
         }
       }
 
+      // Vendor payments are saved in vendorpayments (Purchasing → Vendor payments).
+      // Easypaisa / JazzCash / cheque leave from the bank side.
+      const db = Expense.db.db;
+      const vps = await db.collection('vendorpayments')
+        .find({ status: 'active', date: { $gte: start, $lte: end } })
+        .project({ amount: 1, method: 1 })
+        .toArray();
+      for (const v of vps) {
+        const amt = Number(v.amount) || 0;
+        vendorSummary.totalPaid += amt;
+        if (String(v.method) === 'cash') vendorSummary.cashPaid += amt;
+        else vendorSummary.bankPaid += amt;
+      }
+      vendorSummary.payments = vps.length;
+      // Trip costs on purchase trips (freight, fare...) are paid in cash.
+      vendorSummary.tripCosts = 0;
+      const tripPos = await db.collection('purchaseorders')
+        .find({ charges: { $elemMatch: { createdAt: { $gte: start, $lte: end } } } })
+        .project({ charges: 1 })
+        .toArray();
+      for (const po of tripPos)
+        for (const c of po.charges || [])
+          if (c.createdAt && c.createdAt >= start && c.createdAt <= end) vendorSummary.tripCosts += Number(c.amount) || 0;
+      vendorSummary.totalPaid += vendorSummary.tripCosts;
+      vendorSummary.cashPaid += vendorSummary.tripCosts;
+
+      // ---------- Loans: money borrowed in, paid back out ----------
+      // A loan that paid an expense straight away (personal money) never came in.
+      const loanSummary = { received: 0, cashIn: 0, bankIn: 0, paidBack: 0, cashOut: 0, bankOut: 0 };
+      const loanSide = (m) => (String(m || '').toLowerCase() === 'cash' ? 'cash' : 'bank');
+      const loanRows = await db.collection('loans')
+        .find({ isDeleted: { $ne: true }, $or: [{ date: { $gte: start, $lte: end } }, { 'repayments.date': { $gte: start, $lte: end } }] })
+        .project({ amount: 1, method: 1, date: 1, expense: 1, repayments: 1 })
+        .toArray();
+      for (const l of loanRows) {
+        if (!l.expense && l.date >= start && l.date <= end) {
+          const amt = Number(l.amount) || 0;
+          loanSummary.received += amt;
+          if (loanSide(l.method) === 'cash') loanSummary.cashIn += amt;
+          else loanSummary.bankIn += amt;
+        }
+        for (const r of l.repayments || []) {
+          if (!r.date || r.date < start || r.date > end) continue;
+          const amt = Number(r.amount) || 0;
+          loanSummary.paidBack += amt;
+          if (loanSide(r.method) === 'cash') loanSummary.cashOut += amt;
+          else loanSummary.bankOut += amt;
+        }
+      }
+
       // ---------- 5. Salary payments in window ----------
       const salaries = await Salary.find({
         isDeleted: { $ne: true },
@@ -252,7 +302,9 @@ const reportsController = {
         paymentsReceived.cash -
         expenseSummary.cashExpenses -
         vendorSummary.cashPaid -
-        salarySummary.cashPaid;
+        salarySummary.cashPaid +
+        loanSummary.cashIn -
+        loanSummary.cashOut;
 
       const bankBalance =
         salesBreakdown.bankTransfer +
@@ -261,7 +313,9 @@ const reportsController = {
         paymentsReceived.card -
         expenseSummary.bankExpenses -
         vendorSummary.bankPaid -
-        salarySummary.bankPaid;
+        salarySummary.bankPaid +
+        loanSummary.bankIn -
+        loanSummary.bankOut;
 
       return res.status(200).json({
         success: true,
@@ -272,6 +326,7 @@ const reportsController = {
           expenseSummary,
           vendorSummary,
           salarySummary,
+          loanSummary,
           receivableData,
           balances: {
             cashBalance,
