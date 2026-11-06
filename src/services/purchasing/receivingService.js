@@ -1053,9 +1053,49 @@ async function editEntry(req, id, entryId, body = {}) {
     return entryResult(req, id, first, old, { warnings: ['Nothing changed.'] });
   }
 
-  await undoEntry(req, id, entryId);
+  // Some of the old pieces already sold: add them back for the swap, then take
+  // the same number out of the new pieces. So the qty can go up or down freely.
+  let carried = 0;
+  const userId = h.userId(req);
+  const carryMove = (type, note) => ({ type, refType: 'GoodsReceipt', refId: first._id, refNo: first.grnNumber, userId, unitCost: old.landedUnitCost, note });
+  const carryBack = async (note) => {
+    if (!carried) return;
+    await stockService.deductStock({
+      productId: old.product,
+      variantId: old.variantId || undefined,
+      quantity: carried,
+      branchId: first.branch,
+      movement: { ...carryMove('adjustment_out', note), strategy: 'warehouse_first' },
+    });
+    carried = 0;
+  };
+  if (old.posted && old.stockQty > 0) {
+    const split = await locationService.unitSplit({ branchId: first.branch, productId: old.product, variantId: old.variantId });
+    const gone = Math.max(0, old.stockQty - split.total);
+    if (gone > 0) {
+      const onShelf = old.stockQty - split.warehouse - gone;
+      if (onShelf > 0) throw httpError(`${onShelf} of these pieces are on a shelf — move them back to the warehouse first.`, 409, 'NOT_IN_WAREHOUSE');
+      if (qty - damagedQty < gone) throw httpError(`${gone} of these pieces are already sold, so the good qty cannot go below ${gone}.`, 409, 'BELOW_SOLD');
+      await stockService.receiveStock({
+        productId: old.product,
+        variantId: old.variantId || undefined,
+        quantity: gone,
+        branchId: first.branch,
+        movement: carryMove('adjustment_in', `GRN entry ${old.entryNo} edit · ${gone} sold pieces carried over (in)`),
+      });
+      carried = gone;
+    }
+  }
+
   try {
-    return await addEntry(req, id, {
+    await undoEntry(req, id, entryId);
+  } catch (err) {
+    await carryBack(`GRN entry ${old.entryNo} edit failed · carried pieces taken back out`).catch(() => {});
+    throw err;
+  }
+  let out;
+  try {
+    out = await addEntry(req, id, {
       bill: String(old.bill),
       productId: String(old.product),
       variantId: old.variantId ? String(old.variantId) : null,
@@ -1066,8 +1106,11 @@ async function editEntry(req, id, entryId, body = {}) {
       requestId,
     });
   } catch (err) {
+    // The old entry is out with its sold pieces counted: stock is right, keep it.
     throw httpError(`The old entry was taken out, but the new one could not be saved: ${err.message}. Enter ${old.productName} again.`, err.status && err.status < 500 ? err.status : 400, 'EDIT_FAILED');
   }
+  await carryBack(`GRN entry ${old.entryNo} edit · ${carried} sold pieces carried over (out)`);
+  return out;
 }
 
 // ---------------------------------------------------------------- complete
