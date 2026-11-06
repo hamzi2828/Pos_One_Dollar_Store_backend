@@ -8,7 +8,9 @@ const mongoose = require('mongoose');
 
 const lineSchema = new mongoose.Schema(
   {
-    product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+    // null on a manual line (typed name, not in the product list: no stock taken).
+    product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null },
+    isManual: { type: Boolean, default: false },
     variantId: { type: String, default: null },
     productName: { type: String, default: '' },
     variantLabel: { type: String, default: '' },

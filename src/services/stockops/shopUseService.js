@@ -86,7 +86,18 @@ async function buildLines(rawLines, branchId) {
   if (!Array.isArray(rawLines) || !rawLines.length) throw httpError('Add at least one item', 400);
   if (rawLines.length > MAX_LINES) throw httpError(`At most ${MAX_LINES} items per record`, 400);
   const merged = new Map();
+  const manual = [];
   for (const raw of rawLines) {
+    // Manual item: just a name (not in the product list). No stock is taken.
+    if (raw && raw.manual) {
+      const name = String(raw.name || '').trim().slice(0, 120);
+      const mqty = toInt(raw.qty, 0);
+      if (!name) throw httpError('Write the name of the manual item', 400);
+      if (mqty < 1) throw httpError('Quantity must be at least 1 on every line', 400);
+      const cost = Math.max(0, Number(raw.unitCost) || 0);
+      manual.push({ product: null, isManual: true, variantId: null, productName: name, variantLabel: '', code: '', qty: mqty, unitCost: round4(cost), total: round2(cost * mqty) });
+      continue;
+    }
     let productId = raw && raw.productId;
     let variantId = (raw && raw.variantId) || null;
     if (!productId && raw && raw.code) {
@@ -127,12 +138,13 @@ async function buildLines(rawLines, branchId) {
       total: round2(unitCost * qty),
     });
   }
-  return lines;
+  return [...lines, ...manual];
 }
 
 /** Allocations per line from the ledger rows of an earlier (crashed) attempt. */
 const allocationsFromLedger = (doc, rows) =>
   doc.lines.map((l) => {
+    if (l.isManual || !l.product) return [];
     const row = rows.find((r) => String(r.product) === String(l.product) && (r.variantId || null) === (l.variantId || null));
     return row ? row.batchAllocations || [] : [];
   });
@@ -157,8 +169,10 @@ async function finalize(docId, userId) {
       allocations = allocationsFromLedger(doc, done);
     } else {
       try {
-        const results = await stockService.deductOrderItems(
-          doc.lines.map((l) => ({ product: l.product, variantId: l.variantId, quantity: l.qty, costPrice: l.unitCost })),
+        // Only product lines take stock (manual lines are just a name).
+        const stockIdx = doc.lines.map((l, i) => (l.isManual || !l.product ? -1 : i)).filter((i) => i >= 0);
+        const results = !stockIdx.length ? [] : await stockService.deductOrderItems(
+          stockIdx.map((i) => doc.lines[i]).map((l) => ({ product: l.product, variantId: l.variantId, quantity: l.qty, costPrice: l.unitCost })),
           {
             branchId: doc.branch,
             movement: {
@@ -172,7 +186,8 @@ async function finalize(docId, userId) {
             },
           }
         );
-        allocations = results.map((r) => (r && r.allocations) || []);
+        allocations = doc.lines.map(() => []);
+        stockIdx.forEach((li, k) => (allocations[li] = (results[k] && results[k].allocations) || []));
       } catch (err) {
         // Nothing was taken (deductOrderItems rolls back): drop the record.
         await ShopUse.deleteOne({ _id: doc._id, stockDeducted: false });
@@ -285,7 +300,7 @@ async function voidRecord(id, { userId, scope = {}, reason = '' } = {}) {
     if (deducted) {
       for (let i = 0; i < doc.lines.length; i++) {
         const line = doc.lines[i];
-        if (line.restored) continue;
+        if (line.restored || line.isManual || !line.product) continue;
         const already = await StockMovement.exists({
           refType: 'ShopUse',
           refId: doc._id,
