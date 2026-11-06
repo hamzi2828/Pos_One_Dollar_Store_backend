@@ -159,7 +159,7 @@ const tillController = {
   // GET /api/till-sessions/:id — verifier: expected vs counted + bills; cashier: own session, blind.
   async detail(req, res) {
     if (!isId(req.params.id)) throw httpError(404, 'Till session not found');
-    const s = await CashSession.findById(req.params.id)
+    let s = await CashSession.findById(req.params.id)
       .populate('branch', 'name code')
       .populate('verifiedBy', 'firstName lastName')
       .populate('closedBy', 'firstName lastName')
@@ -171,6 +171,7 @@ const tillController = {
       if (String(s.cashier) !== String(req.access.userId)) throw httpError(404, 'Till session not found');
       return res.json({ success: true, data: tillService.serializeSession(s) });
     }
+    s = await tillService.refreshExpenses(s);
     const until = s.status === 'open' ? new Date() : s.closedAt;
     const live = await tillService.computeExpected(s, until);
     const stored = s.expected || {};
@@ -255,6 +256,7 @@ const tillController = {
         { $limit: 100 },
       ]),
     ]);
+    for (let i = 0; i < rows.length; i++) rows[i] = await tillService.refreshExpenses(rows[i]);
     // Discounts given on each till's bills (owner 2026-11-06).
     const disc = rows.length
       ? await mongoose.connection.db

@@ -324,6 +324,23 @@ async function sessionExpenses(session) {
     .map((x) => ({ _id: x._id, title: x.title || '', amount: round2(x.amount), paymentMethod: x.paymentMethod || '', createdAt: x.createdAt, shopUse: false }));
 }
 
+/**
+ * A closed till not yet verified: expenses can still be added / changed after
+ * closing. Bring its saved expenses, expected cash and variance up to date.
+ * Verified tills stay as they were verified. Returns the (maybe updated) session.
+ */
+async function refreshExpenses(session) {
+  if (!session || session.status !== 'closed' || !session.expected) return session;
+  const expenses = await sessionExpenses(session);
+  const total = round2(expenses.reduce((t, x) => t + x.amount, 0));
+  const e = session.expected;
+  if (Math.abs(total - (Number(e.expenses) || 0)) < 0.01) return session;
+  const expectedCash = round2((e.float || 0) + (e.cashSales || 0) + (e.cashReceivedOnCredit || 0) - (e.cashRefunds || 0) - total);
+  const variance = round2(((session.closingCount && session.closingCount.total) || 0) - expectedCash);
+  await CashSession.updateOne({ _id: session._id, status: 'closed' }, { $set: { 'expected.expenses': total, 'expected.expectedCash': expectedCash, variance } });
+  return { ...session, expected: { ...e, expenses: total, expectedCash }, variance };
+}
+
 async function computeExpected(session, until = new Date()) {
   const start = new Date(session.openedAt);
   const end = new Date(until);
@@ -967,6 +984,7 @@ module.exports = {
   reviewSession,
   computeExpected,
   sessionExpenses,
+  refreshExpenses,
   myStatus,
   serializeSession,
   canSeeExpected,
