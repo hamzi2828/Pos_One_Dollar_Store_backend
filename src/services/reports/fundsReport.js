@@ -94,7 +94,8 @@ async function funds() {
 
   const expenses = await db
     .collection('expenses')
-    .find({ createdAt: { $gte: since }, isDeleted: { $ne: true }, source: { $ne: 'shop_use' } }) // shop use = own stock, no money out
+    // Shop use = own stock; personal money = never left the shop (its loan is skipped too).
+    .find({ createdAt: { $gte: since }, isDeleted: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true } })
     .project({ title: 1, amount: 1, paymentMethod: 1, createdAt: 1, date: 1 })
     .toArray();
   for (const e of expenses) movements.push({ at: placeOn(e.date, e.createdAt, since), kind: 'expense', label: `Expense · ${e.title || ''} (${e.paymentMethod || ''})`, amount: -round2(e.amount) });
@@ -103,10 +104,11 @@ async function funds() {
   const loans = await db
     .collection('loans')
     .find({ isDeleted: { $ne: true }, $or: [{ createdAt: { $gte: since } }, { 'repayments.at': { $gte: since } }] })
-    .project({ loanNo: 1, lenderName: 1, amount: 1, createdAt: 1, date: 1, repayments: 1 })
+    .project({ loanNo: 1, lenderName: 1, amount: 1, createdAt: 1, date: 1, repayments: 1, expense: 1 })
     .toArray();
   for (const l of loans) {
-    if (l.createdAt >= since) movements.push({ at: placeOn(l.date, l.createdAt, since), kind: 'loan_in', label: `Loan ${l.loanNo} from ${l.lenderName}`, amount: round2(l.amount) });
+    // A loan that paid an expense straight away never came into the shop.
+    if (l.createdAt >= since && !l.expense) movements.push({ at: placeOn(l.date, l.createdAt, since), kind: 'loan_in', label: `Loan ${l.loanNo} from ${l.lenderName}`, amount: round2(l.amount) });
     for (const r of l.repayments || [])
       if (r.at && r.at >= since) movements.push({ at: placeOn(r.date, r.at, since), kind: 'loan_out', label: `Loan ${l.loanNo} paid back to ${l.lenderName} (${r.method || ''})`, amount: -round2(r.amount) });
   }
