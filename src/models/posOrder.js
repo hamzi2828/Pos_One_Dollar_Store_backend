@@ -203,7 +203,8 @@ posOrderSchema.index({ clientId: 1 }, { unique: true, sparse: true });
 posOrderSchema.statics.generateOrderNumber = async function (offset = 0) {
   const count = (await this.countDocuments()) + offset;
   const timestamp = Date.now().toString().slice(-6);
-  const date = new Date().toISOString().split('T')[0].replace(/-/g, '');
+  // Bill date in shop time (Pakistan), e.g. a bill at 00:30 on 6 Nov is 20261106.
+  const date = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Karachi' }).format(new Date()).replace(/-/g, '');
   return `POS-${date}-${timestamp}-${(count + 1).toString().padStart(4, '0')}`;
 };
 

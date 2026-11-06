@@ -1,3 +1,6 @@
+// The whole app runs on shop time (Pakistan): "today", day and month boundaries,
+// bill dates. Set before anything else uses Date (owner 2026-11-06).
+process.env.TZ = process.env.SHOP_TZ || 'Asia/Karachi';
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');

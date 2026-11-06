@@ -16,7 +16,7 @@ module.exports = {
   },
   async exportCsv(req, res) {
     const csv = await svc.exportCsv(req);
-    const day = new Date().toISOString().slice(0, 10);
+    const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Karachi' }).format(new Date());
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="assets-${day}.csv"`);
     res.status(200).send(`﻿${csv}`); // BOM so Excel reads UTF-8

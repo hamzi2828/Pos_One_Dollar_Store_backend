@@ -928,20 +928,20 @@ const posController = {
         case '30days':
           startDate = new Date(now);
           startDate.setDate(startDate.getDate() - 30);
-          groupFormat = { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } };
+          groupFormat = { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: 'Asia/Karachi' } };
           dateFormat = 'daily';
           break;
         case '12months':
           startDate = new Date(now);
           startDate.setMonth(startDate.getMonth() - 12);
-          groupFormat = { $dateToString: { format: '%Y-%m', date: '$createdAt' } };
+          groupFormat = { $dateToString: { format: '%Y-%m', date: '$createdAt', timezone: 'Asia/Karachi' } };
           dateFormat = 'monthly';
           break;
         case '7days':
         default:
           startDate = new Date(now);
           startDate.setDate(startDate.getDate() - 7);
-          groupFormat = { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } };
+          groupFormat = { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: 'Asia/Karachi' } };
           dateFormat = 'daily';
       }
 
@@ -962,7 +962,7 @@ const posController = {
       const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
       const hourlyChart = await POSOrder.aggregate([
         { $match: { createdAt: { $gte: todayStart }, orderStatus: 'completed', isDeleted: { $ne: true } } },
-        { $group: { _id: { $hour: '$createdAt' }, totalSales: { $sum: '$total' }, totalOrders: { $sum: 1 } } },
+        { $group: { _id: { $hour: { date: '$createdAt', timezone: 'Asia/Karachi' } }, totalSales: { $sum: '$total' }, totalOrders: { $sum: 1 } } },
         { $sort: { _id: 1 } },
       ]);
 
