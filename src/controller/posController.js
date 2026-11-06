@@ -612,18 +612,18 @@ const posController = {
       const { date, startDate, endDate, paymentMethod, orderType, search } = req.query;
       const query = { isDeleted: { $ne: true } };
 
+      // Days in shop time (Pakistan), not the server's UTC: a bill at 00:30 belongs to that day.
+      const tillSvc = require('../services/tillService');
+      const tz = await tillSvc.getTimeZone();
+      const dayKey = (v) => String(v).slice(0, 10);
+      const dayStart = (v) => tillSvc.zonedDayStart(dayKey(v), tz);
       if (startDate && endDate) {
-        const rangeStart = new Date(startDate);
-        rangeStart.setHours(0, 0, 0, 0);
-        const rangeEnd = new Date(endDate);
-        rangeEnd.setHours(23, 59, 59, 999);
+        const rangeStart = dayStart(startDate);
+        const rangeEnd = new Date(dayStart(endDate).getTime() + 86400000 - 1);
         query.createdAt = { $gte: rangeStart, $lte: rangeEnd };
       } else if (date) {
-        const startOfDay = new Date(date);
-        startOfDay.setHours(0, 0, 0, 0);
-        const endOfDay = new Date(date);
-        endOfDay.setHours(23, 59, 59, 999);
-        query.createdAt = { $gte: startOfDay, $lte: endOfDay };
+        const startOfDay = dayStart(date);
+        query.createdAt = { $gte: startOfDay, $lte: new Date(startOfDay.getTime() + 86400000 - 1) };
       }
       if (paymentMethod && paymentMethod !== 'all') query.paymentMethod = paymentMethod;
       if (orderType && orderType !== 'all') query.orderStatus = orderType;
