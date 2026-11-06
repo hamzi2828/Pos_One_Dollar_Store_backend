@@ -785,14 +785,16 @@ const posController = {
           periodLabel = 'All Time';
           break;
         case 'today':
-        default:
-          periodStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-          periodEnd = new Date(periodStart);
-          periodEnd.setDate(periodEnd.getDate() + 1);
-          comparisonStart = new Date(periodStart);
-          comparisonStart.setDate(comparisonStart.getDate() - 1);
+        default: {
+          // Today in shop time (Pakistan), not the server's UTC.
+          const tillSvc = require('../services/tillService');
+          const tz = await tillSvc.getTimeZone();
+          periodStart = tillSvc.zonedDayStart(tillSvc.zonedParts(now, tz).dayKey, tz);
+          periodEnd = new Date(periodStart.getTime() + 86400000);
+          comparisonStart = new Date(periodStart.getTime() - 86400000);
           comparisonEnd = new Date(periodStart);
           periodLabel = 'Today';
+        }
       }
 
       const periodStats = await POSOrder.aggregate([
