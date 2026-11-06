@@ -52,6 +52,24 @@ const cashSessionSchema = new mongoose.Schema(
     cardTotal: { type: Number, default: null },
     bankTransferTotal: { type: Number, default: null },
     closeNote: { type: String, default: '' },
+    // Till report saved by the cashier but NOT submitted yet (owner 2026-11-06).
+    // The till stays open (sales keep going into it) and the report can be edited
+    // until "Submit report", which closes the till with these figures.
+    draft: {
+      type: new mongoose.Schema(
+        {
+          denominations: { type: Map, of: Number, default: () => ({}) },
+          drawerTotal: { type: Number, default: 0 },
+          dayCashTotal: { type: Number, default: 0 },
+          cardTotal: { type: Number, default: null },
+          bankTransferTotal: { type: Number, default: null },
+          note: { type: String, default: '' },
+          savedAt: { type: Date, default: null },
+        },
+        { _id: false }
+      ),
+      default: null,
+    },
     lateClose: { type: Boolean, default: false },
 
     // Computed by the server at close (see tillService.computeExpected).

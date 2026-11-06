@@ -130,6 +130,12 @@ const tillController = {
     });
   },
 
+  // POST /api/till-sessions/:id/draft — till report saved, not submitted (till stays open).
+  async draft(req, res) {
+    const session = await tillService.saveDraft(req, req.params.id, req.body || {});
+    res.json({ success: true, data: tillService.serializeSession(session), message: 'Report saved. Submit it when the day is over.' });
+  },
+
   // POST /api/till-sessions/:id/day-cash { denominations, note? } — sales cash taken out, added after closing.
   async dayCash(req, res) {
     const session = await tillService.addDayCash(req, req.params.id, req.body || {});

@@ -504,6 +504,17 @@ function serializeSession(s, { full = false } = {}) {
     cardTotal: s.cardTotal ?? null,
     bankTransferTotal: s.bankTransferTotal ?? null,
     closeNote: s.closeNote || '',
+    draft: s.draft
+      ? {
+          denominations: s.draft.denominations instanceof Map ? Object.fromEntries(s.draft.denominations) : s.draft.denominations || {},
+          drawerTotal: round2(s.draft.drawerTotal),
+          dayCashTotal: round2(s.draft.dayCashTotal),
+          cardTotal: s.draft.cardTotal ?? null,
+          bankTransferTotal: s.draft.bankTransferTotal ?? null,
+          note: s.draft.note || '',
+          savedAt: s.draft.savedAt || null,
+        }
+      : null,
     lateClose: !!s.lateClose,
     verifiedAt: s.verifiedAt || null,
     verifyNote: s.verifyNote || '',
@@ -782,6 +793,40 @@ async function addDayCash(req, id, { denominations, note, amount, cardTotal, ban
   return updated;
 }
 
+/** Save the till report without submitting: the till stays open and can still be edited. */
+async function saveDraft(req, id, { denominations, dayCashTotal, cardTotal, bankTransferTotal, note } = {}) {
+  const access = req.access;
+  if (!mongoose.Types.ObjectId.isValid(String(id))) throw httpError(404, 'Till session not found');
+  const session = await CashSession.findById(id).lean();
+  if (!session) throw httpError(404, 'Till session not found');
+  assertSessionBranch(access, session);
+  if (!sameId(session.cashier, access.userId) && !access.can('till_verify', 'edit')) throw httpError(403, 'You can only save your own till.');
+  if (session.status !== 'open') throw httpError(409, 'This till is already submitted.');
+  const drawer = parseCashCount(denominations || {}, await getDenominations());
+  const money = (v) => {
+    if (v === undefined || v === null || v === '') return null;
+    const n = round2(Number(v));
+    if (!Number.isFinite(n) || n < 0 || n > 100000000) throw httpError(400, 'Enter valid amounts.');
+    return n;
+  };
+  const draft = {
+    denominations: drawer.denominations,
+    drawerTotal: drawer.total,
+    dayCashTotal: money(dayCashTotal) || 0,
+    cardTotal: money(cardTotal),
+    bankTransferTotal: money(bankTransferTotal),
+    note: typeof note === 'string' ? note.trim().slice(0, 500) : '',
+    savedAt: new Date(),
+  };
+  const updated = await CashSession.findOneAndUpdate(
+    { _id: session._id, status: 'open' },
+    { $set: { draft }, $push: { history: { at: draft.savedAt, by: access.userId, action: 'report_saved', note: `Saved, not submitted: cash ${draft.drawerTotal + draft.dayCashTotal}` } } },
+    { new: true }
+  ).lean();
+  if (!updated) throw httpError(409, 'This till was just submitted.');
+  return updated;
+}
+
 /** verify | dispute a closed session (admin side). */
 async function reviewSession(req, id, { action, note } = {}) {
   const access = req.access;
@@ -980,6 +1025,7 @@ module.exports = {
   // till workflow
   openSession,
   closeSession,
+  saveDraft,
   addDayCash,
   reviewSession,
   computeExpected,
