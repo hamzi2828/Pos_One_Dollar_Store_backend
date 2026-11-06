@@ -16,6 +16,8 @@ const EXPENSE_SORTABLE = ['date', 'createdAt', 'amount', 'title', 'category'];
 const EXPENSE_SEARCH_FIELDS = ['title', 'category', 'reference', 'notes'];
 
 const invLink = require('../services/investmentExpenseLink');
+const loanService = require('../services/loanService');
+const isYes = (v) => v === true || v === 'true';
 
 const expenseController = {
     // GET /expenses
@@ -152,6 +154,12 @@ const expenseController = {
                 return res.status(400).json({ message: 'Category is required' });
             }
 
+            // Paid from personal money -> a loan from that person is made too.
+            const fromPersonal = isYes(req.body.fromPersonal);
+            if (fromPersonal && !req.body.lenderId) {
+                return res.status(400).json({ message: 'Pick whose personal money paid it' });
+            }
+
             const branch = await resolveWriteBranch(req);
 
             // Handle receipt file upload
@@ -184,8 +192,21 @@ const expenseController = {
                 reference: reference?.trim() || '',
                 notes: notes?.trim() || '',
                 receipt: receiptUrl,
+                fromPersonal,
             });
             if (invPick) await invLink.sync(expense);
+            if (fromPersonal) {
+                try {
+                    const loan = await loanService.createForExpense(expense, { lenderType: 'person', lender: req.body.lenderId }, { user: req.user });
+                    expense.loan = loan._id;
+                    expense.loanNo = loan.loanNo;
+                    await expense.save();
+                } catch (e) {
+                    // No half records: drop the expense if the loan could not be made.
+                    await Expense.deleteOne({ _id: expense._id });
+                    return res.status(e.status || 400).json({ message: e.message || 'Could not add the loan' });
+                }
+            }
 
             return res.status(201).json({
                 message: 'Expense created successfully',
@@ -216,6 +237,11 @@ const expenseController = {
                     return res.status(e.status || 400).json({ message: e.message });
                 }
             }
+            try {
+                await loanService.checkExpenseAmount(expense, next);
+            } catch (e) {
+                return res.status(e.status || 400).json({ message: e.message });
+            }
             if (expense.originalAmount === null || expense.originalAmount === undefined) expense.originalAmount = expense.amount;
             const u = req.user || {};
             expense.adjustments.push({
@@ -227,6 +253,7 @@ const expenseController = {
             });
             expense.amount = next;
             await expense.save();
+            await loanService.syncFromExpense(expense);
             res.json({ success: true, data: expense.toObject(), message: `Amount is now Rs ${next}` });
         } catch (error) {
             res.status(500).json({ message: error.message || 'Could not add the adjustment' });
@@ -301,6 +328,7 @@ const expenseController = {
 
             await expense.save();
             await invLink.sync(expense);
+            await loanService.syncFromExpense(expense);
 
             return res.status(200).json({
                 message: 'Expense updated successfully',
@@ -323,12 +351,21 @@ const expenseController = {
                 return res.status(404).json({ message: 'Expense not found' });
             }
 
+            if (expense.loan) {
+                const Loan = require('../models/loan');
+                const ln = await Loan.findOne({ _id: expense.loan, isDeleted: { $ne: true } }).select('paid loanNo').lean();
+                if (ln && ln.paid > 0) {
+                    return res.status(400).json({ message: `Loan ${ln.loanNo} of this expense is already partly paid back. Remove those payments first.` });
+                }
+            }
             expense.isDeleted = true;
             expense.deletedAt = new Date();
             expense.deletedBy = req.user?.id || req.user?._id || null;
             await expense.save();
             // Its payment comes off the investment bill again.
             await invLink.sync(expense);
+            // Paid from personal money: its loan goes too.
+            await loanService.syncFromExpense(expense);
 
             return res.status(200).json({
                 message: 'Expense deleted successfully',

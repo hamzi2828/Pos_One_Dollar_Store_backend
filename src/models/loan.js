@@ -34,6 +34,9 @@ const loanSchema = new mongoose.Schema(
     notes: { type: String, default: '' },
     attachments: { type: [String], default: [] }, // transfer slip photos / PDFs
     repayments: { type: [repaymentSchema], default: [] },
+    // Loan money that paid a shop expense (personal money): linked Expense.
+    expense: { type: mongoose.Schema.Types.ObjectId, ref: 'Expense', default: null, index: true },
+    expenseTitle: { type: String, default: '' },
     paid: { type: Number, default: 0 },
     left: { type: Number, default: 0 },
     status: { type: String, enum: ['open', 'paid'], default: 'open', index: true },

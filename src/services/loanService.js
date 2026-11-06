@@ -123,6 +123,12 @@ async function create(body = {}, { user, attachments = [] } = {}) {
   const amount = round2(body.amount);
   if (!(amount > 0)) throw bad('Enter the loan amount');
   const who = await resolveLender(body);
+  // "Spent on a shop expense?" yes -> an expense is made for it too.
+  const asExpense = body.asExpense === true || body.asExpense === 'true';
+  const exTitle = String(body.expenseTitle || '').trim().slice(0, 200);
+  const exCategory = String(body.expenseCategory || '').trim().slice(0, 100);
+  if (asExpense && !exTitle) throw bad('Write what the expense was for');
+  if (asExpense && !exCategory) throw bad('Pick the expense category');
   const loan = new Loan({
     loanNo: await nextNumber('LOAN'),
     ...who,
@@ -137,13 +143,78 @@ async function create(body = {}, { user, attachments = [] } = {}) {
   });
   totals(loan);
   await loan.save();
+  if (asExpense) {
+    const Expense = require('../models/expense');
+    const ex = await Expense.create({
+      title: exTitle,
+      amount,
+      category: exCategory,
+      categories: [exCategory],
+      date: loan.date,
+      paymentMethod: 'Cash',
+      notes: `Paid from personal money of ${loan.lenderName} (loan ${loan.loanNo})`,
+      fromPersonal: true,
+      loan: loan._id,
+      loanNo: loan.loanNo,
+    });
+    loan.expense = ex._id;
+    loan.expenseTitle = ex.title;
+    await loan.save();
+  }
   return loan.toObject();
+}
+
+/** Expense paid from personal money -> a loan from that person, linked both ways. */
+async function createForExpense(expense, body = {}, { user } = {}) {
+  const who = await resolveLender({ lenderType: body.lenderType || 'person', lender: body.lender, lenderName: body.lenderName });
+  const loan = new Loan({
+    loanNo: await nextNumber('LOAN'),
+    ...who,
+    amount: round2(expense.amount),
+    date: expense.date || new Date(),
+    method: 'Cash',
+    notes: `Paid the expense "${expense.title}" from personal money`,
+    expense: expense._id,
+    expenseTitle: expense.title,
+    createdBy: user && user._id ? user._id : null,
+    createdByName: userName(user),
+  });
+  totals(loan);
+  await loan.save();
+  return loan.toObject();
+}
+
+/** Linked expense changed: keep the loan the same (amount / date / deleted). */
+async function syncFromExpense(expense) {
+  if (!expense || !expense.loan) return;
+  const loan = await Loan.findOne({ _id: expense.loan, isDeleted: { $ne: true } });
+  if (!loan) return;
+  if (expense.isDeleted) {
+    loan.isDeleted = true;
+    loan.deletedAt = new Date();
+  } else {
+    loan.amount = round2(expense.amount);
+    if (expense.date) loan.date = expense.date;
+    loan.expenseTitle = expense.title;
+    totals(loan);
+  }
+  await loan.save();
+}
+
+/** Linked loan: the expense amount may not go below what was already paid back. */
+async function checkExpenseAmount(expense, nextAmount) {
+  if (!expense || !expense.loan) return;
+  const loan = await Loan.findOne({ _id: expense.loan, isDeleted: { $ne: true } }).lean();
+  if (loan && nextAmount + 0.009 < (loan.paid || 0)) throw bad(`Rs ${loan.paid} of loan ${loan.loanNo} is already paid back; the expense cannot be less than that`);
 }
 
 async function update(id, body = {}) {
   const loan = await Loan.findOne({ _id: id, isDeleted: { $ne: true } });
   if (!loan) throw bad('Loan not found', 404);
   if (body.lenderType !== undefined) Object.assign(loan, await resolveLender(body));
+  if (body.amount !== undefined && loan.expense && Math.abs(round2(body.amount) - loan.amount) >= 0.01) {
+    throw bad('This loan paid an expense: change the amount on the expense (+ / − adjustment)');
+  }
   if (body.amount !== undefined) {
     const amount = round2(body.amount);
     if (!(amount > 0)) throw bad('Enter the loan amount');
@@ -176,6 +247,11 @@ async function remove(id, { user } = {}) {
   loan.deletedAt = new Date();
   loan.deletedBy = user && user._id ? user._id : null;
   await loan.save();
+  // Its expense goes too, so both sides stay the same.
+  if (loan.expense) {
+    const Expense = require('../models/expense');
+    await Expense.updateOne({ _id: loan.expense, isDeleted: { $ne: true } }, { $set: { isDeleted: true, deletedAt: new Date(), deletedBy: loan.deletedBy } });
+  }
   return { _id: loan._id, deleted: true };
 }
 
@@ -210,4 +286,4 @@ async function removeRepayment(id, repaymentId) {
   return loan.toObject();
 }
 
-module.exports = { METHODS, lenders, people, addPerson, list, get, create, update, remove, addSlips, addRepayment, removeRepayment };
+module.exports = { METHODS, lenders, people, addPerson, list, get, create, update, remove, addSlips, addRepayment, removeRepayment, createForExpense, syncFromExpense, checkExpenseAmount };

@@ -80,6 +80,11 @@ const expenseSchema = new mongoose.Schema({
         ],
         default: [],
     },
+    // Paid from someone's personal money (owner 2026-11-06): a loan is made for it
+    // too (models/loan.js `expense`), so both sides match. Not taken from the till.
+    fromPersonal: { type: Boolean, default: false },
+    loan: { type: mongoose.Schema.Types.ObjectId, ref: 'Loan', default: null, index: true },
+    loanNo: { type: String, default: '' },
     isDeleted: { type: Boolean, default: false, index: true },
     deletedAt: { type: Date, default: null },
     deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },

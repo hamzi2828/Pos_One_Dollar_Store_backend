@@ -301,7 +301,7 @@ async function sessionExpenses(session) {
   const dayDate = new Date(`${day}T00:00:00.000Z`);
   const rows = await mongoose.connection.db
     .collection('expenses')
-    .find({ date: { $gte: dayDate, $lt: new Date(dayDate.getTime() + 86400000) }, isDeleted: { $ne: true }, source: { $ne: 'shop_use' } })
+    .find({ date: { $gte: dayDate, $lt: new Date(dayDate.getTime() + 86400000) }, isDeleted: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true } })
     .project({ title: 1, amount: 1, paymentMethod: 1, createdAt: 1, branch: 1 })
     .sort({ createdAt: 1 })
     .toArray();
