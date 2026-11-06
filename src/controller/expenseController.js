@@ -197,6 +197,42 @@ const expenseController = {
         }
     },
 
+    // POST /expenses/:id/adjust { amount (+ or −), note } - change the amount with a logged adjustment.
+    adjustExpense: async (req, res) => {
+        try {
+            const { id } = req.params;
+            const delta = Math.round(Number(req.body && req.body.amount) * 100) / 100;
+            const note = String((req.body && req.body.note) || '').trim().slice(0, 300);
+            if (!Number.isFinite(delta) || delta === 0) return res.status(400).json({ message: 'Enter the adjustment amount (+ or −).' });
+            if (!note) return res.status(400).json({ message: 'Write why the amount changes.' });
+            const expense = await Expense.findOne({ _id: id, isDeleted: { $ne: true } });
+            if (!expense) return res.status(404).json({ message: 'Expense not found' });
+            const next = Math.round((Number(expense.amount) + delta) * 100) / 100;
+            if (next < 0) return res.status(400).json({ message: `The amount cannot go below 0 (now Rs ${expense.amount}).` });
+            if (expense.investment) {
+                try {
+                    await invLink.checkLink(expense.investment, next, expense._id);
+                } catch (e) {
+                    return res.status(e.status || 400).json({ message: e.message });
+                }
+            }
+            if (expense.originalAmount === null || expense.originalAmount === undefined) expense.originalAmount = expense.amount;
+            const u = req.user || {};
+            expense.adjustments.push({
+                amount: delta,
+                note,
+                by: req.access && req.access.userId ? req.access.userId : null,
+                byName: [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email || '',
+                at: new Date(),
+            });
+            expense.amount = next;
+            await expense.save();
+            res.json({ success: true, data: expense.toObject(), message: `Amount is now Rs ${next}` });
+        } catch (error) {
+            res.status(500).json({ message: error.message || 'Could not add the adjustment' });
+        }
+    },
+
     // PUT /expenses/:id - Update expense
     updateExpense: async (req, res) => {
         try {
@@ -210,11 +246,9 @@ const expenseController = {
 
             // Update fields
             if (title !== undefined) expense.title = title.trim();
-            if (amount !== undefined) {
-                if (isNaN(amount) || amount < 0) {
-                    return res.status(400).json({ message: 'Valid positive amount is required' });
-                }
-                expense.amount = Number(amount);
+            // The amount is changed only by a + / − adjustment (POST /expenses/:id/adjust).
+            if (amount !== undefined && Math.abs(Number(amount) - Number(expense.amount)) >= 0.01) {
+                return res.status(400).json({ message: 'The amount cannot be edited. Add a + or − adjustment instead.' });
             }
             if (category !== undefined) expense.category = category.trim();
             if (date !== undefined) expense.date = new Date(date);

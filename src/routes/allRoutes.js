@@ -204,6 +204,7 @@ router.delete('/expenses/categories/:id', ...staff, can('expenses', 'delete'), e
 router.get('/expenses/:id', ...staff, can('expenses', 'view'), expenseController.getExpenseById);
 router.post('/expenses', ...staff, can('expenses', 'create'), uploadSingle('receipt'), expenseController.createExpense);
 router.put('/expenses/:id', ...staff, can('expenses', 'edit'), uploadSingle('receipt'), expenseController.updateExpense);
+router.post('/expenses/:id/adjust', ...staff, can('expenses', 'edit'), expenseController.adjustExpense);
 router.put('/expenses/:id/status', ...staff, can('expenses', 'edit'), expenseController.updateExpenseStatus);
 router.delete('/expenses/:id', ...staff, can('expenses', 'delete'), expenseController.deleteExpense);
 

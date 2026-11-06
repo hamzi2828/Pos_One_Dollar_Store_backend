@@ -64,6 +64,22 @@ const expenseSchema = new mongoose.Schema({
     source: { type: String, enum: ['manual', 'shop_use', 'till_payout', 'payroll', 'other'], default: 'manual', index: true },
     sourceType: { type: String, default: '' }, // e.g. 'ShopUse'
     sourceRef: { type: mongoose.Schema.Types.ObjectId, default: null },
+    // The amount is not edited directly (owner 2026-11-06): each change is a + / − adjustment.
+    // amount = originalAmount + sum of adjustments.
+    originalAmount: { type: Number, default: null },
+    adjustments: {
+        type: [
+            {
+                _id: false,
+                amount: { type: Number, required: true }, // + more spent, − less
+                note: { type: String, default: '' },
+                by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+                byName: { type: String, default: '' },
+                at: { type: Date, default: Date.now },
+            },
+        ],
+        default: [],
+    },
     isDeleted: { type: Boolean, default: false, index: true },
     deletedAt: { type: Date, default: null },
     deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
