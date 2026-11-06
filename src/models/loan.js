@@ -11,6 +11,7 @@ const repaymentSchema = new mongoose.Schema(
     date: { type: Date, required: true },
     method: { type: String, default: 'Cash' }, // Cash | Bank Transfer | Easypaisa | JazzCash | Cheque | Other
     note: { type: String, default: '' },
+    attachments: { type: [String], default: [] }, // transfer slip photos / PDFs
     by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     byName: { type: String, default: '' },
     at: { type: Date, default: Date.now },
@@ -21,7 +22,8 @@ const repaymentSchema = new mongoose.Schema(
 const loanSchema = new mongoose.Schema(
   {
     loanNo: { type: String, required: true, unique: true }, // LOAN-2026-00001
-    lenderType: { type: String, enum: ['vendor', 'customer', 'employee', 'other'], required: true },
+    // 'person' = a saved lender (models/loanLender.js), picked from the list.
+    lenderType: { type: String, enum: ['person', 'vendor', 'customer', 'employee', 'other'], required: true },
     lender: { type: mongoose.Schema.Types.ObjectId, default: null }, // Vendor / User / Employee id
     lenderName: { type: String, required: true, trim: true },
     lenderPhone: { type: String, default: '' },
@@ -30,6 +32,7 @@ const loanSchema = new mongoose.Schema(
     method: { type: String, default: 'Cash' }, // how we received it
     dueDate: { type: Date, default: null },
     notes: { type: String, default: '' },
+    attachments: { type: [String], default: [] }, // transfer slip photos / PDFs
     repayments: { type: [repaymentSchema], default: [] },
     paid: { type: Number, default: 0 },
     left: { type: Number, default: 0 },

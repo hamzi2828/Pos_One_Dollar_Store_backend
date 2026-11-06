@@ -2,13 +2,14 @@
 // Lender picked from vendors, customers or employees, or typed by hand.
 const mongoose = require('mongoose');
 const Loan = require('../models/loan');
+const LoanLender = require('../models/loanLender');
 const { nextNumber } = require('./sequenceService');
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const bad = (m, status = 400) => Object.assign(new Error(m), { status });
 const isId = (v) => mongoose.Types.ObjectId.isValid(String(v || ''));
 const METHODS = ['Cash', 'Bank Transfer', 'Easypaisa', 'JazzCash', 'Cheque', 'Other'];
-const TYPES = ['vendor', 'customer', 'employee', 'other'];
+const TYPES = ['person', 'vendor', 'customer', 'employee', 'other'];
 
 function readDate(v, label, required = true) {
   if (v === undefined || v === null || v === '') {
@@ -53,6 +54,12 @@ async function lenders() {
 async function resolveLender(body) {
   const type = TYPES.includes(body.lenderType) ? body.lenderType : null;
   if (!type) throw bad('Pick who gave the loan');
+  if (type === 'person') {
+    if (!isId(body.lender)) throw bad('Pick who gave the loan');
+    const p = await LoanLender.findOne({ _id: body.lender, isDeleted: { $ne: true } }).lean();
+    if (!p) throw bad('That person was not found');
+    return { lenderType: 'person', lender: p._id, lenderName: p.name, lenderPhone: p.phone || '' };
+  }
   if (type === 'other') {
     const name = String(body.lenderName || '').trim().slice(0, 120);
     if (!name) throw bad('Write the name of the person who gave the loan');
@@ -92,7 +99,27 @@ async function get(id) {
   return loan;
 }
 
-async function create(body = {}, { user } = {}) {
+/** Saved lenders (people we borrow from), for the dropdown. */
+async function people() {
+  return LoanLender.find({ isDeleted: { $ne: true } }).sort({ name: 1 }).lean();
+}
+
+async function addPerson(body = {}, { user } = {}) {
+  const name = String(body.name || '').trim().slice(0, 120);
+  if (!name) throw bad('Write the name');
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const same = await LoanLender.findOne({ isDeleted: { $ne: true }, name: { $regex: `^${esc}$`, $options: 'i' } }).lean();
+  if (same) return same;
+  const p = await LoanLender.create({
+    name,
+    phone: String(body.phone || '').trim().slice(0, 30),
+    note: String(body.note || '').trim().slice(0, 300),
+    createdBy: user && user._id ? user._id : null,
+  });
+  return p.toObject();
+}
+
+async function create(body = {}, { user, attachments = [] } = {}) {
   const amount = round2(body.amount);
   if (!(amount > 0)) throw bad('Enter the loan amount');
   const who = await resolveLender(body);
@@ -104,6 +131,7 @@ async function create(body = {}, { user } = {}) {
     method: readMethod(body.method),
     dueDate: readDate(body.dueDate, 'due date', false),
     notes: String(body.notes || '').trim().slice(0, 1000),
+    attachments,
     createdBy: user && user._id ? user._id : null,
     createdByName: userName(user),
   });
@@ -131,6 +159,16 @@ async function update(id, body = {}) {
   return loan.toObject();
 }
 
+/** Add slip(s) to a loan already saved. */
+async function addSlips(id, attachments = []) {
+  if (!attachments.length) throw bad('Choose a slip to upload');
+  const loan = await Loan.findOne({ _id: id, isDeleted: { $ne: true } });
+  if (!loan) throw bad('Loan not found', 404);
+  loan.attachments.push(...attachments);
+  await loan.save();
+  return loan.toObject();
+}
+
 async function remove(id, { user } = {}) {
   const loan = await Loan.findOne({ _id: id, isDeleted: { $ne: true } });
   if (!loan) throw bad('Loan not found', 404);
@@ -141,7 +179,7 @@ async function remove(id, { user } = {}) {
   return { _id: loan._id, deleted: true };
 }
 
-async function addRepayment(id, body = {}, { user } = {}) {
+async function addRepayment(id, body = {}, { user, attachments = [] } = {}) {
   const loan = await Loan.findOne({ _id: id, isDeleted: { $ne: true } });
   if (!loan) throw bad('Loan not found', 404);
   const amount = round2(body.amount);
@@ -152,6 +190,7 @@ async function addRepayment(id, body = {}, { user } = {}) {
     date: readDate(body.date, 'date'),
     method: readMethod(body.method),
     note: String(body.note || '').trim().slice(0, 300),
+    attachments,
     by: user && user._id ? user._id : null,
     byName: userName(user),
   });
@@ -171,4 +210,4 @@ async function removeRepayment(id, repaymentId) {
   return loan.toObject();
 }
 
-module.exports = { METHODS, lenders, list, get, create, update, remove, addRepayment, removeRepayment };
+module.exports = { METHODS, lenders, people, addPerson, list, get, create, update, remove, addSlips, addRepayment, removeRepayment };
