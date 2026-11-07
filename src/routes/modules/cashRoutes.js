@@ -47,6 +47,7 @@ router.get('/till-sessions/my', ...staff, can(['till', 'pos'], 'view'), handle(t
 router.get('/till-sessions/my/history', ...staff, can('till', 'view'), handle(till.myHistory));
 router.post('/till-sessions/open', ...staff, can('till', 'create'), handle(till.open));
 router.post('/till-sessions/:id/close', ...staff, can(['till', 'till_verify'], 'edit'), handle(till.close));
+router.get('/till-sessions/:id/non-cash', ...staff, can(['till', 'till_verify'], 'view'), handle(till.nonCash));
 router.post('/till-sessions/:id/draft', ...staff, can(['till', 'till_verify'], 'edit'), handle(till.draft));
 router.post('/till-sessions/:id/day-cash', ...staff, can(['till', 'till_verify'], 'edit'), handle(till.dayCash));
 

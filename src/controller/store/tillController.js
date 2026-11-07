@@ -131,6 +131,10 @@ const tillController = {
   },
 
   // POST /api/till-sessions/:id/draft — till report saved, not submitted (till stays open).
+  async nonCash(req, res) {
+    res.json({ success: true, data: await tillService.nonCashTotals(req, req.params.id) });
+  },
+
   async draft(req, res) {
     const session = await tillService.saveDraft(req, req.params.id, req.body || {});
     res.json({ success: true, data: tillService.serializeSession(session), message: 'Report saved. Submit it when the day is over.' });

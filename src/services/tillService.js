@@ -801,6 +801,26 @@ async function addDayCash(req, id, { denominations, note, amount, cardTotal, ban
   return updated;
 }
 
+/**
+ * Card (POS machine) and bank transfer taken by the system on this till, so the
+ * till report can start with them filled in (owner, 2026-11-08). Not cash, so the
+ * blind cash count is not affected.
+ */
+async function nonCashTotals(req, id) {
+  const access = req.access;
+  if (!mongoose.Types.ObjectId.isValid(String(id))) throw httpError(404, 'Till session not found');
+  const session = await CashSession.findById(id).lean();
+  if (!session) throw httpError(404, 'Till session not found');
+  assertSessionBranch(access, session);
+  if (!sameId(session.cashier, access.userId) && !access.can('till_verify', 'view')) throw httpError(403, 'You can only see your own till.');
+  const e = session.expected || {};
+  if (session.status !== 'open' && e.card !== undefined && e.card !== null) {
+    return { card: round2(e.card), bankTransfer: round2(e.bankTransfer || 0) };
+  }
+  const { nonCash } = await computeExpected(session, session.status === 'open' ? new Date() : session.closedAt || new Date());
+  return { card: round2(nonCash.card), bankTransfer: round2(nonCash.bank_transfer) };
+}
+
 /** Save the till report without submitting: the till stays open and can still be edited. */
 async function saveDraft(req, id, { denominations, dayCashTotal, dayCashDenominations, cardTotal, bankTransferTotal, note } = {}) {
   const access = req.access;
@@ -1039,6 +1059,7 @@ module.exports = {
   closeSession,
   saveDraft,
   addDayCash,
+  nonCashTotals,
   reviewSession,
   computeExpected,
   sessionExpenses,
