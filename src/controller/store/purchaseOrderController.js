@@ -52,6 +52,13 @@ module.exports = {
 
   removeBill: async (req, res) => ok(res, await service.removeBill(req, req.params.id, req.params.billId)),
 
+  sendBill: async (req, res) => {
+    const { po, grn } = await service.sendBill(req, req.params.id, req.params.billId);
+    ok(res, po, { grn });
+  },
+
+  unsendBill: async (req, res) => ok(res, await service.unsendBill(req, req.params.id, req.params.billId)),
+
   addItems: async (req, res) => {
     const { po, itemIds } = await service.addItems(req, req.params.id, req.params.billId, req.body);
     ok(res, po, { itemIds }, 201);

@@ -1132,6 +1132,10 @@ async function complete(req, id, body = {}) {
     return { ...(await getOne(req, id)), alreadyCompleted: true };
   }
   await assertMayVerify(req, grn);
+  // Bills sent one by one: the trip is still buying, more bills may come to this receipt.
+  if (await PurchaseOrder.exists({ _id: grn.purchaseOrder, status: 'open' })) {
+    throw httpError('The buyer is still buying on this trip. Finish after they press "Send to warehouse" for the whole trip.', 409, 'TRIP_STILL_BUYING');
+  }
   if (grn.status !== 'in_progress') {
     throw httpError(grn.status === 'pending' ? 'Check the boxes/packs first (or press "Start receiving")' : `This goods receipt is ${grn.status}`, 409);
   }

@@ -45,6 +45,9 @@ router.get('/purchase-orders/:id/costing', ...staff, can(PO, 'view'), handle(po.
 router.post('/purchase-orders/:id/bills', ...staff, can(PO, 'edit'), upload(documentUploadArray('photos', 5)), handle(po.addBill));
 router.put('/purchase-orders/:id/bills/:billId', ...staff, can(PO, 'edit'), upload(documentUploadArray('photos', 5)), handle(po.updateBill));
 router.delete('/purchase-orders/:id/bills/:billId', ...staff, can(PO, 'edit'), handle(po.removeBill));
+// One bill to the warehouse while the trip is still buying (and back, before the warehouse touches it)
+router.post('/purchase-orders/:id/bills/:billId/send', ...staff, can(PO, 'edit'), handle(po.sendBill));
+router.post('/purchase-orders/:id/bills/:billId/unsend', ...staff, can(PO, 'edit'), handle(po.unsendBill));
 router.post('/purchase-orders/:id/bills/:billId/items', ...staff, can(PO, 'edit'), handle(po.addItems));
 router.post('/purchase-orders/:id/bills/:billId/new-product', ...staff, can(PO, 'edit'), handle(po.addNewProduct));
 router.put('/purchase-orders/:id/bills/:billId/items/:itemId', ...staff, can(PO, 'edit'), handle(po.updateItem));

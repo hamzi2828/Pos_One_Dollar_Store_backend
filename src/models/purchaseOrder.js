@@ -71,6 +71,10 @@ const billSchema = new mongoose.Schema({
   payment: { type: ObjectId, ref: 'VendorPayment', default: null }, // set on send, cleared on reopen / cancel
   notes: { type: String, default: '' },
   ledgerEntry: { type: ObjectId, ref: 'VendorLedgerEntry', default: null }, // set on close
+  // Sent to the warehouse on its own while the trip is still buying (owner, 2026-11-08).
+  // "Send to warehouse" on the trip sends the rest.
+  sentAt: { type: Date, default: null },
+  sentBy: { type: ObjectId, ref: 'User', default: null },
   createdBy: { type: ObjectId, ref: 'User', default: null },
   createdAt: { type: Date, default: Date.now },
 });

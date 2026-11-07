@@ -452,7 +452,7 @@ const BILLS = { bills: true };
 
 /** After send: the bill's goods are already being entered in the warehouse? */
 async function billHasEntries(po, billId) {
-  if (po.status === 'open' || !po.goodsReceipt) return false;
+  if (!po.goodsReceipt) return false;
   return !!(await GoodsReceipt.exists({ _id: po.goodsReceipt, entries: { $elemMatch: { bill: billId, undone: { $ne: true } } } }));
 }
 
@@ -529,6 +529,15 @@ async function updateBill(req, id, billId, body = {}, photos = []) {
 
 async function removeBill(req, id, billId) {
   await assertBillNotUnpacked(req, id, billId, 'removed');
+  // Still buying: a bill sent on its own whose boxes the warehouse already checked stays.
+  const current = await findPO(req, id);
+  if (current.status === 'open' && current.goodsReceipt) {
+    const grn = await GoodsReceipt.findById(current.goodsReceipt).select('boxes').lean();
+    const box = grn && (grn.boxes || []).find((b) => String(b.bill) === String(billId));
+    if (box && box.checkedAt) {
+      throw httpError('The warehouse has already checked the boxes/packs of this bill, so it cannot be removed.', 409, 'BILL_UNPACKING');
+    }
+  }
   let removed = null;
   const { po } = await mutateOpen(
     req,
@@ -621,7 +630,17 @@ async function addNewProduct(req, id, billId, body = {}) {
  * bills already being unpacked keep their counts and lines; removed bills drop out.
  */
 async function syncGRN(req, po) {
-  if (!['closed', 'receiving'].includes(po.status) || !po.goodsReceipt) return;
+  if (!['open', 'closed', 'receiving'].includes(po.status) || !po.goodsReceipt) return;
+  // Still buying and no bill sent any more: the receipt goes away (if the warehouse has not started).
+  if (po.status === 'open' && !sentBills(po).length) {
+    const res = await GoodsReceipt.deleteOne({ _id: po.goodsReceipt, status: 'pending' });
+    if (res.deletedCount) {
+      await PurchaseOrder.updateOne({ _id: po._id }, { $set: { goodsReceipt: null, grnNumber: '' } });
+      po.goodsReceipt = null;
+      po.grnNumber = '';
+      return;
+    }
+  }
   for (let attempt = 1; attempt <= 3; attempt++) {
     const grn = await GoodsReceipt.findById(po.goodsReceipt).lean();
     if (!grn || !['pending', 'in_progress'].includes(grn.status)) return;
@@ -634,7 +653,7 @@ async function syncGRN(req, po) {
       return was ? { ...b, received: was.received || 0, checkedAt: was.checkedAt || legacyAt || null } : { ...b, checkedAt: null };
     });
     // Lines: keep those of bills being unpacked (counts live on them), rebuild the rest.
-    const kept = (grn.lines || []).filter((l) => unpacking(l.bill) && po.bills.some((b) => String(b._id) === String(l.bill)));
+    const kept = (grn.lines || []).filter((l) => unpacking(l.bill) && sentBills(po).some((b) => String(b._id) === String(l.bill)));
     let lineNo = kept.reduce((m, l) => Math.max(m, l.lineNo || 0), 0);
     const fresh = grnLinesFrom(po)
       .filter((l) => !unpacking(l.bill))
@@ -644,14 +663,14 @@ async function syncGRN(req, po) {
       boxes,
       lines: [...kept, ...fresh],
       goodsTotal,
-      expectedCartons: po.builty.cartons || po.totals.cartons,
+      expectedCartons: expectedCartonsOf(po),
       cartonsReceived: boxes.reduce((s, b) => s + (b.received || 0), 0),
     };
     // The charge rate is frozen once goods are entered; before that it follows the new goods total.
     if (!live.length) set.chargeRate = costing.chargeRateOf(po.totals.charges, goodsTotal);
     const res = await GoodsReceipt.updateOne(
       { _id: grn._id, __v: grn.__v, status: { $in: ['pending', 'in_progress'] } },
-      { $set: set, $push: { history: h.historyEntry(req, 'bills_updated', `${po.poNumber}: ${po.bills.length} vendor bills`) }, $inc: { __v: 1 } }
+      { $set: set, $push: { history: h.historyEntry(req, 'bills_updated', `${po.poNumber}: ${boxes.length} vendor bills`) }, $inc: { __v: 1 } }
     );
     if (res.modifiedCount) return;
   }
@@ -752,7 +771,7 @@ async function removeCharge(req, id, chargeId) {
  * their landed cost; the next entries use the new share.
  */
 async function syncChargeRate(req, po) {
-  if (!['closed', 'receiving'].includes(po.status) || !po.goodsReceipt) return;
+  if (!['open', 'closed', 'receiving'].includes(po.status) || !po.goodsReceipt) return;
   const chargeRate = costing.chargeRateOf(po.totals.charges, po.totals.goods);
   const res = await GoodsReceipt.updateOne(
     { _id: po.goodsReceipt, status: { $in: ['pending', 'in_progress'] } },
@@ -769,7 +788,8 @@ async function syncChargeRate(req, po) {
 
 /** GRN lines from the PO (net vendor price per piece, carton share). */
 function grnLinesFrom(po) {
-  return costing.netLines(po).map((l, i) => ({
+  const sent = new Set(sentBills(po).map((b) => String(b._id)));
+  return costing.netLines(po).filter((l) => sent.has(String(l.bill._id))).map((l, i) => ({
     lineNo: i + 1,
     bill: l.bill._id,
     poItem: l.item._id,
@@ -844,8 +864,15 @@ async function voidMarketPayment(req, po, bill, index, reason) {
 }
 
 /** GRN boxes checklist: one row per vendor bill. */
+/** Bills the warehouse gets: all of them once the trip is sent, else only those sent one by one. */
+const sentBills = (po) => (po.status === 'open' ? po.bills.filter((b) => b.sentAt) : po.bills);
+
+/** Boxes/packs the warehouse should get. */
+const expectedCartonsOf = (po) =>
+  po.status === 'open' ? sentBills(po).reduce((s, b) => s + (b.cartons || 0), 0) : po.builty.cartons || po.totals.cartons;
+
 const grnBoxesFrom = (po) =>
-  po.bills.map((b) => ({
+  sentBills(po).map((b) => ({
     bill: b._id,
     vendor: b.vendor,
     vendorName: b.vendorName,
@@ -968,6 +995,60 @@ async function finalizeClose(req, po) {
     await postMarketPayment(req, po, bill, index);
   }
 
+  const { grn, isNew } = await ensureGRN(req, po);
+  if (!isNew) {
+    // Some bills were already sent one by one: the receipt gets the builty and the rest of the bills.
+    await GoodsReceipt.updateOne(
+      { _id: grn._id },
+      {
+        $set: {
+          builty: {
+            builtyNo: po.builty.builtyNo,
+            transporter: po.builty.transporter,
+            date: po.builty.date,
+            cartons: po.builty.cartons,
+            photos: po.builty.photos,
+          },
+        },
+      }
+    );
+    await syncGRN(req, po);
+    // The warehouse already started on a sent bill: the trip is being received now.
+    if (grn.status === 'in_progress' && po.status === 'closed') {
+      po.status = 'receiving';
+      po.history.push(h.historyEntry(req, 'receiving_started', grn.grnNumber));
+      await po.save();
+    }
+  }
+
+  const unsent = po.bills.filter((b) => !b.sentAt);
+  if (isNew || unsent.length) {
+    const vendors = [...new Set((isNew ? po.bills : unsent).map((b) => b.vendorName))].join(', ');
+    await safeNotify({
+      type: 'goods_receiving',
+      title: `Goods to receive: ${grn.grnNumber}`,
+      message: `${isNew ? '' : 'Rest of the trip: '}${po.builty.cartons || po.totals.cartons} boxes/packs from ${vendors}.${po.builty.builtyNo ? ` Builty ${po.builty.builtyNo}.` : ''} Please check the boxes/packs and enter the goods.`,
+      level: 'info',
+      link: `/admin/purchasing/receiving/${grn._id}`,
+      branchId: po.branch,
+      audience: 'goods_receiving',
+      meta: { purchaseOrderId: po._id, goodsReceiptId: grn._id },
+    });
+  }
+  // Every bill now counts as sent.
+  if (unsent.length) {
+    const at = po.closedAt || new Date();
+    for (const b of unsent) {
+      b.sentAt = at;
+      b.sentBy = h.userId(req);
+    }
+    await po.save();
+  }
+  return grn;
+}
+
+/** The trip's warehouse receipt: found, or created with the bills sent so far. */
+async function ensureGRN(req, po) {
   let grn = await GoodsReceipt.findOne({ purchaseOrder: po._id });
   if (!grn) {
     try {
@@ -990,7 +1071,7 @@ async function finalizeClose(req, po) {
         chargesTotal: po.totals.charges,
         goodsTotal: po.totals.goods,
         chargeRate: costing.chargeRateOf(po.totals.charges, po.totals.goods),
-        expectedCartons: po.builty.cartons || po.totals.cartons,
+        expectedCartons: expectedCartonsOf(po),
         boxes: grnBoxesFrom(po),
         lines: grnLinesFrom(po),
         createdBy: h.userId(req),
@@ -1005,21 +1086,89 @@ async function finalizeClose(req, po) {
   po.goodsReceipt = grn._id;
   po.grnNumber = grn.grnNumber;
   await po.save();
+  return { grn, isNew };
+}
 
-  if (isNew) {
-    const vendors = [...new Set(po.bills.map((b) => b.vendorName))].join(', ');
-    await safeNotify({
-      type: 'goods_receiving',
-      title: `Goods to receive: ${grn.grnNumber}`,
-      message: `${po.builty.cartons || po.totals.cartons} boxes/packs from ${vendors}.${po.builty.builtyNo ? ` Builty ${po.builty.builtyNo}.` : ''} Please check the boxes/packs and enter the goods.`,
-      level: 'info',
-      link: `/admin/purchasing/receiving/${grn._id}`,
-      branchId: po.branch,
-      audience: 'goods_receiving',
-      meta: { purchaseOrderId: po._id, goodsReceiptId: grn._id },
-    });
+/** One bill to the warehouse while the trip is still buying. Safe to repeat. */
+async function sendBill(req, id, billId) {
+  const current = await findPO(req, id);
+  if (current.status !== 'open') throw httpError('This trip is already sent to the warehouse.', 409, 'PO_LOCKED');
+  findBill(current, billId);
+  const po = await h.acquireLock(PurchaseOrder, current._id, { status: 'open' });
+  if (!po) throw httpError('This trip is busy right now. Try again in a moment.', 409, 'PO_BUSY');
+  try {
+    costing.recalcPO(po);
+    const bill = findBill(po, billId);
+    const label = `${bill.vendorName}${bill.billNo ? ` bill ${bill.billNo}` : ''}`;
+    const fresh = !bill.sentAt;
+    if (fresh) {
+      if (!(bill.billTotal > 0)) throw httpError(`Bill from ${bill.vendorName} has no items and no bill amount. Enter the bill total (or add items) first.`);
+      if (bill.paidNow > bill.billTotal) throw httpError(`Paid now (Rs ${bill.paidNow}) is more than the bill total (Rs ${bill.billTotal}).`);
+      if (!(bill.cartons > 0)) throw httpError(`Enter how many boxes/packs come from ${bill.vendorName} first.`);
+      bill.sentAt = new Date();
+      bill.sentBy = h.userId(req);
+      po.history.push(h.historyEntry(req, 'bill_sent', `${label} sent to warehouse (${bill.cartons} boxes/packs)`));
+      try {
+        await po.save();
+      } catch (err) {
+        throw h.friendlyDbError(err);
+      }
+    }
+    // Vendor account row + "paid now" (normally already there from "add bill").
+    const index = po.bills.indexOf(bill);
+    bill.ledgerEntry = (await postBillEntry(req, po, bill))._id;
+    await postMarketPayment(req, po, bill, index);
+
+    const had = !!po.goodsReceipt;
+    const { grn } = await ensureGRN(req, po);
+    if (had) await syncGRN(req, po);
+    if (fresh) {
+      await safeNotify({
+        type: 'goods_receiving',
+        title: `Goods to receive: ${grn.grnNumber}`,
+        message: `${bill.cartons} boxes/packs from ${label} (${po.poNumber}, still buying). Please check the boxes/packs and enter the goods.`,
+        level: 'info',
+        link: `/admin/purchasing/receiving/${grn._id}`,
+        branchId: po.branch,
+        audience: 'goods_receiving',
+        meta: { purchaseOrderId: po._id, goodsReceiptId: grn._id },
+      });
+    }
+    return { po: (await findPO(req, id)).toObject(), grn: { _id: grn._id, grnNumber: grn.grnNumber, status: grn.status } };
+  } finally {
+    await h.releaseLock(PurchaseOrder, po._id);
   }
-  return grn;
+}
+
+/** Take back a bill sent by mistake, before the warehouse checked its boxes or entered goods. */
+async function unsendBill(req, id, billId) {
+  const current = await findPO(req, id);
+  if (current.status !== 'open') throw httpError('The whole trip is already sent. Use "Reopen" instead.', 409, 'PO_LOCKED');
+  const bill = findBill(current, billId);
+  if (!bill.sentAt) return current.toObject();
+  if (current.goodsReceipt) {
+    const grn = await GoodsReceipt.findById(current.goodsReceipt).select('boxes entries.bill entries.undone').lean();
+    const box = grn && (grn.boxes || []).find((b) => String(b.bill) === String(billId));
+    const entered = grn && (grn.entries || []).some((e) => !e.undone && String(e.bill) === String(billId));
+    if (entered || (box && box.checkedAt)) {
+      throw httpError(`The warehouse has already started on the bill from ${bill.vendorName}, so it cannot be taken back.`, 409, 'BILL_UNPACKING');
+    }
+  }
+  const po = await h.acquireLock(PurchaseOrder, current._id, { status: 'open' });
+  if (!po) throw httpError('This trip is busy right now. Try again in a moment.', 409, 'PO_BUSY');
+  try {
+    const b = findBill(po, billId);
+    b.sentAt = null;
+    b.sentBy = null;
+    po.history.push(h.historyEntry(req, 'bill_unsent', `${b.vendorName}${b.billNo ? ` bill ${b.billNo}` : ''} taken back from the warehouse`));
+    await po.save();
+    await syncGRN(req, po);
+    return (await findPO(req, id)).toObject();
+  } catch (err) {
+    throw h.friendlyDbError(err);
+  } finally {
+    await h.releaseLock(PurchaseOrder, po._id);
+  }
 }
 
 async function close(req, id, body = {}, photos = []) {
@@ -1135,7 +1284,7 @@ async function cancel(req, id, body = {}) {
   if (!po) throw httpError('This purchase order is busy right now. Try again in a moment.', 409, 'PO_BUSY');
   const reason = h.toText(body.reason, 300);
   try {
-    if (po.status === 'closed') await undoClose(req, po, 'cancel', reason);
+    if (po.status === 'closed' || po.goodsReceipt) await undoClose(req, po, 'cancel', reason);
     // Bills (and money paid at the market) leave the vendor accounts, open or sent.
     const why = `${po.poNumber} cancelled${reason ? `: ${reason}` : ''}`;
     for (const [index, bill] of po.bills.entries()) await voidBillAccount(req, po, bill, index, why);
@@ -1166,6 +1315,10 @@ async function reopen(req, id, body = {}) {
     po.grnNumber = '';
     po.closedAt = null;
     po.closedBy = null;
+    for (const b of po.bills) {
+      b.sentAt = null;
+      b.sentBy = null;
+    }
     po.history.push(h.historyEntry(req, 'reopened', reason));
     await po.save();
     return po.toObject();
@@ -1191,6 +1344,8 @@ module.exports = {
   addBill,
   updateBill,
   removeBill,
+  sendBill,
+  unsendBill,
   syncBillAccounts,
   addItems,
   updateItem,
