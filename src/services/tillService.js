@@ -978,6 +978,38 @@ async function saveDraft(req, id, { denominations, dayCashTotal, dayCashDenomina
 }
 
 /** verify | dispute a closed session (admin side). */
+/**
+ * Delete a till the shop does not need (e.g. a test till). Only a closed /
+ * verified / disputed till; it is hidden from every list and report, the
+ * record stays. What it took off its cash stays with it (never moves to another till).
+ */
+async function deleteSession(req, id, { reason } = {}) {
+  const access = req.access;
+  if (!mongoose.Types.ObjectId.isValid(String(id))) throw httpError(404, 'Till session not found');
+  const session = await CashSession.findById(id).lean();
+  if (!session) throw httpError(404, 'Till session not found');
+  assertSessionBranch(access, session);
+  if (session.status === 'deleted') return session;
+  if (session.status === 'open') throw httpError(409, 'Close this till first, then delete it.');
+  // Keep its payouts claimed, so they never land on another till.
+  if (!Array.isArray(session.payoutIds)) {
+    const payouts = await sessionExpenses(session);
+    await CashSession.updateOne({ _id: session._id }, { $set: { payoutIds: payouts.map((x) => x._id) } });
+  }
+  const now = new Date();
+  const why = typeof reason === 'string' ? reason.trim().slice(0, 300) : '';
+  const updated = await CashSession.findOneAndUpdate(
+    { _id: session._id, status: { $ne: 'open' } },
+    {
+      $set: { status: 'deleted', deletedAt: now, deletedBy: access.userId, deleteReason: why },
+      $push: { history: { at: now, by: access.userId, action: 'deleted', note: `Deleted (was ${session.status})${why ? `: ${why}` : ''}` } },
+    },
+    { new: true }
+  ).lean();
+  if (!updated) throw httpError(409, 'This till was just changed. Refresh.');
+  return updated;
+}
+
 async function reviewSession(req, id, { action, note } = {}) {
   const access = req.access;
   if (!['verify', 'dispute'].includes(action)) throw httpError(400, 'Unknown action');
@@ -1183,6 +1215,7 @@ module.exports = {
   computeExpected,
   sessionExpenses,
   refreshExpenses,
+  deleteSession,
   myStatus,
   serializeSession,
   canSeeExpected,

@@ -60,6 +60,7 @@ router.get('/till-sessions', ...staff, can('till_verify', 'view'), handle(till.l
 router.get('/till-sessions/:id', ...staff, can(['till', 'till_verify'], 'view'), handle(till.detail));
 router.post('/till-sessions/:id/verify', ...staff, can('till_verify', 'edit'), handle(till.verify));
 router.post('/till-sessions/:id/dispute', ...staff, can('till_verify', 'edit'), handle(till.dispute));
+router.delete('/till-sessions/:id', ...staff, can('till_verify', 'delete'), handle(till.remove));
 
 // ---- Notifications (every staff login: header bell) ----
 router.get('/notifications/unread-count', ...staff, handle(notifications.unreadCount));

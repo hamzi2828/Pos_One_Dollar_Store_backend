@@ -29,7 +29,8 @@ const cashSessionSchema = new mongoose.Schema(
     cashierName: { type: String, default: '' },
     status: {
       type: String,
-      enum: ['open', 'closed', 'verified', 'disputed'],
+      // 'deleted' (owner, 2026-11-08): removed by an admin; hidden everywhere, record kept.
+      enum: ['open', 'closed', 'verified', 'disputed', 'deleted'],
       default: 'open',
     },
 
@@ -97,6 +98,9 @@ const cashSessionSchema = new mongoose.Schema(
     verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     verifiedAt: { type: Date, default: null },
     verifyNote: { type: String, default: '' },
+    deletedAt: { type: Date, default: null },
+    deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    deleteReason: { type: String, default: '' },
 
     history: [
       {

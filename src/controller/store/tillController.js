@@ -36,6 +36,7 @@ async function sessionFilter(req, { defaultStatuses } = {}) {
     .filter((s) => STATUSES.includes(s));
   if (statuses.length) filter.status = { $in: statuses };
   else if (defaultStatuses) filter.status = { $in: defaultStatuses };
+  else filter.status = { $ne: 'deleted' };
   const search = String(q.search || '').trim();
   if (search) {
     const rx = new RegExp(escapeRegex(search), 'i');
@@ -102,7 +103,7 @@ const tillController = {
   // GET /api/till-sessions/my/history — my own sessions (blind: no expected / variance).
   async myHistory(req, res) {
     const { page, limit, skip } = paging(req.query, 20, 100);
-    const filter = { cashier: oid(req.access.userId) };
+    const filter = { cashier: oid(req.access.userId), status: { $ne: 'deleted' } };
     const [total, rows] = await Promise.all([
       CashSession.countDocuments(filter),
       CashSession.find(filter).sort({ openedAt: -1 }).skip(skip).limit(limit).lean(),
@@ -227,6 +228,12 @@ const tillController = {
   async verify(req, res) {
     const s = await tillService.reviewSession(req, req.params.id, { action: 'verify', note: req.body && req.body.note });
     res.json({ success: true, data: tillService.serializeSession(s, { full: true }), message: 'Cash closing verified' });
+  },
+
+  // DELETE /api/till-sessions/:id { reason } — hide a till the shop does not need.
+  async remove(req, res) {
+    const s = await tillService.deleteSession(req, req.params.id, { reason: (req.body && req.body.reason) || req.query.reason });
+    res.json({ success: true, data: tillService.serializeSession(s, { full: true }), message: 'Till deleted' });
   },
 
   // POST /api/till-sessions/:id/dispute { note }

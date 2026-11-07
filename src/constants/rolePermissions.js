@@ -19,7 +19,7 @@ const PERMISSION_SECTIONS = [
             // Own till: open with a float, blind cash closing (cannot see expected cash / sales).
             { key: 'till', label: 'Till & Cash Closing', actions: ['view', 'create', 'edit'] },
             // Admin side of cash closing: see expected vs counted, approve / reject.
-            { key: 'till_verify', label: 'Verify Cash Closing', actions: ['view', 'edit', 'export'] },
+            { key: 'till_verify', label: 'Verify Cash Closing', actions: ['view', 'edit', 'delete', 'export'] },
             // Sale counters (registers) and their open/close cut-off times.
             { key: 'sale_counters', label: 'Sale Counters', actions: ['view', 'create', 'edit', 'delete'] },
         ],
