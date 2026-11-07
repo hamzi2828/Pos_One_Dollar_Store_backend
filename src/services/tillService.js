@@ -291,37 +291,71 @@ const ORDER_FIELDS =
  * Returns { expected, bills, voided, nonCash }.
  */
 /**
- * Expenses that belong to a till: every expense (not shop use) DATED the day the
- * till was opened (shop time). When several tills were opened that day, an
- * expense goes to the till that was open when it was entered, else the first one.
+ * Money paid out of the till: expenses (not shop use) and vendor payments made
+ * in cash (owner, 2026-11-08), each counted on the day of its DATE (shop time).
+ *   - Tills opened that day: it goes to the one that was open when it was
+ *     entered, else the first till of that day.
+ *   - No till opened that day (e.g. a till left open from the day before): it
+ *     goes to the till that was open when it was entered.
+ * Vendor payments made at the market on a purchase trip are not from the till.
  */
 async function sessionExpenses(session) {
   const tz = await getTimeZone();
-  const day = zonedParts(session.openedAt, tz).dayKey;
-  const dayDate = new Date(`${day}T00:00:00.000Z`);
-  const rows = await mongoose.connection.db
-    .collection('expenses')
-    .find({ date: { $gte: dayDate, $lt: new Date(dayDate.getTime() + 86400000) }, isDeleted: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true } })
-    .project({ title: 1, amount: 1, paymentMethod: 1, createdAt: 1, branch: 1 })
-    .sort({ createdAt: 1 })
-    .toArray();
-  if (!rows.length) return [];
   const branchId = toId(session.branch);
-  const start = zonedDayStart(day, tz);
-  const sameDay = await CashSession.find({ branch: branchId, openedAt: { $gte: start, $lt: new Date(start.getTime() + 86400000) } })
+  const openDay = zonedParts(session.openedAt, tz).dayKey;
+  // Look a day either side of the till's life; the owner check below decides.
+  const from = new Date(zonedDayStart(openDay, tz).getTime() - 86400000);
+  const to = new Date(new Date(session.closedAt || Date.now()).getTime() + 2 * 86400000);
+  const db = mongoose.connection.db;
+  const [expenseRows, paymentRows] = await Promise.all([
+    db
+      .collection('expenses')
+      .find({ date: { $gte: from, $lt: to }, isDeleted: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true } })
+      .project({ title: 1, amount: 1, paymentMethod: 1, createdAt: 1, branch: 1, date: 1 })
+      .toArray(),
+    db
+      .collection('vendorpayments')
+      .find({ date: { $gte: from, $lt: to }, status: 'active', method: 'cash', branch: branchId, notes: { $not: /^Paid at the market/ } })
+      .project({ vendorName: 1, paymentNo: 1, amount: 1, createdAt: 1, date: 1, reference: 1 })
+      .toArray(),
+  ]);
+  const rows = [
+    ...expenseRows
+      .filter((x) => !x.branch || String(x.branch) === String(branchId))
+      .map((x) => ({ _id: x._id, title: x.title || '', amount: round2(x.amount), paymentMethod: x.paymentMethod || '', createdAt: x.createdAt, date: x.date, kind: 'expense' })),
+    ...paymentRows.map((x) => ({
+      _id: x._id,
+      title: `Vendor payment: ${x.vendorName || 'vendor'}${x.paymentNo ? ` (${x.paymentNo})` : ''}`,
+      amount: round2(x.amount),
+      paymentMethod: 'Cash',
+      createdAt: x.createdAt,
+      date: x.date,
+      kind: 'vendor_payment',
+    })),
+  ];
+  if (!rows.length) return [];
+
+  const tills = await CashSession.find({
+    branch: branchId,
+    openedAt: { $gte: new Date(from.getTime() - 2 * 86400000), $lt: to },
+  })
     .select('openedAt closedAt')
     .sort({ openedAt: 1 })
     .lean();
-  const tills = sameDay.length ? sameDay : [session];
+  if (!tills.some((t) => String(t._id) === String(session._id))) tills.push(session);
+  const dayOf = (d) => zonedParts(d, tz).dayKey;
+  const openAt = (t, at) => at >= new Date(t.openedAt).getTime() && (!t.closedAt || at <= new Date(t.closedAt).getTime());
   const owner = (x) => {
     const at = new Date(x.createdAt).getTime();
-    const hit = tills.find((t) => at >= new Date(t.openedAt).getTime() && (!t.closedAt || at <= new Date(t.closedAt).getTime()));
-    return String((hit || tills[0])._id);
+    const day = dayOf(x.date || x.createdAt);
+    const thatDay = tills.filter((t) => dayOf(t.openedAt) === day);
+    const hit = thatDay.length ? thatDay.find((t) => openAt(t, at)) || thatDay[0] : tills.find((t) => openAt(t, at));
+    return hit ? String(hit._id) : null;
   };
   return rows
-    .filter((x) => !x.branch || String(x.branch) === String(branchId))
     .filter((x) => owner(x) === String(session._id))
-    .map((x) => ({ _id: x._id, title: x.title || '', amount: round2(x.amount), paymentMethod: x.paymentMethod || '', createdAt: x.createdAt, shopUse: false }));
+    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+    .map((x) => ({ _id: x._id, title: x.title, amount: x.amount, paymentMethod: x.paymentMethod, createdAt: x.createdAt, kind: x.kind, shopUse: false }));
 }
 
 /**
