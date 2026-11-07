@@ -7,6 +7,11 @@ const ok = (res, data, status = 200, meta, message) =>
 const ctx = (req) => ({ userId: req.access.userId });
 
 module.exports = {
+  // GET /api/payroll/to-date — salary earned so far this month, per employee
+  async toDate(req, res) {
+    ok(res, await svc.salaryToDate());
+  },
+
   // GET /api/payroll/employees?search= — staff picker for advances / deductions
   async employees(req, res) {
     ok(res, await svc.employeeOptions(req.query));
@@ -59,6 +64,11 @@ module.exports = {
 
   async payslip(req, res) {
     ok(res, await svc.payslip(req.params.id, req.params.lineId));
+  },
+
+  // GET /api/payroll/runs/:id/lines/:lineId/days — hours worked day by day
+  async lineDays(req, res) {
+    ok(res, await svc.lineDays(req.params.id, req.params.lineId));
   },
 
   // GET /api/payroll/runs/:id/export — payroll register CSV

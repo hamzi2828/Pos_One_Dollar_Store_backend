@@ -1061,6 +1061,57 @@ async function buildMonth(month, { now = new Date(), manual = new Map() } = {}) 
   return { period, lines, warnings, totals: totalsOf(lines) };
 }
 
+/**
+ * Salary earned so far this month, per employee (owner, 2026-11-08): what each
+ * person has made up to today, before the month is over. Same rules as payroll:
+ * monthly salary counts for the days gone so far (of the days employed), plus
+ * approved overtime, minus absent / late cuts so far. Advances / deductions due
+ * this month are shown apart, and "payable now" = earned − those.
+ */
+async function salaryToDate({ now = new Date() } = {}) {
+  const month = T.monthKey(now);
+  const { period, lines } = await buildMonth(month, { now });
+  const rows = lines.map((l) => {
+    const a = l.attendance || {};
+    const employed = Number(l.employedDays) || 0;
+    const daysSoFar = Math.max(0, employed - (Number(a.upcomingDays) || 0));
+    const base = l.earnings.filter((r) => r.key === 'base').reduce((t, r) => t + r.amount, 0);
+    const otherEarned = l.earnings.filter((r) => r.key !== 'base').reduce((t, r) => t + r.amount, 0);
+    const baseSoFar = employed > 0 ? (base * daysSoFar) / employed : 0;
+    const cuts = l.deductions.filter((r) => AUTO_CUTS.has(r.key)).reduce((t, r) => t + r.amount, 0);
+    const earned = Math.max(0, rs(baseSoFar + otherEarned - cuts));
+    const due = rs(sum(l.deductionItems || [], (d) => d.amount) + (Number(l.advanceSuggested) || 0));
+    return {
+      employee: l.employee,
+      name: l.name,
+      code: l.code,
+      designation: l.designation,
+      payType: l.payType,
+      salary: l.salary,
+      dailyRate: l.dailyRate,
+      dayRate: l.dayRate,
+      daysSoFar,
+      employedDays: employed,
+      presentDays: a.presentDays || 0,
+      absentDays: a.absentDays || 0,
+      lateCount: a.lateCount || 0,
+      overtime: rs(otherEarned - l.earnings.filter((r) => r.key === 'days').reduce((t, r) => t + r.amount, 0)),
+      cuts: rs(cuts),
+      earned,
+      due,
+      payableNow: Math.max(0, rs(earned - due)),
+    };
+  });
+  const total = (k) => rs(sum(rows, (r) => r[k]));
+  return {
+    month,
+    monthLabel: period.label,
+    today: T.dayKey(now),
+    rows,
+    totals: { staff: rows.length, earned: total('earned'), due: total('due'), payableNow: total('payableNow'), fullMonth: rs(sum(lines, (l) => l.salary || 0)) },
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /* Runs                                                                */
 /* ------------------------------------------------------------------ */
@@ -1560,6 +1611,52 @@ async function payslip(id, lineId) {
   };
 }
 
+/**
+ * Day-by-day attendance behind one payroll line (read only, not stored on the run).
+ * Every day of the run's month: status, check in / out, hours worked, overtime.
+ */
+async function lineDays(id, lineId, { now = new Date() } = {}) {
+  const run = await loadRun(id);
+  const line = run.lines.find((l) => String(l._id) === String(lineId));
+  if (!line) throw httpError(404, 'Payroll line not found');
+  const summary = await core.monthSummary(run.month, { employeeIds: [line.employee], includeDays: true, now });
+  const s = summary.employees.find((x) => x.employeeId === idOf(line.employee));
+  const days = ((s && s.days) || []).map((d) => ({
+    date: d.date,
+    status: d.status,
+    planned: d.planned || null,
+    shiftName: d.shiftName || '',
+    leaveType: d.leaveType || null,
+    holidayName: d.holidayName || '',
+    checkIn: d.checkIn || null,
+    checkOut: d.checkOut || null,
+    workedMinutes: Number(d.workedMinutes) || 0,
+    overtimeMinutes: Number(d.overtimeMinutes) || 0,
+    overtimeApproved: d.overtimeApproved === undefined ? null : d.overtimeApproved,
+    lateMinutes: Number(d.lateMinutes) || 0,
+    earlyLeaveMinutes: Number(d.earlyLeaveMinutes) || 0,
+  }));
+  const worked = days.filter((d) => ['present', 'late', 'half_day', 'missing_out'].includes(d.status));
+  return {
+    run: { _id: run._id, runNo: run.runNo, month: run.month, monthLabel: run.monthLabel, status: run.status },
+    line: { _id: line._id, employee: line.employee, name: line.name, code: line.code },
+    days,
+    totals: {
+      workedMinutes: sum(days, (d) => d.workedMinutes),
+      overtimeMinutes: sum(days, (d) => d.overtimeMinutes),
+      overtimeApprovedMinutes: sum(days.filter((d) => d.overtimeApproved === true), (d) => d.overtimeMinutes),
+      daysWorked: worked.length,
+      fullDays: days.filter((d) => d.status === 'present' || d.status === 'late').length,
+      halfDays: days.filter((d) => d.status === 'half_day').length,
+      lateDays: days.filter((d) => d.lateMinutes > 0).length,
+      absentDays: days.filter((d) => d.status === 'absent').length,
+      leaveDays: days.filter((d) => d.status === 'leave').length,
+      offDays: days.filter((d) => d.status === 'off' || d.status === 'holiday').length,
+      missingOutDays: days.filter((d) => d.status === 'missing_out').length,
+    },
+  };
+}
+
 /** Payroll register (one row per employee). */
 async function exportCsv(id) {
   const run = await loadRun(id);
@@ -1602,6 +1699,7 @@ async function exportCsv(id) {
 }
 
 module.exports = {
+  salaryToDate,
   // advances
   createAdvance,
   listAdvances,
@@ -1625,6 +1723,7 @@ module.exports = {
   reopenRun,
   payRun,
   payslip,
+  lineDays,
   exportCsv,
   // pure
   buildMonth,

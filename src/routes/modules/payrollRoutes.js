@@ -17,6 +17,7 @@ const router = express.Router();
 router.get('/payroll/employees', ...staff, can('payroll', 'view'), handle(runs.employees));
 
 // ----- Payroll runs -----
+router.get('/payroll/to-date', ...staff, can('payroll', 'view'), handle(runs.toDate));
 router.get('/payroll/runs', ...staff, can('payroll', 'view'), handle(runs.list));
 router.post('/payroll/runs', ...staff, can('payroll', 'create'), handle(runs.generate));
 router.get('/payroll/runs/:id', ...staff, can('payroll', 'view'), handle(runs.get));
@@ -28,6 +29,7 @@ router.post('/payroll/runs/:id/reopen', ...staff, can('payroll', 'edit'), superA
 router.post('/payroll/runs/:id/pay', ...staff, can('payroll', 'edit'), handle(runs.pay));
 router.get('/payroll/runs/:id/export', ...staff, can('payroll', 'export'), handle(runs.exportCsv));
 router.get('/payroll/runs/:id/lines/:lineId/payslip', ...staff, can('payroll', 'view'), handle(runs.payslip));
+router.get('/payroll/runs/:id/lines/:lineId/days', ...staff, can('payroll', 'view'), handle(runs.lineDays));
 
 // ----- Salary advances -----
 router.get('/salary-advances', ...staff, can('payroll', 'view'), handle(advances.list));
