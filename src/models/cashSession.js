@@ -61,6 +61,7 @@ const cashSessionSchema = new mongoose.Schema(
           denominations: { type: Map, of: Number, default: () => ({}) },
           drawerTotal: { type: Number, default: 0 },
           dayCashTotal: { type: Number, default: 0 },
+          dayCashDenominations: { type: Map, of: Number, default: () => ({}) },
           cardTotal: { type: Number, default: null },
           bankTransferTotal: { type: Number, default: null },
           note: { type: String, default: '' },

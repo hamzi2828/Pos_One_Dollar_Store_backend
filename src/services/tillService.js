@@ -509,6 +509,8 @@ function serializeSession(s, { full = false } = {}) {
           denominations: s.draft.denominations instanceof Map ? Object.fromEntries(s.draft.denominations) : s.draft.denominations || {},
           drawerTotal: round2(s.draft.drawerTotal),
           dayCashTotal: round2(s.draft.dayCashTotal),
+          dayCashDenominations:
+            s.draft.dayCashDenominations instanceof Map ? Object.fromEntries(s.draft.dayCashDenominations) : s.draft.dayCashDenominations || {},
           cardTotal: s.draft.cardTotal ?? null,
           bankTransferTotal: s.draft.bankTransferTotal ?? null,
           note: s.draft.note || '',
@@ -633,7 +635,7 @@ async function openSession(req, { counterId, denominations, note } = {}) {
   return session.toObject({ flattenMaps: true });
 }
 
-async function closeSession(req, id, { denominations, note, dayCashTotal, cardTotal, bankTransferTotal } = {}) {
+async function closeSession(req, id, { denominations, note, dayCashTotal, dayCashDenominations, cardTotal, bankTransferTotal } = {}) {
   const access = req.access;
   if (!mongoose.Types.ObjectId.isValid(String(id))) throw httpError(404, 'Till session not found');
   const session = await CashSession.findById(id).lean();
@@ -643,11 +645,16 @@ async function closeSession(req, id, { denominations, note, dayCashTotal, cardTo
   if (!own && !access.can('till_verify', 'edit')) throw httpError(403, 'You can only close your own till.');
   if (session.status !== 'open') throw httpError(409, 'This till is already closed.', 'TILL_ALREADY_CLOSED');
 
-  const drawer = parseCashCount(denominations || {}, await getDenominations());
-  // Day's sales cash taken out of the drawer, typed as one total (owner 2026-11-06).
-  const day = round2(Number(dayCashTotal) || 0);
+  const allowedDenoms = await getDenominations();
+  const drawer = parseCashCount(denominations || {}, allowedDenoms);
+  // Day's sales cash taken out of the drawer: counted note by note, or typed as one total.
+  const dayNotes = parseCashCount(dayCashDenominations || {}, allowedDenoms);
+  const day = dayNotes.total > 0 ? dayNotes.total : round2(Number(dayCashTotal) || 0);
   if (day < 0 || day > 100000000) throw httpError(400, "Enter a valid total for the day's cash.");
-  const count = day > 0 ? { denominations: drawer.denominations, total: round2(drawer.total + day) } : drawer;
+  const dayC = dayNotes.total > 0 ? dayNotes : { denominations: {}, total: day };
+  const mergedNotes = { ...drawer.denominations };
+  for (const [v, c] of Object.entries(dayC.denominations)) mergedNotes[v] = (mergedNotes[v] || 0) + (Number(c) || 0);
+  const count = day > 0 ? { denominations: mergedNotes, total: round2(drawer.total + day) } : drawer;
   const closedAt = new Date();
   const { expected, nonCash } = await computeExpected(session, closedAt);
   expected.card = round2(nonCash.card);
@@ -684,7 +691,7 @@ async function closeSession(req, id, { denominations, note, dayCashTotal, cardTo
         closedBy: access.userId,
         closingCount: count,
         drawerCount: drawer,
-        ...(day > 0 ? { dayCash: { denominations: {}, total: day }, dayCashAt: closedAt } : {}),
+        ...(day > 0 ? { dayCash: dayC, dayCashAt: closedAt } : {}),
         cardTotal: card,
         bankTransferTotal: bank,
         closeNote: closerNote,
@@ -734,7 +741,8 @@ async function addDayCash(req, id, { denominations, note, amount, cardTotal, ban
 
   const allowed = await getDenominations();
   // One typed total (`amount`) or note by note (`denominations`).
-  const cash = Number(amount) > 0 ? { denominations: {}, total: round2(Number(amount)) } : parseCashCount(denominations || {}, allowed);
+  const notes = parseCashCount(denominations || {}, allowed);
+  const cash = notes.total > 0 ? notes : Number(amount) > 0 ? { denominations: {}, total: round2(Number(amount)) } : notes;
   const extra = {};
   for (const [k, v] of [['cardTotal', cardTotal], ['bankTransferTotal', bankTransferTotal]]) {
     if (v === undefined || v === null || v === '') continue;
@@ -794,7 +802,7 @@ async function addDayCash(req, id, { denominations, note, amount, cardTotal, ban
 }
 
 /** Save the till report without submitting: the till stays open and can still be edited. */
-async function saveDraft(req, id, { denominations, dayCashTotal, cardTotal, bankTransferTotal, note } = {}) {
+async function saveDraft(req, id, { denominations, dayCashTotal, dayCashDenominations, cardTotal, bankTransferTotal, note } = {}) {
   const access = req.access;
   if (!mongoose.Types.ObjectId.isValid(String(id))) throw httpError(404, 'Till session not found');
   const session = await CashSession.findById(id).lean();
@@ -802,7 +810,9 @@ async function saveDraft(req, id, { denominations, dayCashTotal, cardTotal, bank
   assertSessionBranch(access, session);
   if (!sameId(session.cashier, access.userId) && !access.can('till_verify', 'edit')) throw httpError(403, 'You can only save your own till.');
   if (session.status !== 'open') throw httpError(409, 'This till is already submitted.');
-  const drawer = parseCashCount(denominations || {}, await getDenominations());
+  const allowedDenoms = await getDenominations();
+  const drawer = parseCashCount(denominations || {}, allowedDenoms);
+  const dayNotes = parseCashCount(dayCashDenominations || {}, allowedDenoms);
   const money = (v) => {
     if (v === undefined || v === null || v === '') return null;
     const n = round2(Number(v));
@@ -812,7 +822,8 @@ async function saveDraft(req, id, { denominations, dayCashTotal, cardTotal, bank
   const draft = {
     denominations: drawer.denominations,
     drawerTotal: drawer.total,
-    dayCashTotal: money(dayCashTotal) || 0,
+    dayCashTotal: dayNotes.total > 0 ? dayNotes.total : money(dayCashTotal) || 0,
+    dayCashDenominations: dayNotes.denominations,
     cardTotal: money(cardTotal),
     bankTransferTotal: money(bankTransferTotal),
     note: typeof note === 'string' ? note.trim().slice(0, 500) : '',
