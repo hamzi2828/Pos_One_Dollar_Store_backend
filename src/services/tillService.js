@@ -340,7 +340,7 @@ async function sessionExpenses(session) {
   const own = Array.isArray(session.payoutIds) ? session.payoutIds.map((x) => String(x)) : null;
   const ownIds = (own || []).map((x) => new mongoose.Types.ObjectId(x));
   const db = mongoose.connection.db;
-  const [expenseRows, paymentRows] = await Promise.all([
+  const [expenseRows, paymentRows, tripRows] = await Promise.all([
     db
       .collection('expenses')
       .find({ $or: [{ date: near }, { createdAt: near }, { _id: { $in: ownIds } }], isDeleted: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true } })
@@ -350,6 +350,15 @@ async function sessionExpenses(session) {
       .collection('vendorpayments')
       .find({ $or: [{ date: near }, { createdAt: near }, { _id: { $in: ownIds } }], status: 'active', method: 'cash', branch: branchId, notes: { $not: /^Paid at the market/ } })
       .project({ vendorName: 1, paymentNo: 1, amount: 1, createdAt: 1, date: 1 })
+      .toArray(),
+    // Trip costs (owner 2026-11-08): paid from the shop cash on their date.
+    db
+      .collection('purchaseorders')
+      .find({
+        status: { $ne: 'cancelled' },
+        $or: [{ 'charges.date': near }, { 'charges.createdAt': near }, { 'charges._id': { $in: ownIds } }],
+      })
+      .project({ poNumber: 1, branch: 1, charges: 1 })
       .toArray(),
   ]);
   const dayOf = (d) => zonedParts(d, tz).dayKey;
@@ -373,7 +382,20 @@ async function sessionExpenses(session) {
       at: timeOf(x),
       kind: 'vendor_payment',
     })),
-  ];
+    ...tripRows
+      .filter((po) => !po.branch || String(po.branch) === String(branchId))
+      .flatMap((po) =>
+        (po.charges || []).map((c) => ({
+          _id: c._id,
+          title: `Trip cost ${po.poNumber}: ${String(c.type || 'other').replace(/_/g, ' ')}${c.note ? ` · ${c.note}` : ''}`,
+          amount: round2(c.amount),
+          paymentMethod: 'Cash',
+          createdAt: c.createdAt,
+          at: timeOf({ date: c.date, createdAt: c.createdAt }),
+          kind: 'trip_cost',
+        }))
+      ),
+  ].filter((x) => x.amount > 0);
   if (!rows.length) return [];
   const pick = (x) => ({ _id: x._id, title: x.title, amount: x.amount, paymentMethod: x.paymentMethod, createdAt: x.createdAt, kind: x.kind, shopUse: false });
   const mine = new Set(own || []);
