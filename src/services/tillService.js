@@ -396,6 +396,10 @@ async function sessionExpenses(session) {
         }))
       ),
   ].filter((x) => x.amount > 0);
+  // Money paid before the shop's first till day never comes off a till (shop set-up, opening stock).
+  const first = await CashSession.findOne({ branch: branchId }).sort({ openedAt: 1 }).select('openedAt').lean();
+  const firstDay = first ? zonedDayStart(dayOf(first.openedAt), tz).getTime() : 0;
+  for (let i = rows.length - 1; i >= 0; i--) if (rows[i].at < firstDay) rows.splice(i, 1);
   if (!rows.length) return [];
   const pick = (x) => ({ _id: x._id, title: x.title, amount: x.amount, paymentMethod: x.paymentMethod, createdAt: x.createdAt, kind: x.kind, shopUse: false });
   const mine = new Set(own || []);
