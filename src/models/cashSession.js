@@ -87,6 +87,10 @@ const cashSessionSchema = new mongoose.Schema(
       bankTransfer: { type: Number, default: 0 },
       billCount: { type: Number, default: 0 },
     },
+    // Expenses / vendor payments this till took off its cash, saved at close
+    // (owner, 2026-11-08): once a till counted one, no other till counts it again.
+    // Missing (undefined) on tills closed before this was saved.
+    payoutIds: { type: [mongoose.Schema.Types.ObjectId], default: undefined },
     // counted − expected (negative = short, positive = over).
     variance: { type: Number, default: null },
 

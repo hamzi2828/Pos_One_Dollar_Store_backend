@@ -302,22 +302,53 @@ const ORDER_FIELDS =
  */
 const PAYOUT_LOOKBACK_MS = 3 * 86400000;
 
+/**
+ * Tills closed before payoutIds were saved: the expenses they took off, by the
+ * old rule (expenses DATED the day the till opened; with several tills that day,
+ * the one open when it was entered, else the first). They never counted vendor payments.
+ */
+async function legacyPayoutIds(t, tz) {
+  const day = zonedParts(t.openedAt, tz).dayKey;
+  const dayDate = new Date(`${day}T00:00:00.000Z`);
+  const rows = await mongoose.connection.db
+    .collection('expenses')
+    .find({ date: { $gte: dayDate, $lt: new Date(dayDate.getTime() + 86400000) }, isDeleted: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true } })
+    .project({ createdAt: 1, branch: 1 })
+    .toArray();
+  if (!rows.length) return [];
+  const start = zonedDayStart(day, tz);
+  const sameDay = await CashSession.find({ branch: toId(t.branch), openedAt: { $gte: start, $lt: new Date(start.getTime() + 86400000) } })
+    .select('openedAt closedAt')
+    .sort({ openedAt: 1 })
+    .lean();
+  const list = sameDay.length ? sameDay : [t];
+  const owner = (x) => {
+    const at = new Date(x.createdAt).getTime();
+    const hit = list.find((s) => at >= new Date(s.openedAt).getTime() && (!s.closedAt || at <= new Date(s.closedAt).getTime()));
+    return String((hit || list[0])._id);
+  };
+  return rows.filter((x) => !x.branch || String(x.branch) === String(t.branch)).filter((x) => owner(x) === String(t._id)).map((x) => x._id);
+}
+
 async function sessionExpenses(session) {
   const tz = await getTimeZone();
   const branchId = toId(session.branch);
   const from = new Date(new Date(session.openedAt).getTime() - PAYOUT_LOOKBACK_MS);
   const to = new Date(session.closedAt || Date.now());
   const near = { $gte: new Date(from.getTime() - 86400000), $lte: new Date(to.getTime() + 86400000) };
+  // Saved at close: this till keeps exactly what it counted.
+  const own = Array.isArray(session.payoutIds) ? session.payoutIds.map((x) => String(x)) : null;
+  const ownIds = (own || []).map((x) => new mongoose.Types.ObjectId(x));
   const db = mongoose.connection.db;
   const [expenseRows, paymentRows] = await Promise.all([
     db
       .collection('expenses')
-      .find({ $or: [{ date: near }, { createdAt: near }], isDeleted: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true } })
+      .find({ $or: [{ date: near }, { createdAt: near }, { _id: { $in: ownIds } }], isDeleted: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true } })
       .project({ title: 1, amount: 1, paymentMethod: 1, createdAt: 1, branch: 1, date: 1 })
       .toArray(),
     db
       .collection('vendorpayments')
-      .find({ $or: [{ date: near }, { createdAt: near }], status: 'active', method: 'cash', branch: branchId, notes: { $not: /^Paid at the market/ } })
+      .find({ $or: [{ date: near }, { createdAt: near }, { _id: { $in: ownIds } }], status: 'active', method: 'cash', branch: branchId, notes: { $not: /^Paid at the market/ } })
       .project({ vendorName: 1, paymentNo: 1, amount: 1, createdAt: 1, date: 1 })
       .toArray(),
   ]);
@@ -342,16 +373,29 @@ async function sessionExpenses(session) {
       at: timeOf(x),
       kind: 'vendor_payment',
     })),
-  ].filter((x) => x.at >= from.getTime() && x.at <= to.getTime());
+  ];
   if (!rows.length) return [];
+  const pick = (x) => ({ _id: x._id, title: x.title, amount: x.amount, paymentMethod: x.paymentMethod, createdAt: x.createdAt, kind: x.kind, shopUse: false });
+  const mine = new Set(own || []);
 
   const tills = await CashSession.find({
     branch: branchId,
     openedAt: { $lte: new Date(to.getTime() + 30 * 86400000) },
-    $or: [{ closedAt: null }, { closedAt: { $gte: from } }],
+    $or: [{ closedAt: null }, { closedAt: { $gte: new Date(from.getTime() - PAYOUT_LOOKBACK_MS) } }],
   })
-    .select('openedAt closedAt')
+    .select('openedAt closedAt status branch payoutIds')
     .lean();
+  // Payouts other tills already took off their cash never count again.
+  const claimed = new Set();
+  for (const t of tills) {
+    if (String(t._id) === String(session._id) || t.status === 'open') continue;
+    let ids = t.payoutIds;
+    if (!Array.isArray(ids)) {
+      ids = await legacyPayoutIds(t, tz);
+      await CashSession.updateOne({ _id: t._id, payoutIds: { $exists: false } }, { $set: { payoutIds: ids } });
+    }
+    ids.forEach((x) => claimed.add(String(x)));
+  }
   if (!tills.some((t) => String(t._id) === String(session._id))) tills.push(session);
   const closeOf = (t) => (t.closedAt ? new Date(t.closedAt).getTime() : Infinity);
   tills.sort((a, b) => closeOf(a) - closeOf(b) || new Date(a.openedAt) - new Date(b.openedAt));
@@ -360,9 +404,9 @@ async function sessionExpenses(session) {
     return hit ? String(hit._id) : null;
   };
   return rows
-    .filter((x) => owner(x.at) === String(session._id))
+    .filter((x) => mine.has(String(x._id)) || (!claimed.has(String(x._id)) && x.at >= from.getTime() && x.at <= to.getTime() && owner(x.at) === String(session._id)))
     .sort((a, b) => a.at - b.at)
-    .map((x) => ({ _id: x._id, title: x.title, amount: x.amount, paymentMethod: x.paymentMethod, createdAt: x.createdAt, kind: x.kind, shopUse: false }));
+    .map(pick);
 }
 
 /**
@@ -375,6 +419,13 @@ async function refreshExpenses(session) {
   const expenses = await sessionExpenses(session);
   const total = round2(expenses.reduce((t, x) => t + x.amount, 0));
   const e = session.expected;
+  // Keep the saved list in step (a late, backdated payout can join a closed till).
+  const payoutIds = expenses.map((x) => x._id);
+  const key = (ids) => (ids || []).map(String).sort().join(',');
+  if (!Array.isArray(session.payoutIds) || key(session.payoutIds) !== key(payoutIds)) {
+    await CashSession.updateOne({ _id: session._id, status: 'closed' }, { $set: { payoutIds } });
+    session = { ...session, payoutIds };
+  }
   if (Math.abs(total - (Number(e.expenses) || 0)) < 0.01) return session;
   const expectedCash = round2((e.float || 0) + (e.cashSales || 0) + (e.cashReceivedOnCredit || 0) - (e.cashRefunds || 0) - total);
   const variance = round2(((session.closingCount && session.closingCount.total) || 0) - expectedCash);
@@ -697,7 +748,7 @@ async function closeSession(req, id, { denominations, note, dayCashTotal, dayCas
   for (const [v, c] of Object.entries(dayC.denominations)) mergedNotes[v] = (mergedNotes[v] || 0) + (Number(c) || 0);
   const count = day > 0 ? { denominations: mergedNotes, total: round2(drawer.total + day) } : drawer;
   const closedAt = new Date();
-  const { expected, nonCash } = await computeExpected(session, closedAt);
+  const { expected, nonCash, expenses: payouts } = await computeExpected(session, closedAt);
   expected.card = round2(nonCash.card);
   expected.bankTransfer = round2(nonCash.bank_transfer);
   const variance = round2(count.total - expected.expectedCash);
@@ -737,6 +788,7 @@ async function closeSession(req, id, { denominations, note, dayCashTotal, dayCas
         bankTransferTotal: bank,
         closeNote: closerNote,
         expected,
+        payoutIds: (payouts || []).map((x) => x._id),
         variance,
         lateClose,
       },
