@@ -122,7 +122,7 @@ async function listForProduct(productId, { variantId = null, bill = null, limit 
   return {
     totalStickers: sum[0]?.stickers || 0,
     totalScanned: sum[0]?.scanned || 0,
-    runs: rows.filter((r) => r.mode !== 'moved' && r.mode !== 'scanned').length,
+    runs: rows.filter((r) => r.mode !== 'moved' && r.mode !== 'scanned' && r.mode !== 'removed').length,
     prints: rows.map((r) => ({
       id: String(r._id),
       count: r.count,
@@ -221,6 +221,65 @@ async function markScanned(req, body = {}) {
   return { id: String(doc._id), count };
 }
 
+/**
+ * Printed more stickers than the entry's pieces (e.g. 469 for 461): take the extra off the log.
+ * Keyed like the log: this entry's product / variant / vendor bill, against the pieces of all its
+ * live entries there. Never goes below the pieces; own-barcode rows are left alone. Kept as a
+ * "removed" row (who / when) so the history shows it. Calling it again removes nothing.
+ * -> { removed, printed, need }
+ */
+async function removeExtra(req, grnId, entryId) {
+  if (!mongoose.isValidObjectId(grnId) || !mongoose.isValidObjectId(entryId)) throw bad('Invalid entry');
+  const GoodsReceipt = require('../models/goodsReceipt');
+  const grn = await GoodsReceipt.findById(grnId, { entries: 1 }).lean();
+  const e = grn && (grn.entries || []).find((x) => String(x._id) === String(entryId) && !x.undone);
+  if (!e) throw Object.assign(new Error('Entry not found'), { status: 404 });
+  const v = e.variantId ? String(e.variantId) : null;
+  // Pieces of this product from this vendor (same as the bar on the entry).
+  const need = (grn.entries || [])
+    .filter((x) => !x.undone && String(x.product) === String(e.product) && (x.variantId ? String(x.variantId) : null) === v && String(x.bill) === String(e.bill))
+    .reduce((n, x) => n + (x.stockQty || 0) * Math.max(1, x.piecesPerSale || 1), 0);
+  const q = { product: new mongoose.Types.ObjectId(String(e.product)), variantId: v, bill: new mongoose.Types.ObjectId(String(e.bill)), ignored: { $ne: true } };
+  const sumOf = async () => {
+    const s = await LabelPrint.aggregate([
+      { $match: q },
+      { $group: { _id: null, n: { $sum: '$count' }, scanned: { $sum: { $cond: [{ $eq: ['$mode', 'scanned'] }, '$count', 0] } } } },
+    ]);
+    return { n: s[0]?.n || 0, scanned: s[0]?.scanned || 0 };
+  };
+  const was = await sumOf();
+  // Only printed stickers can go (not the own-barcode part).
+  const n = Math.min(was.n - need, was.n - was.scanned);
+  if (n < 1) return { removed: 0, printed: was.n, need };
+  const p = await LabelPrint.findOne({ product: q.product, variantId: v }).sort({ createdAt: -1 }).lean();
+  const u = userIdOf(req);
+  const row = await LabelPrint.create({
+    product: q.product,
+    variantId: v,
+    bill: q.bill,
+    productName: p?.productName || e.productName || '',
+    code: p?.code || e.code || '',
+    count: -n,
+    total: need,
+    mode: 'removed',
+    note: `Removed ${n} extra sticker${n === 1 ? '' : 's'} (printed more than the ${need} pieces)`,
+    piecesPerSale: p?.piecesPerSale || 1,
+    via: 'browser',
+    user: u && mongoose.isValidObjectId(u) ? u : null,
+    userName: userNameOf(req),
+  });
+  // Two clicks at once: never end below the pieces.
+  const now = await sumOf();
+  if (now.n < need) {
+    const keep = n - (need - now.n);
+    if (keep < 1) await LabelPrint.deleteOne({ _id: row._id });
+    else await LabelPrint.updateOne({ _id: row._id }, { $set: { count: -keep, note: `Removed ${keep} extra sticker${keep === 1 ? '' : 's'} (printed more than the ${need} pieces)` } });
+    const fixed = await sumOf();
+    return { removed: Math.max(0, keep), printed: fixed.n, need };
+  }
+  return { removed: n, printed: now.n, need };
+}
+
 /** Ignore (or bring back) one print: test / wrong prints are not counted. */
 async function setIgnored(req, id, ignored) {
   if (!mongoose.isValidObjectId(id)) throw bad('Invalid print');
@@ -234,4 +293,4 @@ async function setIgnored(req, id, ignored) {
   return { id: String(r._id), ignored: r.ignored };
 }
 
-module.exports = { makeTicket, record, listForProduct, printedSummary, setIgnored, printedFor, moveBetweenBills, markScanned };
+module.exports = { makeTicket, record, listForProduct, printedSummary, setIgnored, printedFor, moveBetweenBills, markScanned, removeExtra };

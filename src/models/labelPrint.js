@@ -15,7 +15,8 @@ const labelPrintSchema = new mongoose.Schema(
     count: { type: Number, required: true },
     total: { type: Number, default: 0 },
     // sale = one per sale (set items), piece = all pieces, custom = a typed number
-    mode: { type: String, enum: ['sale', 'piece', 'custom', 'moved', 'scanned'], default: 'custom' },
+    // removed = extra stickers (more than the pieces) taken off the log (negative count)
+    mode: { type: String, enum: ['sale', 'piece', 'custom', 'moved', 'scanned', 'removed'], default: 'custom' },
     // Vendor bill (receiving) the stickers were printed for; null = printed outside receiving.
     bill: { type: mongoose.Schema.Types.ObjectId, default: null },
     note: { type: String, default: '' },

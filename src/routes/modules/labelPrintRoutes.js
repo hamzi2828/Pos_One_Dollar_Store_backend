@@ -63,6 +63,18 @@ router.post(
   })
 );
 
+// POST /label-prints/remove-extra { grnId, entryId } -> printed more than the pieces: take the extra off.
+router.post(
+  '/label-prints/remove-extra',
+  ...staff,
+  can('products', 'edit'),
+  handle(async (req, res) => {
+    const b = req.body || {};
+    const data = await log.removeExtra(req, b.grnId, b.entryId);
+    res.json({ success: true, data });
+  })
+);
+
 // PATCH /label-prints/:id { ignored: true|false } -> leave a test / wrong print out of the count.
 router.patch(
   '/label-prints/:id',

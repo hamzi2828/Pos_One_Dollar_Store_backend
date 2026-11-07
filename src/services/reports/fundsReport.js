@@ -86,11 +86,18 @@ async function funds() {
     .toArray();
   for (const p of payments) movements.push({ at: p.createdAt, kind: 'vendor_payment', label: `${p.paymentNo} · ${p.vendorName} (${p.method})`, amount: -round2(p.amount) });
 
-  const pos = await db.collection('purchaseorders').find({ 'charges.createdAt': { $gte: since } }).project({ poNumber: 1, charges: 1 }).toArray();
+  // Trip costs count on their date (owner 2026-11-08); old rows have only createdAt.
+  const pos = await db
+    .collection('purchaseorders')
+    .find({ $or: [{ 'charges.createdAt': { $gte: since } }, { 'charges.date': { $gte: new Date(since.getTime() - 86400000) } }] })
+    .project({ poNumber: 1, charges: 1 })
+    .toArray();
   for (const po of pos)
-    for (const c of po.charges || [])
-      if (c.createdAt && c.createdAt >= since)
-        movements.push({ at: c.createdAt, kind: 'trip_cost', label: `Trip cost ${po.poNumber} · ${c.type || ''}${c.note ? ` · ${c.note}` : ''}`, amount: -round2(c.amount) });
+    for (const c of po.charges || []) {
+      const at = c.date ? placeOn(c.date, c.createdAt || c.date, since) : c.createdAt;
+      if (at && at >= since)
+        movements.push({ at, kind: 'trip_cost', label: `Trip cost ${po.poNumber} · ${c.type || ''}${c.note ? ` · ${c.note}` : ''}`, amount: -round2(c.amount) });
+    }
 
   const expenses = await db
     .collection('expenses')
