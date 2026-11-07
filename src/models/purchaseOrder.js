@@ -84,6 +84,7 @@ const chargeSchema = new mongoose.Schema({
   amount: { type: Number, min: 0, required: true },
   note: { type: String, default: '' },
   paidTo: { type: String, default: '' },
+  date: { type: Date, default: null }, // day the cost was paid (null = old row: use createdAt)
   // Payment proof: transfer screenshots / PDFs (max 5)
   photos: { type: [String], default: [] },
   // 'builty' = freight typed on the builty at close (replaced on every close)

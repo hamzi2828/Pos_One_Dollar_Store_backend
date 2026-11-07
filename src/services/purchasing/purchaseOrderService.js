@@ -690,6 +690,7 @@ function parseCharge(body, current = {}) {
     amount,
     note: body.note !== undefined ? h.toText(body.note, 300) : current.note || '',
     paidTo: body.paidTo !== undefined ? h.toText(body.paidTo, 100) : current.paidTo || '',
+    date: h.has(body.date) ? h.toDate(body.date, 'Date') : current.date || (current.type ? null : new Date()),
   };
 }
 
