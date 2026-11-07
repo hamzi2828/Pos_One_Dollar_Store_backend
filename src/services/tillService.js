@@ -927,6 +927,7 @@ async function myStatus(req) {
         busy: !!b,
         busyBy: b ? b.cashierName : '',
         mine: !!b && sameId(b.cashier, userId),
+        assignedToMe: (c.assignedUsers || []).some((u) => sameId(u, userId)),
         allowed: assigned || access.isSuperAdmin || access.can('till_verify', 'edit'),
       };
     }),
