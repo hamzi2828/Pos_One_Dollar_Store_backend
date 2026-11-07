@@ -292,69 +292,76 @@ const ORDER_FIELDS =
  */
 /**
  * Money paid out of the till: expenses (not shop use) and vendor payments made
- * in cash (owner, 2026-11-08), each counted on the day of its DATE (shop time).
- *   - Tills opened that day: it goes to the one that was open when it was
- *     entered, else the first till of that day.
- *   - No till opened that day (e.g. a till left open from the day before): it
- *     goes to the till that was open when it was entered.
+ * in cash. Owner's rule (2026-11-08): what is paid after one till closes, up to
+ * when the next till closes, comes off that next till.
+ *   - Time of a payout = when it was entered. If it is dated an EARLIER day
+ *     (entered late), midday of that day is used, so it lands on that day's till.
+ *   - The till = the first one (this branch) to close at or after that time
+ *     (a still-open till closes "last"); ties go to the till opened first.
  * Vendor payments made at the market on a purchase trip are not from the till.
  */
+const PAYOUT_LOOKBACK_MS = 3 * 86400000;
+
 async function sessionExpenses(session) {
   const tz = await getTimeZone();
   const branchId = toId(session.branch);
-  const openDay = zonedParts(session.openedAt, tz).dayKey;
-  // Look a day either side of the till's life; the owner check below decides.
-  const from = new Date(zonedDayStart(openDay, tz).getTime() - 86400000);
-  const to = new Date(new Date(session.closedAt || Date.now()).getTime() + 2 * 86400000);
+  const from = new Date(new Date(session.openedAt).getTime() - PAYOUT_LOOKBACK_MS);
+  const to = new Date(session.closedAt || Date.now());
+  const near = { $gte: new Date(from.getTime() - 86400000), $lte: new Date(to.getTime() + 86400000) };
   const db = mongoose.connection.db;
   const [expenseRows, paymentRows] = await Promise.all([
     db
       .collection('expenses')
-      .find({ date: { $gte: from, $lt: to }, isDeleted: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true } })
+      .find({ $or: [{ date: near }, { createdAt: near }], isDeleted: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true } })
       .project({ title: 1, amount: 1, paymentMethod: 1, createdAt: 1, branch: 1, date: 1 })
       .toArray(),
     db
       .collection('vendorpayments')
-      .find({ date: { $gte: from, $lt: to }, status: 'active', method: 'cash', branch: branchId, notes: { $not: /^Paid at the market/ } })
-      .project({ vendorName: 1, paymentNo: 1, amount: 1, createdAt: 1, date: 1, reference: 1 })
+      .find({ $or: [{ date: near }, { createdAt: near }], status: 'active', method: 'cash', branch: branchId, notes: { $not: /^Paid at the market/ } })
+      .project({ vendorName: 1, paymentNo: 1, amount: 1, createdAt: 1, date: 1 })
       .toArray(),
   ]);
+  const dayOf = (d) => zonedParts(d, tz).dayKey;
+  // When the money left the till.
+  const timeOf = (x) => {
+    const entered = new Date(x.createdAt || x.date);
+    if (!x.date) return entered.getTime();
+    const day = dayOf(x.date);
+    return day < dayOf(entered) ? zonedDayStart(day, tz).getTime() + 12 * 3600000 : entered.getTime();
+  };
   const rows = [
     ...expenseRows
       .filter((x) => !x.branch || String(x.branch) === String(branchId))
-      .map((x) => ({ _id: x._id, title: x.title || '', amount: round2(x.amount), paymentMethod: x.paymentMethod || '', createdAt: x.createdAt, date: x.date, kind: 'expense' })),
+      .map((x) => ({ _id: x._id, title: x.title || '', amount: round2(x.amount), paymentMethod: x.paymentMethod || '', createdAt: x.createdAt, at: timeOf(x), kind: 'expense' })),
     ...paymentRows.map((x) => ({
       _id: x._id,
       title: `Vendor payment: ${x.vendorName || 'vendor'}${x.paymentNo ? ` (${x.paymentNo})` : ''}`,
       amount: round2(x.amount),
       paymentMethod: 'Cash',
       createdAt: x.createdAt,
-      date: x.date,
+      at: timeOf(x),
       kind: 'vendor_payment',
     })),
-  ];
+  ].filter((x) => x.at >= from.getTime() && x.at <= to.getTime());
   if (!rows.length) return [];
 
   const tills = await CashSession.find({
     branch: branchId,
-    openedAt: { $gte: new Date(from.getTime() - 2 * 86400000), $lt: to },
+    openedAt: { $lte: new Date(to.getTime() + 30 * 86400000) },
+    $or: [{ closedAt: null }, { closedAt: { $gte: from } }],
   })
     .select('openedAt closedAt')
-    .sort({ openedAt: 1 })
     .lean();
   if (!tills.some((t) => String(t._id) === String(session._id))) tills.push(session);
-  const dayOf = (d) => zonedParts(d, tz).dayKey;
-  const openAt = (t, at) => at >= new Date(t.openedAt).getTime() && (!t.closedAt || at <= new Date(t.closedAt).getTime());
-  const owner = (x) => {
-    const at = new Date(x.createdAt).getTime();
-    const day = dayOf(x.date || x.createdAt);
-    const thatDay = tills.filter((t) => dayOf(t.openedAt) === day);
-    const hit = thatDay.length ? thatDay.find((t) => openAt(t, at)) || thatDay[0] : tills.find((t) => openAt(t, at));
+  const closeOf = (t) => (t.closedAt ? new Date(t.closedAt).getTime() : Infinity);
+  tills.sort((a, b) => closeOf(a) - closeOf(b) || new Date(a.openedAt) - new Date(b.openedAt));
+  const owner = (at) => {
+    const hit = tills.find((t) => closeOf(t) >= at);
     return hit ? String(hit._id) : null;
   };
   return rows
-    .filter((x) => owner(x) === String(session._id))
-    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+    .filter((x) => owner(x.at) === String(session._id))
+    .sort((a, b) => a.at - b.at)
     .map((x) => ({ _id: x._id, title: x.title, amount: x.amount, paymentMethod: x.paymentMethod, createdAt: x.createdAt, kind: x.kind, shopUse: false }));
 }
 
