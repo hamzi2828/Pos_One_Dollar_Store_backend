@@ -52,6 +52,7 @@ router.get('/orders/:id', can(['pos', ...SALES_VIEWERS], 'view'), posController.
 router.post('/orders/:id/payment', can(['pos', 'pos_orders'], 'edit'), posController.addPayment);
 router.post('/orders/:id/whatsapp', can(['pos', 'pos_orders'], 'create'), posController.resendWhatsapp); // resend slip
 router.post('/orders/:id/discount', can('pos_orders', 'edit'), posController.giveDiscount); // discount after the sale
+router.post('/orders/:id/payment-method', can('pos_orders', 'edit'), posController.changePaymentMethod); // fix cash / card / bank
 router.post('/orders/:id/refund', can('pos_orders', 'edit'), posController.refundOrder); // puts stock back once
 router.delete('/orders/:id', can('pos_orders', 'delete'), posController.deleteOrder);
 

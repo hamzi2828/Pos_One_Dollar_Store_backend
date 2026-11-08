@@ -1280,6 +1280,62 @@ const posController = {
     }
   },
 
+  // POST /api/pos/orders/:id/payment-method — body { method: cash|card|bank_transfer, reason? }.
+  // Fixes a bill rung up with the wrong method. Only bills paid with one method.
+  // A closed (not yet verified) till is worked out again.
+  changePaymentMethod: async (req, res) => {
+    try {
+      const METHODS = ['cash', 'card', 'bank_transfer'];
+      const method = String((req.body || {}).method || '').trim();
+      const reason = String((req.body || {}).reason || '').trim().slice(0, 200);
+      if (!METHODS.includes(method)) return res.status(400).json({ success: false, message: 'Choose cash, card or bank transfer' });
+      if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) return res.status(404).json({ success: false, message: 'Order not found' });
+      const order = await POSOrder.findOne({ _id: req.params.id, isDeleted: { $ne: true } });
+      if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+      if (['refunded', 'cancelled'].includes(order.orderStatus) || order.paymentStatus === 'refunded') {
+        return res.status(400).json({ success: false, message: 'This bill is refunded / cancelled' });
+      }
+      const pays = order.paymentHistory || [];
+      const used = new Set(pays.filter((p) => Number(p.amount) > 0).map((p) => p.paymentMethod));
+      if (order.paymentMethod) used.add(order.paymentMethod);
+      if (used.size > 1 || used.has('split')) {
+        return res.status(400).json({ success: false, message: 'This bill was paid in parts; change it from the invoice' });
+      }
+      const old = order.paymentMethod || [...used][0] || 'cash';
+      if (old === method) return res.status(400).json({ success: false, message: 'The bill is already paid this way' });
+
+      const CashSession = require('../models/cashSession');
+      const session = order.cashSession ? await CashSession.findById(order.cashSession).lean() : null;
+      if (session && session.status === 'verified') {
+        return res.status(409).json({ success: false, message: 'The till of this bill is already verified, so the bill cannot change.' });
+      }
+
+      order.paymentMethod = method;
+      pays.forEach((p) => {
+        p.paymentMethod = method;
+      });
+      const paid = Math.round(Number(order.paidAmount || 0) * 100) / 100;
+      order.cashAmount = method === 'cash' ? paid : 0;
+      order.cardAmount = method === 'card' ? paid : 0;
+      order.changeGiven = 0;
+      const by = (req.user && (req.user.firstName || req.user.email)) || 'admin';
+      order.notes = `${order.notes ? `${order.notes}\n` : ''}Payment changed ${old} -> ${method} by ${by}${reason ? `: ${reason}` : ''}`;
+      order.markModified('paymentHistory');
+      await order.save();
+
+      // Closed till: its cash / card / bank figures follow the bill.
+      if (session && session.status === 'closed') {
+        await tillService.refreshClosedSales(session._id, { by: userIdOf(req), note: `${order.orderNumber}: payment ${old} -> ${method}` });
+      }
+
+      const populatedOrder = await loadOrderForResponse(order._id);
+      return res.status(200).json({ success: true, data: orderForViewer(populatedOrder, req.access), message: 'Payment method changed' });
+    } catch (error) {
+      console.error('Change payment method error:', error);
+      return res.status(400).json({ success: false, message: 'Could not change the payment method', error: error.message });
+    }
+  },
+
   // POST /api/pos/orders/:id/refund — body { reason? }. Marks the order refunded
   // and puts its pieces back into stock (only once, ledger rows 'sale_return' with the order refs).
   refundOrder: async (req, res) => {

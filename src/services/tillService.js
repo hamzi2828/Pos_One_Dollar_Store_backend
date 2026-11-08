@@ -459,6 +459,35 @@ async function refreshExpenses(session) {
   return { ...session, expected: { ...e, expenses: total, expectedCash }, variance };
 }
 
+/**
+ * A closed (not verified) till after one of its bills changed (e.g. payment
+ * method): work out the sales figures again up to its close time. The saved
+ * expenses stay. Returns the updated session, or null when not closed.
+ */
+async function refreshClosedSales(sessionId, { by = null, note = '' } = {}) {
+  const session = await CashSession.findById(sessionId).lean();
+  if (!session || session.status !== 'closed' || !session.expected || !session.closedAt) return null;
+  const { expected: fresh, nonCash } = await computeExpected(session, session.closedAt);
+  const e = session.expected;
+  const expenses = Number(e.expenses) || 0;
+  const expectedCash = round2((e.float || 0) + fresh.cashSales + fresh.cashReceivedOnCredit - fresh.cashRefunds - expenses);
+  const set = {
+    'expected.cashSales': fresh.cashSales,
+    'expected.cashReceivedOnCredit': fresh.cashReceivedOnCredit,
+    'expected.cashRefunds': fresh.cashRefunds,
+    'expected.billCount': fresh.billCount,
+    'expected.card': round2(nonCash.card),
+    'expected.bankTransfer': round2(nonCash.bank_transfer),
+    'expected.expectedCash': expectedCash,
+    variance: round2(((session.closingCount && session.closingCount.total) || 0) - expectedCash),
+  };
+  return CashSession.findOneAndUpdate(
+    { _id: session._id, status: 'closed' },
+    { $set: set, $push: { history: { at: new Date(), by, action: 'bill_changed', note } } },
+    { new: true }
+  ).lean();
+}
+
 async function computeExpected(session, until = new Date()) {
   const start = new Date(session.openedAt);
   const end = new Date(until);
@@ -1233,6 +1262,7 @@ module.exports = {
   computeExpected,
   sessionExpenses,
   refreshExpenses,
+  refreshClosedSales,
   deleteSession,
   myStatus,
   serializeSession,
