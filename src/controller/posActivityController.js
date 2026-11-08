@@ -89,10 +89,22 @@ async function saveBatch(req, cartId) {
   const raw = Array.isArray(body.events) ? body.events.slice(0, MAX_BATCH) : [];
   const now = new Date();
 
+  // A counter PC with a wrong clock (one was 12 h ahead): move its times by
+  // the difference between its clock (sentAt) and the server's. Rounded to
+  // 10 s so a resent batch gets the same times. No sentAt: future times -> now.
+  const sentAt = toDate(body.sentAt);
+  const rawSkew = sentAt ? now - sentAt : 0;
+  const skew = Math.abs(rawSkew) >= 60 * 1000 ? Math.round(rawSkew / 10000) * 10000 : 0;
+  const fixTime = (d) => {
+    if (!d) return null;
+    const t = new Date(d.getTime() + skew);
+    return t - now > 60 * 1000 ? now : t;
+  };
+
   // Clean events, oldest first (stable).
   const events = raw
     .filter((e) => e && typeof e === 'object')
-    .map((e) => ({ at: toDate(e.at) || now, type: text(e.type), label: text(e.label), data: cleanData(e.data) }))
+    .map((e) => ({ at: fixTime(toDate(e.at)) || now, type: text(e.type), label: text(e.label), data: cleanData(e.data) }))
     .map((e, i) => ({ e, i }))
     .sort((a, b) => a.e.at - b.e.at || a.i - b.i)
     .map((x) => x.e);
@@ -152,7 +164,7 @@ async function saveBatch(req, cartId) {
       counter: session?.counter || null,
       counterName: session?.counterName || '',
       deviceName: text(req.get('x-device-name')),
-      startedAt: toDate(body.startedAt) || fresh[0]?.at || now,
+      startedAt: fixTime(toDate(body.startedAt)) || fresh[0]?.at || now,
       branch: await resolveWriteBranch(req),
     };
   }
