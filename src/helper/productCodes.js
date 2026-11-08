@@ -17,6 +17,9 @@
 //   shortCode       "10245"
 //   batch           "10245-1", "10245-2" (batchNo and its barcode)
 //   full-box code   "10245-BOX"  (one scan sells piecesPerBox pieces)
+//   stock code      "1024502", "1024503" (product.stockCodes: next stocks of an
+//                   item, digits only = shortCode + 2-digit number; one scan = 1 piece;
+//                   made by services/purchasing/stockCodes.js)
 
 const mongoose = require('mongoose');
 const Product = require('../models/product');
@@ -165,11 +168,33 @@ const unitCodes = (unit) => {
   return codes.filter((c) => c.code);
 };
 
+// Stock codes (product.stockCodes) of one unit. key = variantId or PRODUCT_UNIT.
+const stockCodeRows = (product, key) =>
+  ((product && product.stockCodes) || []).filter(
+    (r) => r && r.code && (key === PRODUCT_UNIT ? !r.variantId : String(r.variantId || '') === String(key))
+  );
+
+// Every code of one unit of `product`: its own codes + its stock codes.
+const unitCodesOf = (product, key, unit) => {
+  const codes = unitCodes(unit);
+  const seen = new Set(codes.map((c) => c.code));
+  for (const r of stockCodeRows(product, key)) {
+    const code = normalizeCode(r.code);
+    if (code && !seen.has(code)) {
+      seen.add(code);
+      codes.push({ code, kind: 'stock', qty: 1 });
+    }
+  }
+  return codes;
+};
+
 const buildScanCodes = (product) => {
   const set = new Set();
-  for (const { unit } of listUnits(product)) {
-    for (const c of unitCodes(unit)) set.add(c.code);
+  for (const { key, unit } of listUnits(product)) {
+    for (const c of unitCodesOf(product, key, unit)) set.add(c.code);
   }
+  // Stock codes stay reserved even when their variant is gone.
+  for (const r of (product && product.stockCodes) || []) if (r && r.code) set.add(normalizeCode(r.code));
   return [...set];
 };
 
@@ -179,7 +204,7 @@ const resolveScan = (product, rawCode) => {
   const code = normalizeCode(rawCode);
   if (!code || !product) return null;
   for (const { key, variant, unit } of listUnits(product)) {
-    const hit = unitCodes(unit).find((c) => c.code === code);
+    const hit = unitCodesOf(product, key, unit).find((c) => c.code === code);
     if (hit) {
       return {
         variant: variant || null,
@@ -364,7 +389,7 @@ const prepareProductCodes = async (doc, opts = {}) => {
   // Same code on two different units of this product?
   const owner = new Map();
   for (const { key, unit } of listUnits(doc)) {
-    for (const c of unitCodes(unit)) {
+    for (const c of unitCodesOf(doc, key, unit)) {
       const prev = owner.get(c.code);
       if (prev !== undefined && prev !== key) {
         throw codeError(`Code "${c.code}" is used on more than one variant of this product`, { duplicateCode: c.code });
@@ -661,6 +686,8 @@ module.exports = {
   variantLabel,
   listUnits,
   unitCodes,
+  unitCodesOf,
+  stockCodeRows,
   buildScanCodes,
   resolveScan,
   findProductByCode,

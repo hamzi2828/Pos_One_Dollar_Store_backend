@@ -25,7 +25,7 @@ const tillService = require('../tillService');
 const pricing = require('./pricingService');
 const { PAYMENT_NOTES, PAYMENT_STATUS } = require('../../constants/paymentNotes');
 const { PAYMENT_METHODS, paymentPlan, pricingInput, orderMovement, queueReceipt, CLIENT_ID_RE, findByClientId, saveNewOrder } = require('./saleHelpers');
-const { listUnits, unitCodes, unitBranchStock, getMainBranchId, variantLabel } = require('../../helper/productCodes');
+const { listUnits, unitCodesOf, unitBranchStock, getMainBranchId, variantLabel } = require('../../helper/productCodes');
 
 const MAX_ORDERS = 50;
 const MAX_CUSTOMERS = 2000;
@@ -66,7 +66,7 @@ async function catalog(access, { branchId, now = new Date() } = {}) {
   const [products, tiers, rules, settings, customers, limits, tillRequired] = await Promise.all([
     Product.find({ status: { $in: ['published', 'out_of_stock'] } })
       .select(
-        'name slug sku shortCode barcodes price discountedPrice category thumbnailUrl productType variants stock branchStock batches priceTier status'
+        'name slug sku shortCode barcodes stockCodes.code stockCodes.variantId price discountedPrice category thumbnailUrl productType variants stock branchStock batches priceTier status'
       )
       .sort({ name: 1 })
       .lean(),
@@ -90,7 +90,7 @@ async function catalog(access, { branchId, now = new Date() } = {}) {
     // Every scannable code with what it means (same as helper/productCodes.resolveScan).
     const codes = [];
     for (const { key, unit } of listUnits(p)) {
-      for (const c of unitCodes(unit)) {
+      for (const c of unitCodesOf(p, key, unit)) {
         codes.push({
           code: c.code,
           variantId: p.productType === 'variant' ? String(key) : null,

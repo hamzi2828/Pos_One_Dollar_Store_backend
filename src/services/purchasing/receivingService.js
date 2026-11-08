@@ -19,6 +19,7 @@ const locationService = require('../inventory/locationService');
 const { normalizeCode, resolveScan } = require('../../helper/productCodes');
 const costing = require('./costing');
 const products = require('./productLookup');
+const stockCodes = require('./stockCodes');
 const poService = require('./purchaseOrderService');
 const h = require('./helpers');
 
@@ -789,7 +790,7 @@ async function markBox(req, id, body = {}) {
  * shelfId + shelfQty puts some on a shelf straight away.
  * -> { entry, grn, tags: { productId, variantId, copies }, warnings }
  */
-async function addEntry(req, id, body = {}) {
+async function addEntry(req, id, body = {}, opts = {}) {
   const userId = h.userId(req);
   const first = await findGRN(req, id);
   await assertMayVerify(req, first);
@@ -883,6 +884,13 @@ async function addEntry(req, id, body = {}) {
   });
 
   const entry = grn.entries.id(entryId);
+  // Sticker code of this stock, before the stock goes in ("first stock" reads the stock).
+  const warnings = [];
+  try {
+    await stockCodes.assignForEntry(grn, entry, { keepCode: opts.keepCode });
+  } catch (err) {
+    warnings.push(`Saved, but no own code was made for this stock (${err.message}). Open the entry again to make it.`);
+  }
   if (!entry.posted) {
     try {
       await postEntry(grn, entry, userId);
@@ -893,7 +901,6 @@ async function addEntry(req, id, body = {}) {
   }
 
   // Straight onto a shelf (optional). If it fails the pieces simply stay in the warehouse.
-  const warnings = [];
   if (shelf && shelfQty > 0 && entry.stockQty > 0 && !entry.shelved) {
     try {
       await locationService.putaway({
@@ -922,7 +929,12 @@ async function addEntry(req, id, body = {}) {
 async function entryResult(req, id, grn, entry, { repeated = false, warnings = [] } = {}) {
   // A resend while the first request may still be posting leaves it to that request (or to Finish).
   const stale = Date.now() - new Date(entry.createdAt).getTime() > ENTRY_STALE_MS;
-  if (!entry.posted && !entry.undone && (!repeated || stale)) await postEntry(grn, entry, h.userId(req));
+  // A resend after a cut-off request: finish its code too.
+  if (repeated && !entry.undone && !entry.batchCode && entry.posted) await stockCodes.assignForEntry(grn, entry).catch(() => {});
+  if (!entry.posted && !entry.undone && (!repeated || stale)) {
+    await stockCodes.assignForEntry(grn, entry).catch(() => {});
+    await postEntry(grn, entry, h.userId(req));
+  }
   const e = plainEntry(entry);
   return {
     entry: e,
@@ -934,7 +946,10 @@ async function entryResult(req, id, grn, entry, { repeated = false, warnings = [
       copies: e.undone ? 0 : e.stockQty * Math.max(1, e.piecesPerSale || 1),
       piecesPerSale: Math.max(1, e.piecesPerSale || 1),
       productName: e.productName,
-      code: e.code,
+      // The code printed on this stock's tags (its own code; older entries: the product code).
+      code: e.batchCode || e.code,
+      productCode: e.code,
+      batchCode: e.batchCode || '',
       salePrice: e.salePrice,
     },
     warnings,
@@ -1015,6 +1030,8 @@ async function undoEntry(req, id, entryId) {
     grn.lockedAt = null;
     grn.history.push(h.historyEntry(req, 'entry_undone', `#${entry.entryNo} ${entry.productName}: ${entry.qty} pcs`));
     await grn.save();
+    // Its code stays reserved (stickers may be printed), marked undone when no entry is left.
+    await stockCodes.entryUndone(entry).catch(() => {});
     return { entry: plainEntry(entry), grn: await getOne(req, id) };
   } catch (err) {
     throw h.friendlyDbError(err);
@@ -1104,7 +1121,7 @@ async function editEntry(req, id, entryId, body = {}) {
       costPrice,
       boxNo,
       requestId,
-    });
+    }, { keepCode: old.batchCode || old.code || '' });
   } catch (err) {
     // The old entry is out with its sold pieces counted: stock is right, keep it.
     throw httpError(`The old entry was taken out, but the new one could not be saved: ${err.message}. Enter ${old.productName} again.`, err.status && err.status < 500 ? err.status : 400, 'EDIT_FAILED');

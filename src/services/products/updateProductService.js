@@ -216,6 +216,8 @@ const buildCodeUpdates = async (id, existing, payload, updates, ctx) => {
     piecesPerBox,
     stock: existing.stock,
     branchStock: existing.branchStock || [],
+    // Stock codes are never edited here; kept so scanCodes still has them.
+    stockCodes: existing.stockCodes || [],
   };
 
   if (productType === 'variant') {

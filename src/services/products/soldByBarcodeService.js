@@ -24,7 +24,7 @@ const norm = (c) => String(c || '').trim().toUpperCase();
 /** Returns null when the product does not exist. */
 async function soldByBarcode(productId) {
   if (!mongoose.isValidObjectId(productId)) return null;
-  const product = await Product.findById(productId).select('barcodes variants.barcodes').lean();
+  const product = await Product.findById(productId).select('barcodes variants.barcodes stockCodes').lean();
   if (!product) return null;
   const pid = new mongoose.Types.ObjectId(String(productId));
 
@@ -83,6 +83,24 @@ async function soldByBarcode(productId) {
   ].map((b) => norm(b && b.code));
   for (const code of own) {
     if (code && !byCode.has(code)) byCode.set(code, { code, qty: 0, sales: 0, amount: 0, lastSoldAt: null });
+  }
+  // Own code of a received stock: show which stock it is (vendor, bill, cost), even with 0 sold.
+  for (const r of product.stockCodes || []) {
+    const code = norm(r.code);
+    if (!code) continue;
+    if (!byCode.has(code)) byCode.set(code, { code, qty: 0, sales: 0, amount: 0, lastSoldAt: null });
+    byCode.get(code).stock = {
+      plain: !!r.plain,
+      vendorName: r.vendorName || '',
+      billNo: r.billNo || '',
+      grnNumber: r.grnNumber || '',
+      costPrice: Number(r.costPrice) || 0,
+      landedUnitCost: Number(r.landedUnitCost) || 0,
+      pieces: Number(r.qty) || 0,
+      receivedAt: r.createdAt || null,
+      undone: !!r.undone,
+    };
+    own.push(code);
   }
   // A row for searched lines always shows too.
   if (!byCode.has('')) byCode.set('', { code: '', qty: 0, sales: 0, amount: 0, lastSoldAt: null });

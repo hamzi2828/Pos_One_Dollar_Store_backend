@@ -16,7 +16,7 @@
 //   box       barcode = shortCode (one scan = 1 piece) + "Box of N"; copies = ceil(stock / piecesPerBox)
 //   full-box  barcode = "<shortCode>-BOX" (one scan = N pieces) + "Full box · N pcs"; copies = ceil(stock / piecesPerBox)
 //   batch     barcode = batch.barcode, shows batch no + expiry; copies = batch quantity (in boxes for box products)
-//   barcode   barcode = `code` param (must be one of the unit's own codes); copies = ceil(stock / code qty)
+//   barcode   barcode = `code` param (must be one of the unit's own codes, stock codes too); copies = ceil(stock / code qty)
 //
 // Default copies use the shop's stock (req.access.branchId = the shop);
 // `batch` labels list the shop's batches.
@@ -38,6 +38,7 @@ const {
   batchBranchId,
   sameBranch,
   getMainBranchId,
+  stockCodeRows,
 } = require('../helper/productCodes');
 
 // Owner, 2026-11-03: no limit on how many stickers. The page builds only the
@@ -349,6 +350,11 @@ const buildEntries = (product, opts) => {
         else if (qty > 1) extra = [`Pack of ${qty}`];
       }
       const batch = (unit.batches || []).find((b) => b && normalizeCode(b.barcode) === want);
+      // A stock code (own code of one received stock): sells 1, same tag as the unit tag.
+      if (!qty && stockCodeRows(product, key).some((r) => normalizeCode(r.code) === want)) {
+        qty = 1;
+        extra = base.extra;
+      }
       if (!qty && batch) {
         qty = 1;
         extra = [`Batch ${normalizeCode(batch.batchNo)}`];
@@ -757,6 +763,19 @@ const labelController = {
           stock,
           barcodes: (unit.barcodes || []).map((b) => ({ code: b.code, qty: b.qty || 1, label: b.label || '' })),
           fullBoxCode: fb ? normalizeCode(fb.code) : null,
+          // Own code of each received stock (print with type=barcode&code=).
+          stockCodes: stockCodeRows(product, key).map((r) => ({
+            code: r.code,
+            plain: !!r.plain,
+            vendorName: r.vendorName || '',
+            billNo: r.billNo || '',
+            grnNumber: r.grnNumber || '',
+            costPrice: Number(r.costPrice) || 0,
+            landedUnitCost: Number(r.landedUnitCost) || 0,
+            qty: Number(r.qty) || 0,
+            undone: !!r.undone,
+            createdAt: r.createdAt || null,
+          })),
           batches: unitBatchesFor(unit, where.branchId, where.mainBranchId).map((b) => {
             const quantity = Number(b.quantity) || 0;
             return {

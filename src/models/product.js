@@ -33,6 +33,35 @@ const batchSchema = new mongoose.Schema(
   { _id: true }
 );
 
+// One stock code (owner, 2026-11-08): every new stock of a product that was
+// already in the shop gets its own sticker code, so a sold piece shows which
+// stock (vendor / bill / cost) it came from. All codes sell the same product;
+// stock stays one number. Product level for single AND variant products
+// (`variantId` says which variant). Made by services/purchasing/stockCodes.js.
+// Never reused: an undone entry keeps its code (`undone`).
+const stockCodeSchema = new mongoose.Schema(
+  {
+    code: { type: String, required: true, trim: true, uppercase: true },
+    variantId: { type: String, default: null },
+    plain: { type: Boolean, default: false }, // the product's own short code (first stock)
+    grn: { type: mongoose.Schema.Types.ObjectId, ref: 'GoodsReceipt', default: null },
+    grnNumber: { type: String, default: '' },
+    bill: { type: mongoose.Schema.Types.ObjectId, default: null },
+    entries: { type: [mongoose.Schema.Types.ObjectId], default: [] }, // GRN entries with this code
+    entryNo: { type: Number, default: 0 },
+    vendor: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor', default: null },
+    vendorName: { type: String, default: '' },
+    billNo: { type: String, default: '' },
+    costPrice: { type: Number, min: 0, default: 0 },
+    landedUnitCost: { type: Number, min: 0, default: 0 },
+    qty: { type: Number, min: 0, default: 0 }, // good pieces of its live entries
+    createdAt: { type: Date, default: Date.now },
+    undone: { type: Boolean, default: false },
+    undoneAt: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
 // Pieces of one unit held by the shop (one row: the shop's branch id). Kept in
 // sync by helper/productCodes.js (syncProductBranchStock) and
 // services/stockService.js — do not edit by hand.
@@ -135,6 +164,8 @@ const productSchema = new mongoose.Schema(
     shortCode: { type: String, trim: true, default: undefined },
     barcodes: { type: [barcodeSchema], default: [] },
     batches: { type: [batchSchema], default: [] },
+    // Own code per received stock (all units; see stockCodeSchema). In scanCodes.
+    stockCodes: { type: [stockCodeSchema], default: [] },
     // Pieces inside one box. 1 = sold loose. Stock is always counted in pieces.
     piecesPerBox: { type: Number, min: 1, default: 1 },
     // Pieces handed over in ONE sale (e.g. 2 plates for Rs 300). Stock, price and

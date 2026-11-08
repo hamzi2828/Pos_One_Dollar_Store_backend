@@ -139,6 +139,26 @@ After each entry the UI offers **Print tags (N)**, N = stockQty, using the
 existing sticker endpoint `POST /api/products/labels/print` (size remembered in
 localStorage). No backend change.
 
+### 6a. Own code per stock (owner, 2026-11-08)
+
+Every entry gets `entry.batchCode` = the code printed on its tags
+(`services/purchasing/stockCodes.js`):
+- first stock of a brand-new product (no stock, never received, no other live
+  entry) → the product's short code (`73062`);
+- any later stock → short code + 2 digits: `7306202`, `7306203`, … (skips codes
+  used anywhere). Digits only so the tiny 25×15 sticker keeps Code 128 set C
+  (2-dot bars) and the scanner types it the same on any keyboard layout;
+- same GRN + same bill + same product + same cost → shares the code (another box);
+- retry (requestId) → same code; edit → keeps its code; undo → code kept,
+  marked `undone`, never reused.
+Records: `product.stockCodes[]` `{ code, variantId, plain, grn, grnNumber, bill,
+entries[], vendor, vendorName, billNo, costPrice, landedUnitCost, qty, undone }`;
+every code is in `scanCodes` (kind `stock`, 1 piece per scan), so POS scan /
+search, the offline catalogue and all lookups find the product. Stock stays one
+number. Response `tags.code` = the stock's code (`tags.productCode` = short code);
+print with `type: 'barcode', code`. Sticker page "already printed" counts per
+bill + code. Shown on the product page ("Stock codes") and in "Sold by barcode".
+
 ## 7. Notes
 
 - Money is PKR, round to 2 decimals; pieces are integers.

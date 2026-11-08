@@ -147,7 +147,13 @@ async function printedFor(labels) {
     const { productId, variantId } = labels[0];
     if (!mongoose.isValidObjectId(productId)) return null;
     const q = { product: new mongoose.Types.ObjectId(String(productId)), ignored: { $ne: true }, variantId: variantId ? String(variantId) : null };
-    if (labels[0].bill && mongoose.isValidObjectId(labels[0].bill)) q.bill = new mongoose.Types.ObjectId(String(labels[0].bill));
+    if (labels[0].bill && mongoose.isValidObjectId(labels[0].bill)) {
+      q.bill = new mongoose.Types.ObjectId(String(labels[0].bill));
+      // One vendor bill may hold two stocks with their own codes: count this code's stickers
+      // (own-barcode / moved / removed rows belong to the bill, not to one code).
+      const codes = new Set(labels.map((l) => String(l.code || '')));
+      if (codes.size === 1 && labels[0].code) q.$or = [{ code: String(labels[0].code) }, { mode: { $in: ['scanned', 'moved', 'removed'] } }];
+    }
     const sum = await LabelPrint.aggregate([{ $match: q }, { $group: { _id: null, n: { $sum: '$count' } } }]);
     return sum[0]?.n || 0;
   } catch {

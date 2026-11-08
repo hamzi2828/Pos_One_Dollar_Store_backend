@@ -128,6 +128,9 @@ const entrySchema = new mongoose.Schema({
   variantId: { type: String, default: null },
   productName: { type: String, default: '' },
   code: { type: String, default: '' }, // short code
+  // Sticker code of this stock (services/purchasing/stockCodes.js): the short code for the
+  // first stock of a new product, else its own new code. '' = older entry (prints `code`).
+  batchCode: { type: String, default: '' },
   salePrice: { type: Number, default: 0 },
 
   qty: { type: Number, min: 1, required: true }, // pieces taken out of the boxes
