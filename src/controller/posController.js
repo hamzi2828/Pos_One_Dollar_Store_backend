@@ -649,6 +649,7 @@ const posController = {
         POSOrder.find(query)
           .populate('customer', 'firstName lastName email phone customerType source')
           .populate('cashier', 'firstName lastName email')
+          .populate('counter', 'name code')
           .populate('items.product', 'name thumbnailUrl bannerUrls price')
           .sort({ createdAt: -1 })
           .skip(skip)
