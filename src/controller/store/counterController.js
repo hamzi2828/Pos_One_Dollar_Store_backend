@@ -75,6 +75,33 @@ function checkCutoffOrder(counter) {
 
 const duplicateCode = (err) => err && err.code === 11000;
 
+/** printOnCounter from the body: null, or a live counter of the same branch with no printOnCounter of its own. */
+async function cleanPrintOn(value, selfId, branchId) {
+  if (value === null || value === '' || value === undefined) return null;
+  if (!isId(value)) throw httpError(400, 'Choose a valid counter to print on.');
+  if (selfId && String(value) === String(selfId)) throw httpError(400, 'A counter cannot print on itself.');
+  const target = await SaleCounter.findOne({ _id: value }).select('branch printOnCounter').lean();
+  if (!target) throw httpError(400, 'The counter to print on was not found.');
+  if (String(target.branch) !== String(branchId)) throw httpError(400, 'The counter to print on must be in the same branch.');
+  if (target.printOnCounter) throw httpError(400, 'That counter prints on another counter itself. Choose a counter with a printer.');
+  if (selfId && (await SaleCounter.exists({ printOnCounter: selfId }))) {
+    throw httpError(400, 'Other counters print on this counter, so it must keep its own printer.');
+  }
+  return target._id;
+}
+
+/** Adds printOnCounter (id string or null) and printOnCounterName. */
+async function withPrintOn(rows) {
+  const ids = [...new Set(rows.map((r) => r.printOnCounter).filter(Boolean).map(String))];
+  const targets = ids.length ? await SaleCounter.find({ _id: { $in: ids } }).select('name').lean() : [];
+  const names = new Map(targets.map((t) => [String(t._id), t.name]));
+  return rows.map((r) => {
+    const id = r.printOnCounter ? String(r.printOnCounter) : null;
+    return { ...r, printOnCounter: id && names.has(id) ? id : null, printOnCounterName: (id && names.get(id)) || null };
+  });
+}
+const oneWithPrintOn = async (doc) => (await withPrintOn([doc.toObject()]))[0];
+
 async function withOpenSessions(rows) {
   if (!rows.length) return rows;
   const open = await CashSession.find({ counter: { $in: rows.map((r) => r._id) }, status: 'open' })
@@ -111,7 +138,7 @@ const counterController = {
     ]);
     res.json({
       success: true,
-      data: await withOpenSessions(rows),
+      data: await withPrintOn(await withOpenSessions(rows)),
       meta: { page, limit, total, pages: Math.max(1, Math.ceil(total / limit)) },
     });
   },
@@ -133,6 +160,7 @@ const counterController = {
   async create(req, res) {
     const branchId = String(await resolveWriteBranch(req));
     const input = await cleanInput({ ...req.body, name: req.body.name ?? '' });
+    const printOnCounter = await cleanPrintOn(req.body.printOnCounter, null, branchId);
     const doc = new SaleCounter({
       name: input.name,
       code: input.code || (await nextCode(branchId)),
@@ -145,6 +173,7 @@ const counterController = {
       floatDenominations: input.floatDenominations || {},
       assignedUsers: input.assignedUsers || [],
       notes: input.notes || '',
+      printOnCounter,
       createdBy: req.access.userId,
       updatedBy: req.access.userId,
     });
@@ -155,7 +184,7 @@ const counterController = {
       if (duplicateCode(err)) throw httpError(409, `Code ${doc.code} is already used.`);
       throw err;
     }
-    res.status(201).json({ success: true, data: doc.toObject(), message: 'Counter added' });
+    res.status(201).json({ success: true, data: await oneWithPrintOn(doc), message: 'Counter added' });
   },
 
   // PUT /api/counters/:id
@@ -166,6 +195,7 @@ const counterController = {
     const { branch, ...body } = req.body || {}; // eslint-disable-line no-unused-vars
     const input = await cleanInput(body);
     if (input.code === '') delete input.code; // blank code = keep
+    if (body.printOnCounter !== undefined) input.printOnCounter = await cleanPrintOn(body.printOnCounter, doc._id, doc.branch);
     doc.set({ ...input, updatedBy: req.access.userId });
     checkCutoffOrder(doc);
     try {
@@ -174,7 +204,7 @@ const counterController = {
       if (duplicateCode(err)) throw httpError(409, `Code ${doc.code} is already used.`);
       throw err;
     }
-    res.json({ success: true, data: doc.toObject(), message: 'Counter saved' });
+    res.json({ success: true, data: await oneWithPrintOn(doc), message: 'Counter saved' });
   },
 
   // DELETE /api/counters/:id (soft delete; not while a till is open on it)
@@ -185,6 +215,8 @@ const counterController = {
     const open = await CashSession.exists({ counter: doc._id, status: 'open' });
     if (open) throw httpError(409, 'A till is open on this counter. Close it first.');
     await doc.softDelete(req.access.userId);
+    // Counters that printed here go back to their own printer.
+    await SaleCounter.updateMany({ printOnCounter: doc._id }, { $set: { printOnCounter: null } });
     res.json({ success: true, message: 'Counter deleted' });
   },
 

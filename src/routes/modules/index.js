@@ -26,6 +26,7 @@ const MODULES = [
   'desktopRoutes',
   'labelPrintRoutes',
   'websiteRoutes',
+  'printJobRoutes',
 ];
 
 for (const name of MODULES) {

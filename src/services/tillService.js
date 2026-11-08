@@ -1065,6 +1065,21 @@ async function reviewSession(req, id, { action, note } = {}) {
 /* Cashier status (POS strip / my till)                                */
 /* ------------------------------------------------------------------ */
 
+/** Receipt printing between counters, for the open till's counter. */
+async function printRouting(counterId) {
+  const out = { printOn: null, printsFor: [] };
+  if (!counterId) return out;
+  const counter = await SaleCounter.findOne({ _id: counterId }).select('printOnCounter').lean();
+  if (!counter) return out;
+  if (counter.printOnCounter) {
+    const target = await SaleCounter.findOne({ _id: counter.printOnCounter }).select('name').lean();
+    if (target) out.printOn = { counterId: String(target._id), counterName: target.name };
+  }
+  const others = await SaleCounter.find({ printOnCounter: counter._id }).select('name').sort({ name: 1 }).lean();
+  out.printsFor = others.map((c) => c.name);
+  return out;
+}
+
 async function myStatus(req) {
   const access = req.access;
   const userId = access.userId;
@@ -1086,8 +1101,11 @@ async function myStatus(req) {
     : [];
   const busyBy = new Map(busy.map((b) => [String(b.counter), b]));
   const inThisBranch = !!session && sameId(session.branch, branchId);
+  const { printOn, printsFor } = await printRouting(session && session.counter);
   return {
     required,
+    printOn,
+    printsFor,
     open: inThisBranch,
     openElsewhere: !!session && !inThisBranch,
     session: serializeSession(session),

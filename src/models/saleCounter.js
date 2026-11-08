@@ -26,6 +26,8 @@ const saleCounterSchema = new mongoose.Schema(
     // Only these users may open a till on this counter (empty = anyone with till permission).
     assignedUsers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     notes: { type: String, trim: true, default: '', maxlength: 300 },
+    // This counter has no receipt printer: its receipts print on that counter.
+    printOnCounter: { type: mongoose.Schema.Types.ObjectId, ref: 'SaleCounter', default: null },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   },
