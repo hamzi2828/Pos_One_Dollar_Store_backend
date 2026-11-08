@@ -90,6 +90,8 @@ async function main() {
   }
   await cats.updateMany({ ...live, parentId: from._id }, { $set: { parentId: into._id } });
   await cats.updateOne({ _id: from._id }, { $set: { isDeleted: true, deletedAt: now } });
+  // The old name (and its own tags) become tags of the kept category, so typing it still finds it.
+  await cats.updateOne({ _id: into._id }, { $addToSet: { tags: { $each: [from.name, ...(from.tags || [])] } } });
   console.log(`\nMerged. "${into.name}" now has ${await products.countDocuments({ category: exact(into.name) })} products; "${from.name}" deleted.`);
 }
 

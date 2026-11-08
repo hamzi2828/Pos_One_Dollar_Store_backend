@@ -132,6 +132,13 @@ const categoryController = {
       if (typeof payload.name !== 'undefined') updates.name = String(payload.name).trim();
       if (typeof payload.slug !== 'undefined') updates.slug = String(payload.slug).trim().toLowerCase();
       if (typeof payload.description !== 'undefined') updates.description = String(payload.description || '').trim();
+      if (typeof payload.tags !== 'undefined') {
+        let t = payload.tags;
+        if (typeof t === 'string') {
+          try { t = JSON.parse(t); } catch { t = t.split(','); }
+        }
+        updates.tags = [...new Set((Array.isArray(t) ? t : []).map((x) => String(x).trim()).filter(Boolean))].slice(0, 30);
+      }
       if (typeof payload.active !== 'undefined') updates.active = toBool(payload.active);
 
       if (typeof payload.parentId !== 'undefined') {

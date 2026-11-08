@@ -8,6 +8,8 @@ const categorySchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     slug: { type: String, required: true, trim: true, lowercase: true, unique: true, index: true },
     description: { type: String, default: '', trim: true },
+    // Other names for this category (old merged categories): typing one finds it.
+    tags: { type: [String], default: [] },
     thumbnailUrl: { type: String, default: null },
     thumbnailUrls: { type: [String], default: [] },
     bannerUrl: { type: String, default: null },
