@@ -19,6 +19,63 @@ const invLink = require('../services/investmentExpenseLink');
 const loanService = require('../services/loanService');
 const isYes = (v) => v === true || v === 'true';
 
+// ----- Receipt / slip images (many per expense) -----
+const fs = require('fs');
+const path = require('path');
+const { UPLOADS_DIR } = require('../helper/upload');
+const MAX_RECEIPTS = 10;
+
+// Expense for the answer, with `receipts` filled (old single receipt = first item).
+const withReceipts = (e) => {
+    if (!e) return e;
+    const o = typeof e.toObject === 'function' ? e.toObject() : { ...e };
+    o.receipts = Expense.receiptsOf(o);
+    return o;
+};
+
+// Uploaded files: new field `receipts` (many) and old field `receipt` (one).
+const pickFiles = (req) => {
+    const f = req.files || {};
+    if (Array.isArray(f)) return f;
+    return [...(f.receipts || []), ...(f.receipt || []), ...(req.file ? [req.file] : [])];
+};
+
+// Drop files multer already wrote to disk when we refuse the request.
+const dropLocal = (files) => {
+    for (const f of files) {
+        if (f && f.filename) {
+            try { fs.unlinkSync(path.join(UPLOADS_DIR, path.basename(f.filename))); } catch { /* gone */ }
+        }
+    }
+};
+
+const saveFiles = async (files) => {
+    const out = [];
+    for (const f of files) {
+        const url = USE_BLOB_STORAGE
+            ? await uploadToBlob(f.buffer, f.originalname, f.mimetype, 'expenses/receipts')
+            : toPublicPath(f.filename);
+        out.push({ url, originalName: f.originalname || '', uploadedAt: new Date() });
+    }
+    return out;
+};
+
+const dropBlob = async (url) => {
+    if (url && USE_BLOB_STORAGE && url.includes('blob')) {
+        try { await deleteFromBlob(url); } catch (e) { console.error('Could not delete receipt:', e.message); }
+    }
+};
+
+// removeReceipts: array, JSON array string, or one url.
+const toUrlList = (v) => {
+    if (v === undefined || v === null || v === '') return [];
+    if (Array.isArray(v)) return v.flatMap(toUrlList);
+    if (typeof v === 'string' && v.trim().startsWith('[')) {
+        try { return toUrlList(JSON.parse(v)); } catch { return [v]; }
+    }
+    return [String(v)];
+};
+
 const expenseController = {
     // GET /expenses
     getAllExpenses: async (req, res) => {
@@ -60,7 +117,7 @@ const expenseController = {
 
             return res.status(200).json({
                 message: 'Expenses fetched successfully',
-                data: items,
+                data: items.map(withReceipts),
                 pagination,
             });
         } catch (error) {
@@ -81,7 +138,7 @@ const expenseController = {
 
             return res.status(200).json({
                 message: 'Expense fetched successfully',
-                data: expense
+                data: withReceipts(expense)
             });
         } catch (error) {
             console.error('Error fetching expense:', error);
@@ -128,7 +185,12 @@ const expenseController = {
 
     // POST /expenses - Create new expense
     createExpense: async (req, res) => {
+        const files = pickFiles(req);
         try {
+            if (files.length > MAX_RECEIPTS) {
+                dropLocal(files);
+                return res.status(400).json({ message: `At most ${MAX_RECEIPTS} receipt images` });
+            }
             const { title, amount, category, categories, date, paymentMethod, reference, notes } = req.body;
             const bankPick = await bankFor(paymentMethod, req.body.bankId);
             if (bankPick.error) return res.status(400).json({ message: bankPick.error });
@@ -178,20 +240,8 @@ const expenseController = {
 
             const branch = await resolveWriteBranch(req);
 
-            // Handle receipt file upload
-            let receiptUrl = null;
-            if (req.file) {
-                if (USE_BLOB_STORAGE) {
-                    receiptUrl = await uploadToBlob(
-                        req.file.buffer,
-                        req.file.originalname,
-                        req.file.mimetype,
-                        'expenses/receipts'
-                    );
-                } else {
-                    receiptUrl = toPublicPath(req.file.filename);
-                }
-            }
+            // Receipt images (first one also kept in `receipt` for old screens)
+            const receipts = await saveFiles(files);
 
             const expense = await Expense.create({
                 branch,
@@ -209,7 +259,8 @@ const expenseController = {
                 investmentTitle: invPick ? invPick.title : '',
                 reference: reference?.trim() || '',
                 notes: notes?.trim() || '',
-                receipt: receiptUrl,
+                receipt: receipts.length ? receipts[0].url : null,
+                receipts,
                 fromPersonal,
             });
             if (invPick) await invLink.sync(expense);
@@ -228,7 +279,7 @@ const expenseController = {
 
             return res.status(201).json({
                 message: 'Expense created successfully',
-                data: expense
+                data: withReceipts(expense)
             });
         } catch (error) {
             console.error('Error creating expense:', error);
@@ -272,7 +323,7 @@ const expenseController = {
             expense.amount = next;
             await expense.save();
             await loanService.syncFromExpense(expense);
-            res.json({ success: true, data: expense.toObject(), message: `Amount is now Rs ${next}` });
+            res.json({ success: true, data: withReceipts(expense), message: `Amount is now Rs ${next}` });
         } catch (error) {
             res.status(500).json({ message: error.message || 'Could not add the adjustment' });
         }
@@ -280,13 +331,28 @@ const expenseController = {
 
     // PUT /expenses/:id - Update expense
     updateExpense: async (req, res) => {
+        const files = pickFiles(req);
         try {
             const { id } = req.params;
             const { title, amount, category, date, paymentMethod, reference, notes, isActive, removeReceipt } = req.body;
 
             const expense = await Expense.findOne({ _id: id, isDeleted: { $ne: true } });
             if (!expense) {
+                dropLocal(files);
                 return res.status(404).json({ message: 'Expense not found' });
+            }
+
+            // Receipts after this edit: old list (or old single receipt), minus removed, plus new.
+            // Old screens send one `receipt` file to replace the old image.
+            const current = Expense.receiptsOf(expense);
+            const oldReplace = !(req.files && req.files.receipts) && files.length > 0;
+            const removeAll = isYes(removeReceipt) || oldReplace;
+            const removeSet = new Set(toUrlList(req.body.removeReceipts));
+            const kept = removeAll ? [] : current.filter((r) => !removeSet.has(r.url));
+            const gone = current.filter((r) => !kept.includes(r));
+            if (kept.length + files.length > MAX_RECEIPTS) {
+                dropLocal(files);
+                return res.status(400).json({ message: `At most ${MAX_RECEIPTS} receipt images (${kept.length} already saved)` });
             }
 
             // Update fields
@@ -325,29 +391,12 @@ const expenseController = {
             if (notes !== undefined) expense.notes = notes?.trim() || '';
             if (isActive !== undefined) expense.isActive = isActive;
 
-            // Handle receipt file upload
-            if (req.file) {
-                // Delete old receipt if exists and using blob storage
-                if (expense.receipt && USE_BLOB_STORAGE && expense.receipt.includes('blob')) {
-                    await deleteFromBlob(expense.receipt);
-                }
-
-                if (USE_BLOB_STORAGE) {
-                    expense.receipt = await uploadToBlob(
-                        req.file.buffer,
-                        req.file.originalname,
-                        req.file.mimetype,
-                        'expenses/receipts'
-                    );
-                } else {
-                    expense.receipt = toPublicPath(req.file.filename);
-                }
-            } else if (removeReceipt === 'true' || removeReceipt === true) {
-                // Remove existing receipt
-                if (expense.receipt && USE_BLOB_STORAGE && expense.receipt.includes('blob')) {
-                    await deleteFromBlob(expense.receipt);
-                }
-                expense.receipt = null;
+            // Receipt images: kept + new; the first one is also kept in `receipt`.
+            if (files.length || gone.length || (!expense.receipts.length && current.length)) {
+                const added = await saveFiles(files);
+                expense.receipts = [...kept, ...added];
+                expense.receipt = expense.receipts.length ? expense.receipts[0].url : null;
+                for (const r of gone) await dropBlob(r.url);
             }
 
             await expense.save();
@@ -356,7 +405,7 @@ const expenseController = {
 
             return res.status(200).json({
                 message: 'Expense updated successfully',
-                data: expense
+                data: withReceipts(expense)
             });
         } catch (error) {
             console.error('Error updating expense:', error);
@@ -423,7 +472,7 @@ const expenseController = {
 
             return res.status(200).json({
                 message: 'Expense status updated successfully',
-                data: expense
+                data: withReceipts(expense)
             });
         } catch (error) {
             console.error('Error updating expense status:', error);

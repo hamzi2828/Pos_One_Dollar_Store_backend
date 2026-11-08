@@ -16,7 +16,7 @@ const router = express.Router();
 const auth = require('../middleware/auth');
 const { loadAccess, requirePermission, requireSuperAdmin } = require('../middleware/access');
 const { cache } = require('../middleware/cache');
-const { uploadSingle, uploadFields } = require('../helper/upload');
+const { uploadFields } = require('../helper/upload');
 const userController = require('../controller/userController');
 const categoryController = require('../controller/categoryController');
 const colorController = require('../controller/colorController');
@@ -203,8 +203,18 @@ router.get('/expenses/investment-bills', ...staff, can('expenses', 'view'), expe
 router.post('/expenses/categories', ...staff, can('expenses', 'create'), expenseController.createCategory);
 router.delete('/expenses/categories/:id', ...staff, can('expenses', 'delete'), expenseController.deleteCategory);
 router.get('/expenses/:id', ...staff, can('expenses', 'view'), expenseController.getExpenseById);
-router.post('/expenses', ...staff, can('expenses', 'create'), uploadSingle('receipt'), expenseController.createExpense);
-router.put('/expenses/:id', ...staff, can('expenses', 'edit'), uploadSingle('receipt'), expenseController.updateExpense);
+// Receipt images: `receipts` (up to 10) and the old single `receipt` field.
+const EXPENSE_RECEIPTS = (req, res, next) =>
+    uploadFields([{ name: 'receipts', maxCount: 10 }, { name: 'receipt', maxCount: 1 }])(req, res, (err) => {
+        if (!err) return next();
+        const tooBig = err.code === 'LIMIT_FILE_SIZE';
+        const tooMany = err.code === 'LIMIT_UNEXPECTED_FILE' || err.code === 'LIMIT_FILE_COUNT';
+        return res.status(400).json({
+            message: tooBig ? 'Image is too large' : tooMany ? 'At most 10 receipt images' : err.message || 'Upload failed',
+        });
+    });
+router.post('/expenses', ...staff, can('expenses', 'create'), EXPENSE_RECEIPTS, expenseController.createExpense);
+router.put('/expenses/:id', ...staff, can('expenses', 'edit'), EXPENSE_RECEIPTS, expenseController.updateExpense);
 router.post('/expenses/:id/adjust', ...staff, can('expenses', 'edit'), expenseController.adjustExpense);
 router.put('/expenses/:id/status', ...staff, can('expenses', 'edit'), expenseController.updateExpenseStatus);
 router.delete('/expenses/:id', ...staff, can('expenses', 'delete'), expenseController.deleteExpense);

@@ -53,9 +53,22 @@ const expenseSchema = new mongoose.Schema({
         default: '',
         trim: true
     },
+    // Old single receipt url. Kept = first of `receipts` so old screens still work.
     receipt: {
         type: String,
         default: null
+    },
+    // Receipt / slip images (max 10). Old records may have only `receipt`.
+    receipts: {
+        type: [
+            {
+                _id: false,
+                url: { type: String, required: true },
+                originalName: { type: String, default: '' },
+                uploadedAt: { type: Date, default: Date.now },
+            },
+        ],
+        default: [],
     },
     isActive: {
         type: Boolean,
@@ -104,5 +117,14 @@ expenseSchema.index(
     { title: 'text', category: 'text', reference: 'text', notes: 'text' },
     { name: 'expense_text_idx', weights: { title: 5, category: 3, reference: 2, notes: 1 } }
 );
+
+// Receipts list for any expense (doc or lean): old records give their single
+// `receipt` as the only item.
+expenseSchema.statics.receiptsOf = function receiptsOf(e) {
+    if (!e) return [];
+    const list = (Array.isArray(e.receipts) ? e.receipts : []).filter((r) => r && r.url);
+    if (!list.length && e.receipt) return [{ url: e.receipt, originalName: '', uploadedAt: e.createdAt || null }];
+    return list.map((r) => ({ url: r.url, originalName: r.originalName || '', uploadedAt: r.uploadedAt || null }));
+};
 
 module.exports = mongoose.models.Expense || mongoose.model('Expense', expenseSchema);
