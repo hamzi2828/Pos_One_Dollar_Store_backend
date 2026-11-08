@@ -10,7 +10,7 @@ const { WEBSITE_DEFAULTS, WEBSITE_ICONS } = require('../constants/websiteDefault
 const { getJson, setJson, delJson } = require('../middleware/cache');
 
 const KEY = 'main';
-const LIMITS = Object.freeze({ line: 120, text: 1500, body: 5000, url: 2000, items: 24, galleryItems: 40 });
+const LIMITS = Object.freeze({ line: 120, text: 1500, body: 5000, url: 2000, items: 24, galleryItems: 40, categoryPhotos: 12 });
 const HOOK_TIMEOUT_MS = 4000;
 
 // Redis copy of the public content. Every save/reset overwrites it straight away,
@@ -41,7 +41,10 @@ const SPEC = {
   whatWeDo: { show: 'bool', heading: 'line', intro: 'text', items: iconItems },
   whatYouGet: { show: 'bool', heading: 'line', intro: 'text', items: iconItems },
   prices: { show: 'bool', heading: 'line', intro: 'text', items: list({ price: 'price', label: 'line', note: 'text' }) },
-  categories: { show: 'bool', heading: 'line', items: list({ name: 'line', text: 'text', imageUrl: 'url' }) },
+  categories: {
+    show: 'bool', heading: 'line',
+    items: list({ name: 'line', text: 'text', imageUrl: 'url', photos: list({ imageUrl: 'url', caption: 'line' }, LIMITS.categoryPhotos) }),
+  },
   offers: {
     show: 'bool', heading: 'line',
     items: list({ title: 'line', text: 'text', imageUrl: 'url', active: 'boolTrue', startsOn: 'date', endsOn: 'date' }),
@@ -70,7 +73,7 @@ const LABELS = {
   mapEmbedUrl: 'Google Maps embed link', mapLinkUrl: 'Google Maps link', hours: 'Opening hours', phone: 'Phone',
   whatsapp: 'WhatsApp', email: 'Email', facebookUrl: 'Facebook page', instagramUrl: 'Instagram', tiktokUrl: 'TikTok',
   youtubeUrl: 'YouTube', showFacebookFeed: 'Facebook feed', description: 'Description', ogImageUrl: 'Share picture',
-  keywords: 'Keywords',
+  keywords: 'Keywords', photos: 'Photos',
 };
 const where = (path) =>
   path
@@ -193,6 +196,7 @@ const emptyOf = (kind) => {
   if (kind === 'boolTrue') return true;
   if (kind === 'price') return 0;
   if (kind === 'icon') return 'star';
+  if (isObj(kind) && kind.$items) return []; // nested list (e.g. category photos)
   if (isObj(kind)) return Object.fromEntries(Object.entries(kind).map(([k, sub]) => [k, emptyOf(sub)]));
   return '';
 };
@@ -232,6 +236,13 @@ function shape(spec, stored, def) {
   const s = isObj(stored) ? stored : {};
   const d = isObj(def) ? def : {};
   return Object.fromEntries(Object.entries(spec).map(([k, sub]) => [k, shape(sub, s[k], d[k])]));
+}
+
+// A category photo without a picture is just an empty row in the editor: drop it.
+function dropEmptyPhotos(content) {
+  for (const c of content.categories?.items || []) {
+    if (Array.isArray(c.photos)) c.photos = c.photos.filter((p) => p.imageUrl);
+  }
 }
 
 function checkCrossFields(content) {
@@ -329,6 +340,7 @@ async function save(body, { userId } = {}) {
   const current = toContent(await loadDoc());
   const next = clean(SPEC, body, current, []);
   checkCrossFields(next);
+  dropEmptyPhotos(next);
   delete next.updatedAt;
   delete next.updatedByName;
   const doc = await persist(next, userId);

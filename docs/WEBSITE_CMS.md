@@ -31,7 +31,8 @@ hides anything empty (never shows placeholder phone numbers / addresses).
   "whatYouGet": { "show": true, "heading": "What you get", "intro": "", "items": [ { "icon": "tag",   "title": "", "text": "" } ] },
   "prices":  { "show": true, "heading": "Simple prices", "intro": "",
                "items": [ { "price": 99, "label": "", "note": "" } ] },          // fixed price points
-  "categories": { "show": true, "heading": "What you'll find", "items": [ { "name": "", "text": "", "imageUrl": "" } ] },
+  "categories": { "show": true, "heading": "What you'll find", "items": [ { "name": "", "text": "", "imageUrl": "",
+               "photos": [ { "imageUrl": "", "caption": "" } ] } ] },   // imageUrl = card cover (optional; site uses imageUrl || photos[0].imageUrl); photos ≤ 12, shown when the card is clicked
   "offers":  { "show": true, "heading": "Offers", "items": [ { "title": "", "text": "", "imageUrl": "", "active": true,
                "startsOn": "", "endsOn": "" } ] },                              // 'YYYY-MM-DD' or "" ; website shows active & in date range (PKT)
   "gallery": { "show": true, "heading": "Inside the shop", "items": [ { "imageUrl": "", "caption": "" } ] },
@@ -49,7 +50,7 @@ hides anything empty (never shows placeholder phone numbers / addresses).
 Icon keys (fixed set, both apps map them to icons): `store, tag, wallet, gift, sparkles, home,
 kitchen, toys, beauty, stationery, cleaning, truck, clock, heart, star, smile, shield, users, package, percent`.
 
-Limits: items lists ≤ 24 each (gallery ≤ 40); strings trimmed; headings ≤ 120, text ≤ 1500,
+Limits: items lists ≤ 24 each (gallery ≤ 40, photos per category ≤ 12; photos without a picture are dropped on save, old data without `photos` reads as `[]`); strings trimmed; headings ≤ 120, text ≤ 1500,
 body ≤ 5000; URLs must be http(s) or start with `/`; `mapEmbedUrl` must be a
 `https://www.google.com/maps/embed?...` URL (else rejected — it goes into an iframe);
 prices are numbers ≥ 0.
