@@ -1071,6 +1071,13 @@ async function buildMonth(month, { now = new Date(), manual = new Map() } = {}) 
 async function salaryToDate({ now = new Date() } = {}) {
   const month = T.monthKey(now);
   const { period, lines } = await buildMonth(month, { now });
+  // Tips given this month (not part of salary, shown for information).
+  const tipRows = await require('../../models/staffTip')
+    .aggregate([
+      { $match: { isDeleted: { $ne: true }, day: { $regex: `^${month}` } } },
+      { $group: { _id: '$employee', amount: { $sum: '$amount' }, count: { $sum: 1 } } },
+    ]);
+  const tipsBy = new Map(tipRows.map((t) => [String(t._id), t]));
   const rows = lines.map((l) => {
     const a = l.attendance || {};
     const employed = Number(l.employedDays) || 0;
@@ -1100,6 +1107,10 @@ async function salaryToDate({ now = new Date() } = {}) {
       earned,
       due,
       payableNow: Math.max(0, rs(earned - due)),
+      otApprovedMinutes: Number(a.overtimeMinutesApproved) || 0,
+      otPendingMinutes: Number(a.overtimeMinutesPending) || 0,
+      tips: rs((tipsBy.get(String(l.employee)) || {}).amount || 0),
+      tipCount: (tipsBy.get(String(l.employee)) || {}).count || 0,
     };
   });
   const total = (k) => rs(sum(rows, (r) => r[k]));
@@ -1108,7 +1119,7 @@ async function salaryToDate({ now = new Date() } = {}) {
     monthLabel: period.label,
     today: T.dayKey(now),
     rows,
-    totals: { staff: rows.length, earned: total('earned'), due: total('due'), payableNow: total('payableNow'), fullMonth: rs(sum(lines, (l) => l.salary || 0)) },
+    totals: { staff: rows.length, earned: total('earned'), due: total('due'), payableNow: total('payableNow'), tips: total('tips'), fullMonth: rs(sum(lines, (l) => l.salary || 0)) },
   };
 }
 
