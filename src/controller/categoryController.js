@@ -104,6 +104,13 @@ const categoryController = {
         name,
         slug,
         description: String(body.description || '').trim(),
+        tags: (() => {
+          let t = body.tags;
+          if (typeof t === 'string') {
+            try { t = JSON.parse(t); } catch { t = t.split(','); }
+          }
+          return [...new Set((Array.isArray(t) ? t : []).map((x) => String(x).trim()).filter(Boolean))].slice(0, 30);
+        })(),
         active: body.active === undefined ? true : toBool(body.active),
         // single thumbnailUrl = the first one (older screens read it)
         thumbnailUrl: thumbnailUrls[0] || null,
