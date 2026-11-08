@@ -415,6 +415,28 @@ const reportsController = {
         return { ...o, costPrice: orderCost, profit, itemCount, counterName: counterOf(o) };
       });
 
+      // Same totals split by counter (owner, 2026-11-08).
+      const byCounterMap = new Map();
+      for (const r of rows) {
+        const name = r.counterName || 'No counter';
+        const c =
+          byCounterMap.get(name) ||
+          { name, orders: 0, sales: 0, paid: 0, pending: 0, cost: 0, profit: 0, cash: 0, card: 0, bank: 0, items: 0 };
+        c.orders += 1;
+        c.sales += r.total || 0;
+        c.paid += r.paidAmount || 0;
+        c.pending += r.pendingAmount || 0;
+        c.cost += r.costPrice || 0;
+        c.profit += r.profit || 0;
+        c.items += r.itemCount || 0;
+        const m = normalizePOSMethod(r.paymentMethod);
+        if (m === 'cash') c.cash += r.total || 0;
+        else if (m === 'card') c.card += r.total || 0;
+        else if (m === 'bank') c.bank += r.total || 0;
+        byCounterMap.set(name, c);
+      }
+      summary.byCounter = [...byCounterMap.values()].sort((a, b) => a.name.localeCompare(b.name));
+
       summary.totalOrders = rows.length;
       summary.avgOrderValue = summary.totalOrders ? summary.totalSales / summary.totalOrders : 0;
 
