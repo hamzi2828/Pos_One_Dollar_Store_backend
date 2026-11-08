@@ -385,7 +385,36 @@ async function getOne(req, id) {
     }
     plain.grn = grn || null;
   }
+  plain.billAccounts = await billAccounts(po);
   return plain;
+}
+
+/**
+ * Per bill, the vendor's account around it (owner, 2026-11-08): balance before
+ * this bill, this bill, total, paid since (paid now + later payments / returns)
+ * and what is left. Uses the bill's row in the vendor ledger (posted on "add bill").
+ */
+async function billAccounts(po) {
+  const VendorLedgerEntry = require('../../models/vendorLedgerEntry');
+  const out = {};
+  for (const bill of po.bills) {
+    const entry = bill.ledgerEntry ? await VendorLedgerEntry.findOne({ _id: bill.ledgerEntry, isVoided: false }).select('createdAt').lean() : null;
+    const at = entry ? entry.createdAt : new Date();
+    const sums = async (filter) => {
+      const [row] = await VendorLedgerEntry.aggregate([
+        { $match: { vendor: bill.vendor, isVoided: false, ...filter } },
+        { $group: { _id: null, credit: { $sum: '$credit' }, debit: { $sum: '$debit' } } },
+      ]);
+      return { credit: row ? row.credit : 0, debit: row ? row.debit : 0 };
+    };
+    const before = await sums({ createdAt: { $lt: at } });
+    const after = entry ? await sums({ createdAt: { $gt: at } }) : { debit: Number(bill.paidNow) || 0 };
+    const previous = vendorLedger.round2(before.credit - before.debit);
+    const thisBill = vendorLedger.round2(bill.billTotal || 0);
+    const paid = vendorLedger.round2(after.debit || 0);
+    out[String(bill._id)] = { previous, thisBill, total: vendorLedger.round2(previous + thisBill), paid, balance: vendorLedger.round2(previous + thisBill - paid) };
+  }
+  return out;
 }
 
 async function costingFor(req, id) {
