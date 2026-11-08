@@ -24,7 +24,7 @@ const correctionSchema = new mongoose.Schema(
     at: { type: Date, default: Date.now },
     by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     byName: { type: String, default: '' },
-    field: { type: String, required: true }, // checkIn | checkOut | overtime | status
+    field: { type: String, required: true }, // checkIn | checkOut | overtime | status | lateExcuse
     from: { type: mongoose.Schema.Types.Mixed, default: null },
     to: { type: mongoose.Schema.Types.Mixed, default: null },
     reason: { type: String, required: true, trim: true },
@@ -63,6 +63,14 @@ const attendanceRecordSchema = new mongoose.Schema(
     // Overtime approval: null = waiting (when the policy needs approval), true / false = decided.
     overtimeApproved: { type: Boolean, default: null },
     overtimeDecidedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+
+    // Late excused by a manager: the late minutes stay on the day (shown), but
+    // the day counts as present — no late cut, no half day for lateness.
+    lateExcused: { type: Boolean, default: false },
+    lateExcuseReason: { type: String, default: '', trim: true },
+    lateExcusedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    lateExcusedByName: { type: String, default: '' },
+    lateExcusedAt: { type: Date, default: null },
 
     corrections: { type: [correctionSchema], default: [] },
     note: { type: String, default: '' },

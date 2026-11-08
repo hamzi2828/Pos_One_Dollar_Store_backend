@@ -109,10 +109,12 @@ function evaluate(plan, record, policy, now = new Date()) {
 
   const late = Math.max(0, minutesBetween(start, checkIn));
   out.lateMinutes = late > (Number(a.graceMinutes) || 0) ? late : 0;
+  // Excused late (manager): minutes stay visible, but the day is not "late".
+  const lateCounts = out.lateMinutes > 0 && !r.lateExcused;
 
   if (!checkOut) {
     const stillOpen = now < new Date(end.getTime() + OUT_WINDOW_MIN(policy) * MIN);
-    out.status = stillOpen ? (out.lateMinutes ? 'late' : 'present') : 'missing_out';
+    out.status = stillOpen ? (lateCounts ? 'late' : 'present') : 'missing_out';
     return out;
   }
 
@@ -124,11 +126,14 @@ function evaluate(plan, record, policy, now = new Date()) {
 
   const hd = a.halfDay || {};
   const planned = Number(plan.workMinutes) || minutesBetween(start, end);
-  const tooLate = hd.enabled && out.lateMinutes > (Number(hd.lateAfterMinutes) || Infinity);
+  const tooLate = hd.enabled && lateCounts && out.lateMinutes > (Number(hd.lateAfterMinutes) || Infinity);
   const tooShort = hd.enabled && planned > 0 && out.workedMinutes < (planned * (Number(hd.minWorkedPct) || 0)) / 100;
-  out.status = tooLate || tooShort ? 'half_day' : out.lateMinutes ? 'late' : 'present';
+  out.status = tooLate || tooShort ? 'half_day' : lateCounts ? 'late' : 'present';
   return out;
 }
+
+/** Is this day's late excused (a late day the manager said not to count)? */
+const lateExcusedOf = (record, ev) => !!(record && record.lateExcused && ev && ev.lateMinutes > 0);
 
 const plannedSnapshot = (plan) => ({
   type: plan.type,
@@ -335,6 +340,8 @@ async function monthSummary(month, { employeeIds = null, includeDays = false, no
       presentDays: 0,
       lateCount: 0,
       lateMinutes: 0,
+      lateExcusedCount: 0, // late days a manager excused (not in lateCount / lateMinutes)
+      lateExcusedMinutes: 0,
       halfDays: 0,
       absentDays: 0,
       missingOutDays: 0,
@@ -369,12 +376,13 @@ async function monthSummary(month, { employeeIds = null, includeDays = false, no
       }
       if (plan.type === 'shift') s.scheduledDays += 1;
 
+      const excused = lateExcusedOf(record, ev);
       let status = ev.status;
       if (status === 'missing_out') {
         s.missingOutDays += 1;
         s.pendingCorrections += 1;
         const as = a.missingOutCountsAs || 'present';
-        status = as === 'half_day' ? 'half_day' : as === 'absent' ? 'absent' : ev.lateMinutes ? 'late' : 'present';
+        status = as === 'half_day' ? 'half_day' : as === 'absent' ? 'absent' : ev.lateMinutes && !excused ? 'late' : 'present';
       }
       switch (status) {
         case 'present':
@@ -401,7 +409,11 @@ async function monthSummary(month, { employeeIds = null, includeDays = false, no
         default:
           break;
       }
-      if (ev.lateMinutes > 0) {
+      if (ev.lateMinutes > 0 && excused) {
+        // Excused: shown, but not counted for the late cut.
+        s.lateExcusedCount += 1;
+        s.lateExcusedMinutes += ev.lateMinutes;
+      } else if (ev.lateMinutes > 0) {
         s.lateCount += 1;
         s.lateMinutes += ev.lateMinutes;
       }
@@ -425,6 +437,7 @@ async function monthSummary(month, { employeeIds = null, includeDays = false, no
           checkIn: record ? record.checkIn : null,
           checkOut: record ? record.checkOut : null,
           lateMinutes: ev.lateMinutes,
+          lateExcused: excused,
           earlyLeaveMinutes: ev.earlyLeaveMinutes,
           workedMinutes: ev.workedMinutes,
           overtimeMinutes: ev.overtimeMinutes,
@@ -461,4 +474,4 @@ async function monthSummary(month, { employeeIds = null, includeDays = false, no
   return { month, from, to, daysInMonth, employees };
 }
 
-module.exports = { evaluate, breaksOf, openBreak, punch, recomputeDay, recomputeRange, dayView, monthSummary, shopDayFor, loadEmployee, EMP_FIELDS };
+module.exports = { evaluate, lateExcusedOf, breaksOf, openBreak, punch, recomputeDay, recomputeRange, dayView, monthSummary, shopDayFor, loadEmployee, EMP_FIELDS };

@@ -134,6 +134,17 @@ function dayFields(r) {
   };
 }
 
+/** Excused late (not counted for the late cut): who, when, why. */
+function lateExcuseFields(record, ev) {
+  const excused = core.lateExcusedOf(record, ev);
+  return {
+    lateExcused: excused,
+    lateExcuse: excused
+      ? { reason: record.lateExcuseReason || '', byName: record.lateExcusedByName || '', at: record.lateExcusedAt || null }
+      : null,
+  };
+}
+
 function boardRow({ employee, plan, record, eval: ev }) {
   const r = record || {};
   const punches = (r.punches || []).map(punchOut);
@@ -151,6 +162,7 @@ function boardRow({ employee, plan, record, eval: ev }) {
     breaks: core.breaksOf(r),
     status: ev.status,
     lateMinutes: ev.lateMinutes,
+    ...lateExcuseFields(record, ev),
     earlyLeaveMinutes: ev.earlyLeaveMinutes,
     workedMinutes: ev.workedMinutes,
     overtimeMinutes: ev.overtimeMinutes,
@@ -296,6 +308,7 @@ async function dayDetail(query = {}, { now = new Date() } = {}) {
   const out = boardRow({ employee, plan, record, eval: ev });
   out.date = date;
   out.policyName = policy.name;
+  out.graceMinutes = Number((policy.attendance || {}).graceMinutes) || 0;
   out.punches = ((record && record.punches) || []).map((p) => ({ ...punchOut(p), by: p.by && p.by._id ? fullName(p.by) : '' }));
   out.correctionLog = (record && record.corrections) || [];
   out.locked = !!(record && record.locked) || (await monthLocked(employee._id, date));
@@ -382,6 +395,46 @@ async function correctDay(body = {}, { userId, now = new Date() } = {}) {
   return dayDetail({ employeeId: employee._id, date }, { now });
 }
 
+/**
+ * Excuse a late day (it is not counted for the late cut, nor made a half day
+ * for lateness) or undo it. The late minutes stay on the day. Reason required
+ * to excuse; logged in the day's changes. Locked days are refused.
+ * body: { employeeId, date, excused: boolean, reason }
+ */
+async function excuseLate(body = {}, { userId, now = new Date() } = {}) {
+  if (typeof body.excused !== 'boolean') throw httpError(400, 'Say excuse (true) or count again (false)');
+  const excused = body.excused;
+  const reason = String(body.reason || '').trim().slice(0, 300) || (excused ? '' : 'Late counted again');
+  if (!reason) throw httpError(400, 'Write the reason for not counting this late', 'REASON_REQUIRED');
+  const employee = await core.loadEmployee(body.employeeId);
+  const date = dayKeyOf(body.date);
+
+  const rec = await AttendanceRecord.findOne({ employee: employee._id, date });
+  if (rec && rec.locked) throw httpError(409, 'This day is locked by an approved payroll', 'ATTENDANCE_LOCKED');
+  if (await monthLocked(employee._id, date)) throw httpError(409, "This month's payroll is approved — attendance is locked", 'ATTENDANCE_LOCKED');
+  if (!rec) throw httpError(400, 'No check-in on this day — nothing to excuse');
+  if (!!rec.lateExcused === excused) throw httpError(400, excused ? 'This late is already not counted' : 'This late is already counted');
+
+  if (excused) {
+    const [plan, policy] = await Promise.all([schedule.planForDay(employee, date), policies.policyFor(employee)]);
+    const ev = core.evaluate(plan, { ...rec.toObject(), lateExcused: false }, policy, now);
+    if (!(ev.lateMinutes > 0)) {
+      throw httpError(400, plan.type === 'shift' ? 'This day is not late' : "No shift on this day, so late can't be worked out");
+    }
+  }
+
+  const byName = await userNameOf(userId);
+  rec.corrections.push({ at: now, by: isId(userId) ? userId : null, byName, field: 'lateExcuse', from: !!rec.lateExcused, to: excused, reason });
+  rec.lateExcused = excused;
+  rec.lateExcuseReason = excused ? reason : '';
+  rec.lateExcusedBy = excused && isId(userId) ? userId : null;
+  rec.lateExcusedByName = excused ? byName : '';
+  rec.lateExcusedAt = excused ? now : null;
+  await rec.save();
+  await core.recomputeDay(employee._id, date, { now });
+  return dayDetail({ employeeId: employee._id, date }, { now });
+}
+
 /** Approve or reject overtime on one or more days (logged, then re-evaluated). */
 async function decideOvertime(body = {}, { userId, now = new Date() } = {}) {
   const ids = [...new Set((Array.isArray(body.recordIds) ? body.recordIds : body.recordId ? [body.recordId] : []).map(String))];
@@ -434,6 +487,7 @@ const CODES = {
 const LEGEND = [
   { code: 'P', status: 'present', label: 'Present' },
   { code: 'L', status: 'late', label: 'Late' },
+  { code: 'L', status: 'late_excused', label: 'Late, not counted (no cut)' },
   { code: 'H', status: 'half_day', label: 'Half day' },
   { code: 'A', status: 'absent', label: 'Absent' },
   { code: 'M', status: 'missing_out', label: 'Missing check-out' },
@@ -459,7 +513,9 @@ async function monthEmployees(month, employeeId) {
 
 const cellOf = (d) => ({
   date: d.date,
-  code: d.status === 'present' && (d.planned === 'off' || d.planned === 'holiday') ? 'P' : CODES[d.status] ?? '',
+  // An excused late keeps its L (shown in another colour, see the legend).
+  code: d.lateExcused && d.status === 'present' ? 'L' : d.status === 'present' && (d.planned === 'off' || d.planned === 'holiday') ? 'P' : CODES[d.status] ?? '',
+  lateExcused: !!d.lateExcused,
   status: d.status,
   planned: d.planned || null,
   shiftName: d.shiftName || '',
@@ -481,6 +537,7 @@ const totalsOf = (s) => ({
   present: s.presentDays,
   late: s.lateCount,
   lateMinutes: s.lateMinutes,
+  lateExcused: s.lateExcusedCount,
   halfDays: s.halfDays,
   absent: s.absentDays,
   missingOut: s.missingOutDays,
@@ -682,6 +739,7 @@ module.exports = {
   listRecords,
   dayDetail,
   correctDay,
+  excuseLate,
   decideOvertime,
   sheet,
   sheetCsv,

@@ -18,6 +18,8 @@ router.get('/attendance/day', ...staff, can('attendance', 'view'), handle(ctrl.d
 
 // ---- Corrections (the only non-biometric change) + overtime ----
 router.put('/attendance/day', ...staff, can('attendance', 'edit'), handle(ctrl.correct));
+// Don't count a late for the cut (reason required) / count it again.
+router.put('/attendance/day/late-excuse', ...staff, can('attendance', 'edit'), handle(ctrl.excuseLate));
 router.post('/attendance/overtime', ...staff, can('attendance', 'edit'), handle(ctrl.overtime));
 
 // ---- Month sheet + CSV, fix before payroll ----

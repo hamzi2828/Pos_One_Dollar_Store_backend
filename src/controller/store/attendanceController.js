@@ -25,6 +25,11 @@ module.exports = {
     res.json({ success: true, data, message: 'Times corrected' });
   },
 
+  async excuseLate(req, res) {
+    const data = await svc.excuseLate(req.body || {}, { userId: req.access.userId });
+    res.json({ success: true, data, message: data.lateExcused ? 'Late not counted for this day' : 'Late counted again' });
+  },
+
   async overtime(req, res) {
     const data = await svc.decideOvertime(req.body || {}, { userId: req.access.userId });
     const n = data.updated.length;
