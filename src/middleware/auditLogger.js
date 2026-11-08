@@ -234,6 +234,10 @@ function auditLogger(req, res, next) {
   const method = req.method.toUpperCase();
 
   if (SKIP_PREFIXES.some((p) => req.path.startsWith(p))) return next();
+  // POS activity log: the selling screen posts it on every scan / click.
+  if (method === 'POST' && /^(\/api)?\/pos\/activity\/?$/.test(req.path)) return next();
+  // The printer counter's poll (every few seconds).
+  if (method === 'POST' && /^(\/api)?\/print-jobs\/claim\/?$/.test(req.path)) return next();
 
   const startedAt = Date.now();
   const normalizedPath = normalizePathForMatching(req.path);

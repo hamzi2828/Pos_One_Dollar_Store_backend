@@ -12,6 +12,7 @@ const router = express.Router();
 const posController = require('../controller/posController');
 const heldOrderController = require('../controller/heldOrderController');
 const offlineSaleController = require('../controller/offlineSaleController');
+const posActivityController = require('../controller/posActivityController');
 const auth = require('../middleware/auth');
 const { loadAccess, requirePermission } = require('../middleware/access');
 const { uploadSingle } = require('../helper/upload');
@@ -73,6 +74,13 @@ router.delete('/held-orders', can('pos', 'delete'), heldOrderController.clearAll
 // Uploading also needs `pos` create: offline sales are still sales.
 router.get('/offline/catalog', can('desktop_pos', 'view'), offlineSaleController.catalog);
 router.post('/offline/orders', can('desktop_pos', 'create'), can('pos', 'create'), offlineSaleController.uploadOrders);
+
+// Activity log of the selling screen (scans / clicks per cart).
+// The cashier only writes it; the order history viewers read it.
+router.post('/activity', can('pos', 'view'), posActivityController.record);
+router.get('/activity', can('pos_orders', 'view'), posActivityController.list);
+router.get('/activity/by-order/:orderId', can('pos_orders', 'view'), posActivityController.getByOrder);
+router.get('/activity/:cartId', can('pos_orders', 'view'), posActivityController.getByCart);
 
 // Uploads
 router.post('/upload/screenshot', can('pos', 'create'), uploadSingle('screenshot'), posController.uploadScreenshot);
