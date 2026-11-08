@@ -361,11 +361,27 @@ const reportsController = {
         isDeleted: { $ne: true },
         createdAt: { $gte: start, $lte: end },
       })
-        .select('orderNumber total paidAmount pendingAmount paymentMethod paymentStatus orderStatus createdAt items customerInfo customer')
+        .select('orderNumber total paidAmount pendingAmount paymentMethod paymentStatus orderStatus createdAt items customerInfo customer counter cashSession')
         .populate('customer', 'firstName lastName phone')
         .populate('items.product', 'name costPrice')
         .sort({ createdAt: -1 })
         .lean();
+
+      // Counter each bill was rung on ("Counter 1"...): the bill's counter, else its till's.
+      const counterNames = new Map(
+        (await require('../models/saleCounter').find({}).select('name').lean()).map((c) => [String(c._id), c.name])
+      );
+      const noCounter = [...new Set(orders.filter((o) => !o.counter && o.cashSession).map((o) => String(o.cashSession)))];
+      const sessionCounter = new Map(
+        noCounter.length
+          ? (await require('../models/cashSession').find({ _id: { $in: noCounter } }).select('counter counterName').lean()).map((s) => [
+              String(s._id),
+              (s.counter && counterNames.get(String(s.counter))) || s.counterName || null,
+            ])
+          : []
+      );
+      const counterOf = (o) =>
+        (o.counter && counterNames.get(String(o.counter))) || (o.cashSession && sessionCounter.get(String(o.cashSession))) || null;
 
       const summary = {
         totalOrders: 0,
@@ -396,7 +412,7 @@ const reportsController = {
         if (m === 'cash') summary.cashSales += o.total || 0;
         else if (m === 'card') summary.cardSales += o.total || 0;
         else if (m === 'bank') summary.bankSales += o.total || 0;
-        return { ...o, costPrice: orderCost, profit, itemCount };
+        return { ...o, costPrice: orderCost, profit, itemCount, counterName: counterOf(o) };
       });
 
       summary.totalOrders = rows.length;
