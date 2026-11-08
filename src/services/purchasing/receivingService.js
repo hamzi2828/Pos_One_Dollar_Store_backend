@@ -21,6 +21,7 @@ const costing = require('./costing');
 const products = require('./productLookup');
 const stockCodes = require('./stockCodes');
 const poService = require('./purchaseOrderService');
+const recost = require('./recostService');
 const h = require('./helpers');
 
 const { httpError, round2 } = h;
@@ -338,7 +339,7 @@ async function getOne(req, id) {
   if (!plain.boxes || !plain.boxes.length) {
     plain.boxes = bills.map((b) => ({ bill: b.bill, vendor: b.vendor, vendorName: b.vendorName, billNo: b.billNo, billTotal: b.billTotal, expected: b.boxesExpected, received: 0 }));
   }
-  if (plain.chargeRate === null || plain.chargeRate === undefined) plain.chargeRate = chargeRateFor(grn, bills);
+  if (plain.chargeRate === null || plain.chargeRate === undefined) plain.chargeRate = chargeRateFor(grn, po, bills);
   const showAll = req.query && (req.query.all === '1' || req.query.all === 'true');
   plain.entries = (plain.entries || []).filter((e) => showAll || !e.undone).sort((a, b) => b.entryNo - a.entryNo);
   plain.progress = progressOf(grn, bills);
@@ -476,9 +477,11 @@ async function addPhotos(req, id, urls = []) {
 
 // ---------------------------------------------------------------- new flow: boxes
 
-/** Frozen charge rate, or (older GRNs) trip charges / Σ bill totals. */
-const chargeRateFor = (grn, bills) =>
-  typeof grn.chargeRate === 'number' ? grn.chargeRate : costing.chargeRateOf(grn.chargesTotal, sumOf(bills, (b) => b.billTotal));
+/** Cost share of the trip: charges ÷ ALL its bills (PO totals); GRN copy / its bills as fallback. */
+const chargeRateFor = (grn, po, bills) => {
+  if (po && po.totals && po.totals.goods > 0) return costing.tripRateOf(po);
+  return typeof grn.chargeRate === 'number' ? grn.chargeRate : costing.chargeRateOf(grn.chargesTotal, sumOf(bills, (b) => b.billTotal));
+};
 
 /**
  * Step 1: boxes that reached the warehouse, per bill: { boxes: [{ bill, received }], note }.
@@ -677,6 +680,9 @@ async function postEntry(grn, entry, userId) {
     if (existing) {
       movementId = existing._id;
     } else {
+      // Cost share may have changed since the entry was saved (re-cost): use the saved value.
+      const saved = await GoodsReceipt.findOne({ _id: grn._id, 'entries._id': entry._id }, { 'entries.$': 1 }).lean();
+      if (saved && saved.entries && saved.entries[0]) entry.landedUnitCost = saved.entries[0].landedUnitCost;
       const r = await stockService.receiveStock({
         productId: entry.product,
         variantId: entry.variantId || undefined,
@@ -827,10 +833,18 @@ async function addEntry(req, id, body = {}, opts = {}) {
     if (shelfQty > 0) shelf = await locationService.loadShelf(body.shelfId, first.branch);
   }
 
-  // Frozen at send; older GRNs get it now (once).
-  const chargeRate = chargeRateFor(first, bills);
-  if (typeof first.chargeRate !== 'number') {
-    await GoodsReceipt.updateOne({ _id: first._id, chargeRate: null }, { $set: { chargeRate, goodsTotal: sumOf(bills, (b) => b.billTotal) } });
+  // Cost share of the whole trip. If the GRN or earlier entries are behind (a bill /
+  // cost changed while the GRN was busy), bring them up to date first.
+  const chargeRate = chargeRateFor(first, po, bills);
+  if (first.chargeRate !== chargeRate || recost.staleEntries(first, chargeRate).length) {
+    if (po && po.totals && po.totals.goods > 0) {
+      await GoodsReceipt.updateOne({ _id: first._id }, { $set: { chargeRate, goodsTotal: po.totals.goods, chargesTotal: po.totals.charges } });
+    } else {
+      await GoodsReceipt.updateOne({ _id: first._id, chargeRate: null }, { $set: { chargeRate, goodsTotal: sumOf(bills, (b) => b.billTotal) } });
+    }
+    await recost.recostGRN(first._id, { rate: chargeRate, by: { userId, userName: h.userName(req) }, note: 'cost share changed' }).catch((err) => {
+      console.error('[recost] before entry:', err.message);
+    });
   }
   const landedUnitCost = costing.landedFrom(costPrice, chargeRate);
   await finishStaleEntries(first, userId);
@@ -1190,8 +1204,22 @@ async function completeEntries(req, id, body, current) {
       await postEntry(grn, e, by);
     }
 
-    // 2. Per bill: claim what was not entered.
+    // 2. Last word on cost: every entry at the cost share of the whole trip (all bills, all costs).
     const po = await PurchaseOrder.findById(grn.purchaseOrder);
+    if (po) {
+      costing.recalcPO(po);
+      const rate = costing.tripRateOf(po);
+      await GoodsReceipt.updateOne({ _id: grn._id }, { $set: { chargeRate: rate, goodsTotal: po.totals.goods, chargesTotal: po.totals.charges } });
+      await recost.recostGRN(grn._id, { rate, by: { userId: by, userName: h.userName(req) }, note: 'at finish', lockHeld: true });
+      const fresh = await GoodsReceipt.findById(grn._id).select('entries._id entries.landedUnitCost').lean();
+      const landed = new Map((fresh.entries || []).map((e) => [String(e._id), e.landedUnitCost]));
+      for (const e of grn.entries) if (landed.has(String(e._id)) && e.landedUnitCost !== landed.get(String(e._id))) e.landedUnitCost = landed.get(String(e._id));
+      grn.chargeRate = rate;
+      grn.goodsTotal = po.totals.goods;
+      grn.chargesTotal = po.totals.charges;
+    }
+
+    // 3. Per bill: claim what was not entered.
     const bills = billsOf(grn, po ? po.toObject() : null);
     const closing = closingOf(grn, bills, body.claims);
     const claims = [];
@@ -1224,7 +1252,7 @@ async function completeEntries(req, id, body, current) {
       });
     }
 
-    // 3. Close the documents.
+    // 4. Close the documents.
     const live = liveEntries(grn);
     const claimed = round2(sumOf(claims, (c) => c.amount));
     const accepted = sumOf(live, (e) => e.stockQty);

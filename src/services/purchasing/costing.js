@@ -4,7 +4,7 @@
 //   line total   = qty × unit price − line discount
 //   bill total   = bill amount (paper bill) when typed,
 //                  else Σ line totals − bill discount      (what we owe the vendor)
-//   charge rate  = trip charges / Σ bill totals            (frozen on the GRN at send)
+//   charge rate  = trip charges / Σ ALL bill totals         (follows the trip until the GRN is completed)
 //   entry landed = cost price × (1 + charge rate)          (simple flow, per entry)
 //   net price    = (line total − its share of the bill discount) / qty
 //   landed cost  = net price + share of the PO charges     (car rent, builty, landing…)
@@ -60,6 +60,9 @@ function chargeRateOf(chargesTotal, goodsTotal) {
   const goods = num(goodsTotal);
   return goods > 0 ? round4(num(chargesTotal) / goods) : 0;
 }
+
+/** Charge rate of the whole trip: charges ÷ goods of ALL its bills (sent or not). Call recalcPO first. */
+const tripRateOf = (po) => chargeRateOf(po.totals && po.totals.charges, po.totals && po.totals.goods);
 
 /** Landed cost per piece of a goods entry: vendor price + its share of the trip charges. */
 const landedFrom = (costPrice, chargeRate) => round2(num(costPrice) * (1 + num(chargeRate)));
@@ -192,7 +195,7 @@ function previewCosting(po, units, { minMarginPct = 15 } = {}) {
       warnings,
       // simple flow: every entered piece costs costPrice × (1 + chargeRate)
       billsTotal: po.totals.goods,
-      chargeRate: chargeRateOf(po.totals.charges, po.totals.goods),
+      chargeRate: tripRateOf(po),
     },
   };
 }
@@ -309,6 +312,7 @@ module.exports = {
   recalcPO,
   billTotalOf,
   chargeRateOf,
+  tripRateOf,
   landedFrom,
   netLines,
   previewCosting,

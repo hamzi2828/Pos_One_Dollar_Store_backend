@@ -13,6 +13,7 @@ const vendorLedger = require('../vendorLedgerService');
 const config = require('../configService');
 const notificationService = require('../notificationService');
 const costing = require('./costing');
+const recost = require('./recostService');
 const products = require('./productLookup');
 const h = require('./helpers');
 
@@ -698,13 +699,15 @@ async function syncGRN(req, po) {
       expectedCartons: expectedCartonsOf(po),
       cartonsReceived: boxes.reduce((s, b) => s + (b.received || 0), 0),
     };
-    // The charge rate is frozen once goods are entered; before that it follows the new goods total.
-    if (!live.length) set.chargeRate = costing.chargeRateOf(po.totals.charges, goodsTotal);
     const res = await GoodsReceipt.updateOne(
       { _id: grn._id, __v: grn.__v, status: { $in: ['pending', 'in_progress'] } },
       { $set: set, $push: { history: h.historyEntry(req, 'bills_updated', `${po.poNumber}: ${boxes.length} vendor bills`) }, $inc: { __v: 1 } }
     );
-    if (res.modifiedCount) return;
+    if (res.modifiedCount) {
+      // Cost share = the whole trip (all bills); goods already entered are re-costed.
+      await followTrip(req, po, 'bills changed');
+      return;
+    }
   }
   throw httpError('The warehouse receipt changed while saving. Reload and try again.', 409);
 }
@@ -730,8 +733,8 @@ const MAX_CHARGE_PHOTOS = 5;
 
 // Trip costs, like vendor bills, can change until the trip is fully received
 // (owner, 2026-11-01: a bill added after sending often brings its own costs).
-// Goods already entered in the warehouse keep their cost; goods entered after
-// the change use the new share (see syncChargeRate).
+// The cost share follows the whole trip until it is received: goods already
+// entered are re-costed (see syncChargeRate / recostService).
 
 /** Keep the builty freight on the builty in step with its cost row. */
 const syncBuiltyFreight = (doc, charge, amount) => {
@@ -800,22 +803,21 @@ async function removeCharge(req, id, chargeId) {
 
 /**
  * Trip costs changed after "Send to warehouse": give the warehouse receipt the
- * new total and cost share (trip costs / goods). Entries already made keep
- * their landed cost; the next entries use the new share.
+ * new total and cost share (trip costs / goods of all bills). Entries already
+ * made are re-costed to the new share.
  */
 async function syncChargeRate(req, po) {
   if (!['open', 'closed', 'receiving'].includes(po.status) || !po.goodsReceipt) return;
-  const chargeRate = costing.chargeRateOf(po.totals.charges, po.totals.goods);
   const res = await GoodsReceipt.updateOne(
     { _id: po.goodsReceipt, status: { $in: ['pending', 'in_progress'] } },
-    {
-      $set: { chargesTotal: po.totals.charges, chargeRate, goodsTotal: po.totals.goods },
-      $push: { history: h.historyEntry(req, 'charges_updated', `${po.poNumber}: trip costs Rs ${po.totals.charges}`) },
-      $inc: { __v: 1 },
-    }
+    { $push: { history: h.historyEntry(req, 'charges_updated', `${po.poNumber}: trip costs Rs ${po.totals.charges}`) }, $inc: { __v: 1 } }
   );
+  if (res.modifiedCount) await followTrip(req, po, 'trip costs changed');
   return res.modifiedCount > 0;
 }
+
+/** GRN cost share = whole trip; entries already made are re-costed (recostService). */
+const followTrip = (req, po, note) => recost.followTrip(po, { by: { userId: h.userId(req), userName: h.userName(req) }, note });
 
 // ---------------------------------------------------------------- close / cancel / reopen
 
@@ -1103,7 +1105,7 @@ async function ensureGRN(req, po) {
         allocationMethod: po.allocationMethod,
         chargesTotal: po.totals.charges,
         goodsTotal: po.totals.goods,
-        chargeRate: costing.chargeRateOf(po.totals.charges, po.totals.goods),
+        chargeRate: costing.tripRateOf(po),
         expectedCartons: expectedCartonsOf(po),
         boxes: grnBoxesFrom(po),
         lines: grnLinesFrom(po),
