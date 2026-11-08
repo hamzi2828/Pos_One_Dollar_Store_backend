@@ -39,6 +39,10 @@ const expenseSchema = new mongoose.Schema({
     investment: { type: mongoose.Schema.Types.ObjectId, ref: 'Investment', default: null, index: true },
     investmentTitle: { type: String, default: '', trim: true },
     bankName: { type: String, default: '', trim: true },
+    // Cash paid from this counter's drawer: only that counter's till takes it off.
+    // null = not tied to a counter (old rule: the next till to close takes it).
+    counter: { type: mongoose.Schema.Types.ObjectId, ref: 'SaleCounter', default: null },
+    counterName: { type: String, default: '', trim: true },
     reference: {
         type: String,
         default: '',

@@ -198,6 +198,7 @@ router.get('/expenses', ...staff, can('expenses', 'view'), expenseController.get
 router.get('/expenses/summary', ...staff, can('expenses', 'view'), expenseController.getExpenseSummary);
 router.get('/expenses/categories', ...staff, can('expenses', 'view'), expenseController.getAllCategories);
 router.get('/expenses/banks', ...staff, can('expenses', 'view'), expenseController.getBankOptions);
+router.get('/expenses/counters', ...staff, can('expenses', 'view'), expenseController.getCounterOptions);
 router.get('/expenses/investment-bills', ...staff, can('expenses', 'view'), expenseController.getInvestmentBills);
 router.post('/expenses/categories', ...staff, can('expenses', 'create'), expenseController.createCategory);
 router.delete('/expenses/categories/:id', ...staff, can('expenses', 'delete'), expenseController.deleteCategory);

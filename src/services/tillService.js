@@ -344,7 +344,7 @@ async function sessionExpenses(session) {
     db
       .collection('expenses')
       .find({ $or: [{ date: near }, { createdAt: near }, { _id: { $in: ownIds } }], isDeleted: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true } })
-      .project({ title: 1, amount: 1, paymentMethod: 1, createdAt: 1, branch: 1, date: 1 })
+      .project({ title: 1, amount: 1, paymentMethod: 1, createdAt: 1, branch: 1, date: 1, counter: 1, counterName: 1 })
       .toArray(),
     db
       .collection('vendorpayments')
@@ -372,7 +372,17 @@ async function sessionExpenses(session) {
   const rows = [
     ...expenseRows
       .filter((x) => !x.branch || String(x.branch) === String(branchId))
-      .map((x) => ({ _id: x._id, title: x.title || '', amount: round2(x.amount), paymentMethod: x.paymentMethod || '', createdAt: x.createdAt, at: timeOf(x), kind: 'expense' })),
+      .map((x) => ({
+        _id: x._id,
+        title: x.title || '',
+        amount: round2(x.amount),
+        paymentMethod: x.paymentMethod || '',
+        createdAt: x.createdAt,
+        at: timeOf(x),
+        kind: 'expense',
+        counter: x.counter ? String(x.counter) : null,
+        counterName: x.counterName || '',
+      })),
     ...paymentRows.map((x) => ({
       _id: x._id,
       title: `Vendor payment: ${x.vendorName || 'vendor'}${x.paymentNo ? ` (${x.paymentNo})` : ''}`,
@@ -401,7 +411,16 @@ async function sessionExpenses(session) {
   const firstDay = first ? zonedDayStart(dayOf(first.openedAt), tz).getTime() : 0;
   for (let i = rows.length - 1; i >= 0; i--) if (rows[i].at < firstDay) rows.splice(i, 1);
   if (!rows.length) return [];
-  const pick = (x) => ({ _id: x._id, title: x.title, amount: x.amount, paymentMethod: x.paymentMethod, createdAt: x.createdAt, kind: x.kind, shopUse: false });
+  const pick = (x) => ({
+    _id: x._id,
+    title: x.title,
+    amount: x.amount,
+    paymentMethod: x.paymentMethod,
+    createdAt: x.createdAt,
+    kind: x.kind,
+    shopUse: false,
+    ...(x.counter ? { counter: x.counter, counterName: x.counterName } : {}),
+  });
   const mine = new Set(own || []);
 
   const tills = await CashSession.find({
@@ -409,10 +428,12 @@ async function sessionExpenses(session) {
     openedAt: { $lte: new Date(to.getTime() + 30 * 86400000) },
     $or: [{ closedAt: null }, { closedAt: { $gte: new Date(from.getTime() - PAYOUT_LOOKBACK_MS) } }],
   })
-    .select('openedAt closedAt status branch payoutIds')
+    .select('openedAt closedAt status branch payoutIds counter')
     .lean();
   // Payouts other tills already took off their cash never count again.
-  const claimed = new Set();
+  // (id -> tills that took it). A claim by an unverified till of ANOTHER counter is
+  // dropped when the expense's counter was changed: it moves to the right till.
+  const claimed = new Map();
   for (const t of tills) {
     if (String(t._id) === String(session._id) || t.status === 'open') continue;
     let ids = t.payoutIds;
@@ -420,17 +441,29 @@ async function sessionExpenses(session) {
       ids = await legacyPayoutIds(t, tz);
       await CashSession.updateOne({ _id: t._id, payoutIds: { $exists: false } }, { $set: { payoutIds: ids } });
     }
-    ids.forEach((x) => claimed.add(String(x)));
+    ids.forEach((x) => {
+      const k = String(x);
+      if (!claimed.has(k)) claimed.set(k, []);
+      claimed.get(k).push(t);
+    });
   }
+  const sessionCounter = String(session.counter || '');
+  const editable = (t) => t.status === 'open' || t.status === 'closed';
+  const wrongCounter = (x, t) => !!x.counter && x.counter !== String(t.counter || '');
+  const isClaimed = (x) => (claimed.get(String(x._id)) || []).some((t) => !(t.status === 'closed' && wrongCounter(x, t)));
+  // Saved on this till, unless it is now paid from another counter (till not verified yet).
+  const keepMine = (x) => mine.has(String(x._id)) && !(editable(session) && wrongCounter(x, { counter: sessionCounter }));
   if (!tills.some((t) => String(t._id) === String(session._id))) tills.push(session);
   const closeOf = (t) => (t.closedAt ? new Date(t.closedAt).getTime() : Infinity);
   tills.sort((a, b) => closeOf(a) - closeOf(b) || new Date(a.openedAt) - new Date(b.openedAt));
-  const owner = (at) => {
-    const hit = tills.find((t) => closeOf(t) >= at);
+  // An expense paid from a counter goes only to that counter's tills: the first
+  // of them to close after it. Without a counter: the first till of the shop.
+  const owner = (at, counter) => {
+    const hit = tills.find((t) => closeOf(t) >= at && (!counter || String(t.counter || '') === counter));
     return hit ? String(hit._id) : null;
   };
   return rows
-    .filter((x) => mine.has(String(x._id)) || (!claimed.has(String(x._id)) && x.at >= from.getTime() && x.at <= to.getTime() && owner(x.at) === String(session._id)))
+    .filter((x) => keepMine(x) || (!isClaimed(x) && x.at >= from.getTime() && x.at <= to.getTime() && owner(x.at, x.counter) === String(session._id)))
     .sort((a, b) => a.at - b.at)
     .map(pick);
 }

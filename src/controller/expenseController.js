@@ -114,12 +114,26 @@ const expenseController = {
         }
     },
 
+    // GET /expenses/counters - live sale counters for the "Paid from" dropdown
+    getCounterOptions: async (req, res) => {
+        try {
+            const SaleCounter = require('../models/saleCounter');
+            const data = await SaleCounter.find({ isActive: true }).select('name code').sort({ name: 1 }).lean();
+            return res.json({ success: true, data });
+        } catch (error) {
+            console.error('Error loading counters:', error);
+            return res.status(500).json({ message: 'Failed to load counters' });
+        }
+    },
+
     // POST /expenses - Create new expense
     createExpense: async (req, res) => {
         try {
             const { title, amount, category, categories, date, paymentMethod, reference, notes } = req.body;
             const bankPick = await bankFor(paymentMethod, req.body.bankId);
             if (bankPick.error) return res.status(400).json({ message: bankPick.error });
+            const counterPick = await counterFor(req.body.counter);
+            if (counterPick.error) return res.status(400).json({ message: counterPick.error });
             let invPick = null;
             try {
                 invPick = await invLink.checkLink(req.body.investmentId, Number(amount));
@@ -189,6 +203,8 @@ const expenseController = {
                 paymentMethod: paymentMethod?.trim() || 'Cash',
                 bank: bankPick.bank,
                 bankName: bankPick.bankName,
+                counter: counterPick.counter,
+                counterName: counterPick.counterName,
                 investment: invPick ? invPick._id : null,
                 investmentTitle: invPick ? invPick.title : '',
                 reference: reference?.trim() || '',
@@ -298,6 +314,12 @@ const expenseController = {
                 if (bankPick.error) return res.status(400).json({ message: bankPick.error });
                 expense.bank = bankPick.bank;
                 expense.bankName = bankPick.bankName;
+            }
+            if (req.body.counter !== undefined) {
+                const counterPick = await counterFor(req.body.counter, expense.counter);
+                if (counterPick.error) return res.status(400).json({ message: counterPick.error });
+                expense.counter = counterPick.counter;
+                expense.counterName = counterPick.counterName;
             }
             if (reference !== undefined) expense.reference = reference?.trim() || '';
             if (notes !== undefined) expense.notes = notes?.trim() || '';
@@ -547,6 +569,19 @@ async function bankFor(paymentMethod, bankId) {
     const b = await Bank.findOne({ _id: bankId, isDeleted: { $ne: true } }).select('name accountNumber').lean();
     if (!b) return { error: 'Bank account not found' };
     return { bank: b._id, bankName: `${b.name}${b.accountNumber ? ` (${String(b.accountNumber).slice(-4)})` : ''}` };
+}
+
+// "Paid from" counter: '' / null = none; else must be a live, active counter
+// (the one already saved may stay even if it was switched off since).
+async function counterFor(counterId, current = null) {
+    if (counterId === undefined || counterId === null || counterId === '' || counterId === 'null') return { counter: null, counterName: '' };
+    const mongoose = require('mongoose');
+    if (!mongoose.isValidObjectId(String(counterId))) return { error: 'Choose a valid counter' };
+    const SaleCounter = require('../models/saleCounter');
+    const c = await SaleCounter.findOne({ _id: counterId }).select('name isActive').lean();
+    const keep = current && String(current) === String(counterId);
+    if (!c || (!c.isActive && !keep)) return { error: 'That counter is not active' };
+    return { counter: c._id, counterName: c.name };
 }
 
 module.exports = expenseController;
