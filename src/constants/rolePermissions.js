@@ -37,6 +37,8 @@ const PERMISSION_SECTIONS = [
             // Sale-or-return stock placed by vendors; settled on their next visit.
             { key: 'consignment', label: 'Consignment', actions: ['view', 'create', 'edit', 'delete'] },
             { key: 'vendor_returns', label: 'Vendor Returns', actions: ['view', 'create', 'edit', 'delete'] },
+            // Read-only log of every change made in this section (who did what, before → after).
+            { key: 'purchasing_log', label: 'Purchasing Log', actions: ['view'] },
         ],
     },
     {
@@ -226,7 +228,7 @@ const DEFAULT_ROLES = [
             dashboard: VX, pos: ['view', 'create', 'edit', 'delete', 'export'], pos_orders: ['view', 'create', 'edit', 'delete', 'export'],
             pos_gifts: VC, till: VCE, till_verify: ['view', 'edit', 'export'], sale_counters: ['view', 'create', 'edit'],
             purchase_orders: ['view', 'create', 'edit', 'delete', 'export'], goods_receiving: VCE, vendors: ['view', 'create', 'edit', 'export'],
-            vendor_payments: VC, consignment: ['view', 'create', 'edit', 'delete'], vendor_returns: ['view', 'create', 'edit', 'delete'],
+            vendor_payments: VC, consignment: ['view', 'create', 'edit', 'delete'], vendor_returns: ['view', 'create', 'edit', 'delete'], purchasing_log: V,
             racks: ['view', 'create', 'edit'], stock_putaway: VC, stock_movements: VX, damages: ['view', 'create', 'edit', 'delete', 'export'],
             shop_use: ['view', 'create', 'delete'], stock_adjustments: VC,
             report_sales: VX, report_cost_analysis: VX, report_stock: VX, report_expenses: VX, report_receivables: VX, report_cash_in_hand: VX,

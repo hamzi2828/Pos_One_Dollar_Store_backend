@@ -27,7 +27,17 @@ const MODULES = [
   'labelPrintRoutes',
   'websiteRoutes',
   'printJobRoutes',
+  'purchasingLogRoutes',
 ];
+
+// Purchasing log: records every change (non-GET) of the Purchasing & Vendors
+// routes below. Never blocks or breaks a request.
+try {
+  router.use('/api', require('../../middleware/purchasingLogger'));
+} catch (err) {
+  if (process.env.STRICT_MODULES === '1') throw err;
+  console.error('[modules] purchasing log failed to load and is disabled:', err);
+}
 
 for (const name of MODULES) {
   try {
