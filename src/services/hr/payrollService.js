@@ -58,7 +58,7 @@ const MAX_MONEY = 10000000;
 
 // Rows the calculation makes from attendance (the rest come from manual inputs,
 // deductions and advances and are rebuilt by finishLine).
-const AUTO_EARNINGS = new Set(['base', 'days', 'overtime']);
+const AUTO_EARNINGS = new Set(['base', 'days', 'overtime', 'overtime_double']);
 const AUTO_CUTS = new Set(['absent', 'half_day', 'late', 'unpaid_leave', 'unpaid_off', 'unpaid_holiday']);
 
 /* ------------------------------------------------------------------ */
@@ -751,6 +751,7 @@ function baseLine({ employee: e, summary: s, policy: p, period, workMinutes = 0,
       overtimeMinutesPending: otPending,
       overtimeMinutesPaid: otRate > 0 ? otPaid : 0,
       overtimeMinutesOffDay: otOffDay,
+      overtimeMinutesDouble: otDouble > 0 && dblRate > 0 && ot.enabled !== false ? otDouble : 0,
       upcomingDays: s.upcomingDays,
       notEmployedDays: s.notEmployedDays,
       cuts,
@@ -866,7 +867,7 @@ function totalsOf(lines) {
     t.gross += l.gross;
     t.deductions += l.totalDeductions;
     t.net += l.net;
-    t.overtime += sum((l.earnings || []).filter((r) => r.key === 'overtime'), (r) => r.amount);
+    t.overtime += sum((l.earnings || []).filter((r) => r.key === 'overtime' || r.key === 'overtime_double'), (r) => r.amount);
     t.bonus += rs(l.bonus);
     t.advanceRecovery += rs(l.advanceRecovery);
     if (l.status === 'paid') {
@@ -1103,6 +1104,13 @@ async function salaryToDate({ now = new Date() } = {}) {
       absentDays: a.absentDays || 0,
       lateCount: a.lateCount || 0,
       overtime: rs(otherEarned - l.earnings.filter((r) => r.key === 'days').reduce((t, r) => t + r.amount, 0)),
+      // Overtime split (owner, 2026-11-08): normal rate vs. hours past `doubleAfterHours` in a day (× doubleRate).
+      overtimeNormal: rs(sum(l.earnings.filter((r) => r.key === 'overtime'), (r) => r.amount)),
+      overtimeDouble: rs(sum(l.earnings.filter((r) => r.key === 'overtime_double'), (r) => r.amount)),
+      otDoubleMinutes: Number(a.overtimeMinutesDouble) || 0,
+      otNormalMinutes: Math.max(0, (Number(a.overtimeMinutesPaid) || 0) - (Number(a.overtimeMinutesDouble) || 0)),
+      doubleAfterHours: Number((l.policy && l.policy.overtime && l.policy.overtime.doubleAfterHours) || 0),
+      doubleRate: Number((l.policy && l.policy.overtime && l.policy.overtime.doubleRate) ?? 2),
       cuts: rs(cuts),
       earned,
       due,
@@ -1674,7 +1682,7 @@ async function exportCsv(id) {
   const amt = (rows, pred) => sum((rows || []).filter(pred), (r) => r.amount);
   const header = [
     'Code', 'Employee', 'Designation', 'Pay type', 'Day rate', 'Scheduled days', 'Days worked', 'Absent', 'Half days', 'Lates',
-    'Late minutes', 'Unpaid leave days', 'Overtime hours paid', 'Basic / wage', 'Overtime', 'Bonus', 'Other additions', 'Gross',
+    'Late minutes', 'Unpaid leave days', 'Overtime hours paid', 'Basic / wage', 'Overtime', 'Overtime ×2 (long day)', 'Bonus', 'Other additions', 'Gross',
     'Absent cut', 'Half day cut', 'Late cut', 'Leave cut', 'Off / holiday cut', 'Till shortage', 'Other deductions',
     'Advance recovery', 'Other minus', 'Total deductions', 'Net pay', 'Status', 'Paid on', 'Method', 'Reference', 'Note',
   ];
@@ -1687,7 +1695,7 @@ async function exportCsv(id) {
       l.code, l.name, l.designation, l.payType, l.dayRate, a.scheduledDaysInMonth, a.daysWorked, a.absentDays, a.halfDays, a.lateCount,
       a.lateMinutes, (a.leave && a.leave.unpaidTotal) || 0, r2((a.overtimeMinutesPaid || 0) / 60),
       amt(l.earnings, (r) => r.key === 'base' || r.key === 'days'), amt(l.earnings, (r) => r.key === 'overtime'),
-      amt(l.earnings, (r) => r.key === 'bonus'), amt(l.earnings, (r) => r.key.startsWith('adj_')), l.gross,
+      amt(l.earnings, (r) => r.key === 'overtime_double'), amt(l.earnings, (r) => r.key === 'bonus'), amt(l.earnings, (r) => r.key.startsWith('adj_')), l.gross,
       amt(l.deductions, (r) => r.key === 'absent'), amt(l.deductions, (r) => r.key === 'half_day'), amt(l.deductions, (r) => r.key === 'late'),
       amt(l.deductions, (r) => r.key === 'unpaid_leave'), amt(l.deductions, (r) => r.key === 'unpaid_off' || r.key === 'unpaid_holiday'),
       amt(l.deductions, (r) => tillKeys.has(r.key)), amt(l.deductions, (r) => r.key.startsWith('ded_') && !tillKeys.has(r.key)),
@@ -1697,7 +1705,7 @@ async function exportCsv(id) {
     ];
   });
   // Totals row: sum every money column.
-  const moneyCols = ['Basic / wage', 'Overtime', 'Bonus', 'Other additions', 'Gross', 'Absent cut', 'Half day cut', 'Late cut', 'Leave cut',
+  const moneyCols = ['Basic / wage', 'Overtime', 'Overtime ×2 (long day)', 'Bonus', 'Other additions', 'Gross', 'Absent cut', 'Half day cut', 'Late cut', 'Leave cut',
     'Off / holiday cut', 'Till shortage', 'Other deductions', 'Advance recovery', 'Other minus', 'Total deductions', 'Net pay'];
   const total = header.map(() => '');
   total[1] = 'TOTAL';
