@@ -312,7 +312,7 @@ async function legacyPayoutIds(t, tz) {
   const dayDate = new Date(`${day}T00:00:00.000Z`);
   const rows = await mongoose.connection.db
     .collection('expenses')
-    .find({ date: { $gte: dayDate, $lt: new Date(dayDate.getTime() + 86400000) }, isDeleted: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true } })
+    .find({ date: { $gte: dayDate, $lt: new Date(dayDate.getTime() + 86400000) }, isDeleted: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true }, paymentMethod: { $ne: 'Bank Transfer' } }) // bank-paid: not from the counter cash
     .project({ createdAt: 1, branch: 1 })
     .toArray();
   if (!rows.length) return [];
@@ -343,7 +343,7 @@ async function sessionExpenses(session) {
   const [expenseRows, paymentRows, tripRows] = await Promise.all([
     db
       .collection('expenses')
-      .find({ $or: [{ date: near }, { createdAt: near }, { _id: { $in: ownIds } }], isDeleted: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true } })
+      .find({ $or: [{ date: near }, { createdAt: near }, { _id: { $in: ownIds } }], isDeleted: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true }, paymentMethod: { $ne: 'Bank Transfer' } }) // bank-paid: not from the counter cash
       .project({ title: 1, amount: 1, paymentMethod: 1, createdAt: 1, branch: 1, date: 1, counter: 1, counterName: 1 })
       .toArray(),
     db
