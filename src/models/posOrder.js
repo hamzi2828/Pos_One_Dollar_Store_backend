@@ -133,6 +133,9 @@ const posOrderSchema = new mongoose.Schema(
     notes: { type: String },
     completedAt: { type: Date, default: Date.now },
     refundedAt: { type: Date },
+    // How the money went back to the customer. 'cash' = out of the refunder's till,
+    // even when the bill was paid by bank / card. null = old refunds (cash part of the bill).
+    refundMethod: { type: String, enum: ['cash', 'bank_transfer', 'card', null], default: null },
     // Who gave the refund (cash leaves THEIR till session, not the original cashier's).
     refundedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     cancelledAt: { type: Date },

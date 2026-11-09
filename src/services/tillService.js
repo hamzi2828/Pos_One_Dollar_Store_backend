@@ -266,7 +266,7 @@ function cashPart(entry, order) {
 }
 
 const ORDER_FIELDS =
-  'orderNumber total subtotal paymentMethod cashAmount cardAmount changeGiven paidAmount pendingAmount paymentHistory createdAt orderStatus paymentStatus cashier cashSession refundedAt refundedBy customerInfo.name isDeleted deletedAt';
+  'orderNumber total subtotal paymentMethod cashAmount cardAmount changeGiven paidAmount pendingAmount paymentHistory createdAt orderStatus paymentStatus cashier cashSession refundedAt refundedBy refundMethod customerInfo.name isDeleted deletedAt';
 
 /**
  * What the drawer of `session` should hold at `until`:
@@ -620,7 +620,15 @@ async function computeExpected(session, until = new Date()) {
   for (const o of refundedOrders) {
     const refunder = o.refundedBy || o.cashier;
     if (String(refunder) !== cashier) continue;
-    const cash = round2((o.paymentHistory || []).reduce((s, e) => s + cashPart(e, o), 0));
+    // Refund given in cash: everything paid on the bill leaves this till, even a bank / card bill.
+    // Given back by bank / card: nothing leaves the drawer. Not recorded (old refunds): the bill's cash part.
+    const paid = round2((o.paymentHistory || []).reduce((s, e) => s + Math.max(0, Number(e.amount) || 0), 0)) || round2(Number(o.paidAmount) || 0);
+    const cash =
+      o.refundMethod === 'cash'
+        ? paid
+        : o.refundMethod
+          ? 0
+          : round2((o.paymentHistory || []).reduce((s, e) => s + cashPart(e, o), 0));
     if (!cash) continue;
     cashRefunds += cash;
     const b = bill(o);

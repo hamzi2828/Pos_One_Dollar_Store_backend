@@ -1341,7 +1341,10 @@ const posController = {
   // and puts its pieces back into stock (only once, ledger rows 'sale_return' with the order refs).
   refundOrder: async (req, res) => {
     try {
-      const { reason } = req.body || {};
+      const { reason, refundMethod } = req.body || {};
+      if (refundMethod != null && !['cash', 'bank_transfer', 'card'].includes(refundMethod)) {
+        return res.status(400).json({ success: false, message: 'Refund method must be cash, bank_transfer or card' });
+      }
       const userId = userIdOf(req);
       const order = await POSOrder.findOne({ _id: req.params.id, isDeleted: { $ne: true } });
       if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
@@ -1358,6 +1361,7 @@ const posController = {
       order.orderStatus = 'refunded';
       order.paymentStatus = 'refunded';
       order.refundedAt = new Date();
+      if (refundMethod) order.refundMethod = refundMethod;
       // Who handed the cash back (till closing subtracts it from that person's till).
       order.refundedBy = (req.access && req.access.userId) || userId || null;
       order.pendingAmount = 0; // nothing is owed on a refunded order
