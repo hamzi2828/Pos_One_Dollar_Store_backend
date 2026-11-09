@@ -234,6 +234,11 @@ const expenseController = {
 
             // Paid from personal money -> a loan from that person is made too.
             const fromPersonal = isYes(req.body.fromPersonal);
+            // Owner 2026-11-10: cash out of a drawer must say which counter, or the till math goes wrong.
+            if ((paymentMethod?.trim() || 'Cash') === 'Cash' && !fromPersonal && !counterPick.counter && (await require('../models/saleCounter').countDocuments({ isActive: true, isDeleted: { $ne: true } })) > 0) {
+                dropLocal(files);
+                return res.status(400).json({ message: 'Pick which counter paid it (Paid from Counter 1 / Counter 2).' });
+            }
             if (fromPersonal && !req.body.lenderId) {
                 return res.status(400).json({ message: 'Pick whose personal money paid it' });
             }
