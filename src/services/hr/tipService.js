@@ -36,7 +36,8 @@ async function ensureTipsCategory() {
   }
 }
 
-const tipView = (t) => ({ ...t, methodLabel: METHOD_LABEL[t.method] || t.method });
+const SALARY = 'salary';
+const tipView = (t) => ({ ...t, methodLabel: t.method === SALARY ? 'Added to salary' : METHOD_LABEL[t.method] || t.method });
 
 /**
  * body: { date, method, note, tips: [{ employeeId, amount, note? }] }
@@ -48,7 +49,8 @@ async function createTips(body = {}, { userId, branchId = null, now = new Date()
   if (items.length > MAX_AT_ONCE) throw httpError(400, `At most ${MAX_AT_ONCE} employees at once`);
   const date = shopDate(body.date, 'Date', now);
   const day = T.dayKey(date);
-  const payMethod = method(body.method);
+  // 'salary': not given now, paid with that month's salary (no expense, no cash out).
+  const payMethod = body.method === SALARY ? SALARY : method(body.method);
   const sharedNote = str(body.note, 500) || '';
 
   const seen = new Set();
@@ -64,7 +66,7 @@ async function createTips(body = {}, { userId, branchId = null, now = new Date()
   await ensureTipsCategory();
   const out = [];
   for (const { e, amount, note } of checked) {
-    const expenseId = new ObjectId();
+    const expenseId = payMethod === SALARY ? null : new ObjectId();
     const tip = await StaffTip.create({
       tipNo: await nextNumber('TIP'),
       employee: e._id,
@@ -79,6 +81,10 @@ async function createTips(body = {}, { userId, branchId = null, now = new Date()
       branch: branchId || null,
       createdBy: userId || null,
     });
+    if (payMethod === SALARY) {
+      out.push(tipView(tip.toObject()));
+      continue;
+    }
     try {
       await Expense.create({
         _id: expenseId,

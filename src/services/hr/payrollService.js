@@ -58,7 +58,7 @@ const MAX_MONEY = 10000000;
 
 // Rows the calculation makes from attendance (the rest come from manual inputs,
 // deductions and advances and are rebuilt by finishLine).
-const AUTO_EARNINGS = new Set(['base', 'days', 'overtime', 'overtime_double']);
+const AUTO_EARNINGS = new Set(['base', 'days', 'overtime', 'overtime_double', 'tips_salary']);
 const AUTO_CUTS = new Set(['absent', 'half_day', 'late', 'unpaid_leave', 'unpaid_off', 'unpaid_holiday']);
 
 /* ------------------------------------------------------------------ */
@@ -962,6 +962,12 @@ async function buildMonth(month, { now = new Date(), manual = new Map() } = {}) 
     }
     return m;
   };
+  // Tips saved as "Add to salary" for this month (owner, 2026-11-10): paid with the salary.
+  const salaryTips = await require('../../models/staffTip').aggregate([
+    { $match: { isDeleted: { $ne: true }, method: 'salary', employee: { $in: ids }, day: { $regex: `^${month}` } } },
+    { $group: { _id: '$employee', amount: { $sum: '$amount' }, count: { $sum: 1 } } },
+  ]);
+  const tipBy = new Map(salaryTips.map((t) => [String(t._id), t]));
   const advBy = group(advances);
   const dedBy = group(approved);
   const pendingBy = group(pending);
@@ -979,6 +985,10 @@ async function buildMonth(month, { now = new Date(), manual = new Map() } = {}) 
       advances: advBy.get(s.employeeId) || [],
       deductions: dedBy.get(s.employeeId) || [],
     });
+    const tip = tipBy.get(s.employeeId);
+    if (tip && tip.amount > 0) {
+      line.earnings = [...(line.earnings || []), { key: 'tips_salary', label: 'Tips (added to salary)', amount: rs(tip.amount), detail: `${tip.count} tip${tip.count === 1 ? '' : 's'}` }];
+    }
     Object.assign(line, manualOf(manual.get(s.employeeId) || {}));
     return finishLine(line);
   });
@@ -1075,7 +1085,7 @@ async function salaryToDate({ now = new Date() } = {}) {
   // Tips given this month (not part of salary, shown for information).
   const tipRows = await require('../../models/staffTip')
     .aggregate([
-      { $match: { isDeleted: { $ne: true }, day: { $regex: `^${month}` } } },
+      { $match: { isDeleted: { $ne: true }, method: { $ne: 'salary' }, day: { $regex: `^${month}` } } },
       { $group: { _id: '$employee', amount: { $sum: '$amount' }, count: { $sum: 1 } } },
     ]);
   const tipsBy = new Map(tipRows.map((t) => [String(t._id), t]));
@@ -1103,7 +1113,9 @@ async function salaryToDate({ now = new Date() } = {}) {
       presentDays: a.presentDays || 0,
       absentDays: a.absentDays || 0,
       lateCount: a.lateCount || 0,
-      overtime: rs(otherEarned - l.earnings.filter((r) => r.key === 'days').reduce((t, r) => t + r.amount, 0)),
+      overtime: rs(otherEarned - l.earnings.filter((r) => r.key === 'days' || r.key === 'tips_salary').reduce((t, r) => t + r.amount, 0)),
+      // Tips saved as "Add to salary": already inside earned / payable.
+      tipsToSalary: rs(sum(l.earnings.filter((r) => r.key === 'tips_salary'), (r) => r.amount)),
       // Overtime split (owner, 2026-11-08): normal rate vs. hours past `doubleAfterHours` in a day (× doubleRate).
       overtimeNormal: rs(sum(l.earnings.filter((r) => r.key === 'overtime'), (r) => r.amount)),
       overtimeDouble: rs(sum(l.earnings.filter((r) => r.key === 'overtime_double'), (r) => r.amount)),
@@ -1127,7 +1139,7 @@ async function salaryToDate({ now = new Date() } = {}) {
     monthLabel: period.label,
     today: T.dayKey(now),
     rows,
-    totals: { staff: rows.length, earned: total('earned'), due: total('due'), payableNow: total('payableNow'), tips: total('tips'), fullMonth: rs(sum(lines, (l) => l.salary || 0)) },
+    totals: { staff: rows.length, earned: total('earned'), due: total('due'), payableNow: total('payableNow'), tips: total('tips'), tipsToSalary: total('tipsToSalary'), fullMonth: rs(sum(lines, (l) => l.salary || 0)) },
   };
 }
 

@@ -10,7 +10,8 @@ const mongoose = require('mongoose');
 
 const { ObjectId } = mongoose.Schema.Types;
 
-const METHODS = ['cash', 'bank', 'easypaisa', 'jazzcash'];
+// 'salary' (owner 2026-11-10): not given now; added to that month's salary, no expense.
+const METHODS = ['cash', 'bank', 'easypaisa', 'jazzcash', 'salary'];
 
 const staffTipSchema = new mongoose.Schema(
   {
