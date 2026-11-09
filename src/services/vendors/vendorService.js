@@ -170,6 +170,10 @@ const LIST_SORTS = {
   createdAt: { createdAt: 1 },
 };
 
+// Owner 2026-11-09: the shop opened on 5 Nov 2026. Payments dated before it were paid from
+// the investment; from 5 Nov on they come from the shop's sales.
+const SHOP_OPENED = new Date('2026-11-05T00:00:00+05:00');
+
 /** Ledger balance per vendor id (string) for every vendor that has rows. */
 async function allBalances() {
   const rows = await VendorLedgerEntry.aggregate([
@@ -180,6 +184,7 @@ async function allBalances() {
         credit: { $sum: '$credit' },
         debit: { $sum: '$debit' },
         paid: { $sum: { $cond: [{ $eq: ['$type', 'payment'] }, '$debit', 0] } },
+        paidBefore: { $sum: { $cond: [{ $and: [{ $eq: ['$type', 'payment'] }, { $lt: ['$date', SHOP_OPENED] }] }, '$debit', 0] } },
       },
     },
   ]);
@@ -189,6 +194,7 @@ async function allBalances() {
     balance: round2(r.credit - r.debit),
     total: round2(r.credit),
     paid: round2(r.paid),
+    paidBefore: round2(r.paidBefore),
     adjusted: round2(r.debit - r.paid),
   }));
 }
@@ -246,6 +252,7 @@ async function list(query = {}) {
   const summary = {
     vendorCount: liveIds.length, activeCount: 0, consignmentCount: 0, totalPayable: 0, totalReceivable: 0, payableCount: 0, receivableCount: 0,
     totalBilled: 0, totalPaid: 0, totalAdjusted: 0, totalLeft: 0,
+    paidFromInvestment: 0, paidFromSales: 0, shopOpened: '2026-11-05',
   };
   for (const v of liveIds) {
     if (v.isActive !== false) summary.activeCount += 1;
@@ -255,6 +262,8 @@ async function list(query = {}) {
     if (!live.has(String(b.vendor))) continue;
     summary.totalBilled = round2(summary.totalBilled + b.total);
     summary.totalPaid = round2(summary.totalPaid + b.paid);
+    summary.paidFromInvestment = round2(summary.paidFromInvestment + b.paidBefore);
+    summary.paidFromSales = round2(summary.paidFromSales + b.paid - b.paidBefore);
     summary.totalAdjusted = round2(summary.totalAdjusted + b.adjusted);
     summary.totalLeft = round2(summary.totalLeft + b.balance);
     if (b.balance > 0) {
