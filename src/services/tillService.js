@@ -395,7 +395,8 @@ async function sessionExpenses(session) {
     ...tripRows
       .filter((po) => !po.branch || String(po.branch) === String(branchId))
       .flatMap((po) =>
-        (po.charges || []).map((c) => ({
+        // Only cash trip costs come off the till ('' = old row, cash).
+        (po.charges || []).filter((c) => !c.method || c.method === 'cash').map((c) => ({
           _id: c._id,
           title: `Trip cost ${po.poNumber}: ${String(c.type || 'other').replace(/_/g, ' ')}${c.note ? ` · ${c.note}` : ''}`,
           amount: round2(c.amount),

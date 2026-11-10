@@ -85,6 +85,10 @@ const chargeSchema = new mongoose.Schema({
   note: { type: String, default: '' },
   paidTo: { type: String, default: '' },
   date: { type: Date, default: null }, // day the cost was paid (null = old row: use createdAt)
+  // How it was paid (owner, 2026-11-10): cash comes off the till; bank is checked on the bank statement.
+  // '' = old row (treated as cash).
+  method: { type: String, enum: ['', 'cash', 'bank', 'cheque', 'easypaisa', 'jazzcash', 'other'], default: '' },
+  bank: { type: ObjectId, ref: 'Bank', default: null },
   // Payment proof: transfer screenshots / PDFs (max 5)
   photos: { type: [String], default: [] },
   // 'builty' = freight typed on the builty at close (replaced on every close)

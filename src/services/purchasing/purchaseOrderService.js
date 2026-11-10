@@ -1,6 +1,7 @@
 // src/services/purchasing/purchaseOrderService.js
 // Purchase orders: one buying trip, many vendor bills, trip charges, builty.
 // See models/purchaseOrder.js for the workflow and docs/STORE_OPERATIONS.md §1.
+const mongoose = require('mongoose');
 const PurchaseOrder = require('../../models/purchaseOrder');
 const GoodsReceipt = require('../../models/goodsReceipt');
 const Vendor = require('../../models/vendor');
@@ -726,7 +727,21 @@ function parseCharge(body, current = {}) {
     note: body.note !== undefined ? h.toText(body.note, 300) : current.note || '',
     paidTo: body.paidTo !== undefined ? h.toText(body.paidTo, 100) : current.paidTo || '',
     date: h.has(body.date) ? h.toDate(body.date, 'Date') : current.date || (current.type ? null : new Date()),
+    ...parseChargePayment(body, current),
   };
+}
+
+const CHARGE_METHODS = ['cash', 'bank', 'cheque', 'easypaisa', 'jazzcash', 'other'];
+
+// Paid by cash or bank (+ which bank). New costs default to cash.
+function parseChargePayment(body, current) {
+  const method = body.method !== undefined && body.method !== '' ? String(body.method) : current.method || 'cash';
+  if (!CHARGE_METHODS.includes(method)) throw httpError('Choose how it was paid');
+  if (method !== 'bank' && method !== 'cheque') return { method, bank: null };
+  const raw = body.bankId !== undefined ? body.bankId : body.bank !== undefined ? body.bank : current.bank;
+  const bank = raw && mongoose.isValidObjectId(String(raw)) ? new mongoose.Types.ObjectId(String(raw)) : null;
+  if (!bank) throw httpError('Choose the bank it was paid from');
+  return { method, bank };
 }
 
 const MAX_CHARGE_PHOTOS = 5;
@@ -749,7 +764,7 @@ async function addCharge(req, id, body = {}, photos = []) {
     id,
     (doc) => {
       doc.charges.push({ ...charge, photos, source: 'manual', createdBy: h.userId(req) });
-      doc.history.push(h.historyEntry(req, 'charge_added', `${CHARGE_LABELS[charge.type]} Rs ${charge.amount}`));
+      doc.history.push(h.historyEntry(req, 'charge_added', `${CHARGE_LABELS[charge.type]} Rs ${charge.amount} (${charge.method})`));
     },
     BILLS
   );
