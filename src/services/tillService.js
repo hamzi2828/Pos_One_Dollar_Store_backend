@@ -406,6 +406,8 @@ async function sessionExpenses(session) {
           createdAt: c.createdAt,
           at: timeOf({ date: c.date, createdAt: c.createdAt }),
           kind: 'trip_cost',
+          counter: c.counter ? String(c.counter) : null,
+          counterName: c.counterName || '',
         }))
       ),
   ].filter((x) => x.amount > 0);

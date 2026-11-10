@@ -744,6 +744,31 @@ function parseChargePayment(body, current) {
   return { method, bank };
 }
 
+/**
+ * Cash only: which counter's drawer paid it ('' = none). New cash costs must
+ * name one while the shop has active counters (same rule as vendor payments).
+ */
+async function chargeCounter(body, current, method, required) {
+  if (method !== 'cash') return { counter: null, counterName: '' };
+  const raw = body.counter !== undefined ? body.counter : current.counter;
+  if (!raw || raw === 'null') {
+    if (required) {
+      const SaleCounter = require('../../models/saleCounter');
+      if ((await SaleCounter.countDocuments({ isActive: true, isDeleted: { $ne: true } })) > 0) {
+        throw httpError('Pick which counter paid it (Paid from Counter 1 / Counter 2).');
+      }
+    }
+    return { counter: null, counterName: '' };
+  }
+  // Unchanged: keep it even if that counter was switched off since.
+  if (current.counter && String(raw) === String(current.counter)) return { counter: current.counter, counterName: current.counterName || '' };
+  if (!mongoose.isValidObjectId(String(raw))) throw httpError('Choose a counter');
+  const SaleCounter = require('../../models/saleCounter');
+  const c = await SaleCounter.findOne({ _id: raw, isDeleted: { $ne: true } }).select('name isActive').lean();
+  if (!c || c.isActive === false) throw httpError('That counter is not active');
+  return { counter: c._id, counterName: c.name };
+}
+
 const MAX_CHARGE_PHOTOS = 5;
 
 // Trip costs, like vendor bills, can change until the trip is fully received
@@ -758,13 +783,15 @@ const syncBuiltyFreight = (doc, charge, amount) => {
 
 async function addCharge(req, id, body = {}, photos = []) {
   const charge = parseCharge(body);
+  Object.assign(charge, await chargeCounter(body, {}, charge.method, true));
   if (photos.length > MAX_CHARGE_PHOTOS) throw httpError(`A cost can have at most ${MAX_CHARGE_PHOTOS} files`);
   const { po } = await mutateOpen(
     req,
     id,
     (doc) => {
       doc.charges.push({ ...charge, photos, source: 'manual', createdBy: h.userId(req) });
-      doc.history.push(h.historyEntry(req, 'charge_added', `${CHARGE_LABELS[charge.type]} Rs ${charge.amount} (${charge.method})`));
+      const paid = charge.counterName ? `${charge.method}, ${charge.counterName}` : charge.method;
+      doc.history.push(h.historyEntry(req, 'charge_added', `${CHARGE_LABELS[charge.type]} Rs ${charge.amount} (${paid})`));
     },
     BILLS
   );
@@ -774,16 +801,24 @@ async function addCharge(req, id, body = {}, photos = []) {
 
 async function updateCharge(req, id, chargeId, body = {}, photos = []) {
   const remove = new Set(h.toList(body.removePhotos).map(String));
+  // Counter is checked before the write (needs the database).
+  const found = await PurchaseOrder.findOne({ _id: id, 'charges._id': chargeId }, { 'charges.$': 1 }).lean();
+  const current = found?.charges?.[0];
+  if (!current) throw httpError('Charge not found', 404);
+  const paidFrom = await chargeCounter(body, current, parseChargePayment(body, current).method, false);
   const { po } = await mutateOpen(
     req,
     id,
     (doc) => {
       const charge = doc.charges.id(chargeId);
       if (!charge) throw httpError('Charge not found', 404);
-      const before = { type: charge.type, amount: charge.amount, note: charge.note || '' };
+      const before = { type: charge.type, amount: charge.amount, note: charge.note || '', counterName: charge.counterName || '' };
       // The builty freight row always stays "Builty freight".
-      const next = parseCharge(charge.source === 'builty' ? { ...body, type: undefined } : body, charge);
+      const next = { ...parseCharge(charge.source === 'builty' ? { ...body, type: undefined } : body, charge), ...paidFrom };
       Object.assign(charge, next);
+      if (before.counterName !== next.counterName) {
+        doc.history.push(h.historyEntry(req, 'charge_changed', `${CHARGE_LABELS[next.type]} paid from: ${before.counterName || '—'} → ${next.counterName || '—'}`));
+      }
       syncBuiltyFreight(doc, charge, next.amount);
       if (remove.size) charge.photos = (charge.photos || []).filter((p) => !remove.has(p));
       if (photos.length) charge.photos.push(...photos);

@@ -89,6 +89,9 @@ const chargeSchema = new mongoose.Schema({
   // '' = old row (treated as cash).
   method: { type: String, enum: ['', 'cash', 'bank', 'cheque', 'easypaisa', 'jazzcash', 'other'], default: '' },
   bank: { type: ObjectId, ref: 'Bank', default: null },
+  // Cash only (owner 2026-11-11): which counter's drawer paid it; only that counter's till takes it off.
+  counter: { type: ObjectId, ref: 'SaleCounter', default: null },
+  counterName: { type: String, default: '' },
   // Payment proof: transfer screenshots / PDFs (max 5)
   photos: { type: [String], default: [] },
   // 'builty' = freight typed on the builty at close (replaced on every close)
