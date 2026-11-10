@@ -85,12 +85,14 @@ const posOrderSchema = new mongoose.Schema(
     paymentMethod: {
       type: String,
       required: true,
-      enum: ['cash', 'card', 'split', 'bank_transfer'],
+      // bank_transfer = Bank (UBL), jazzcash = JazzCash wallet (owner, 2026-11-11).
+      enum: ['cash', 'card', 'split', 'bank_transfer', 'jazzcash'],
       default: 'cash',
     },
     cashAmount: { type: Number, required: false },
     cardAmount: { type: Number, required: false },
     changeGiven: { type: Number, required: false },
+    // Payment proof photo for bank_transfer AND jazzcash bills (same field).
     bankTransferScreenshot: { type: String, required: false },
     paidAmount: { type: Number, default: 0 },
     pendingAmount: { type: Number, default: 0 },
@@ -99,7 +101,7 @@ const posOrderSchema = new mongoose.Schema(
         amount: { type: Number, required: true },
         paymentMethod: {
           type: String,
-          enum: ['cash', 'card', 'bank_transfer'],
+          enum: ['cash', 'card', 'bank_transfer', 'jazzcash'],
           required: true,
         },
         paidAt: { type: Date, default: Date.now },
@@ -135,7 +137,7 @@ const posOrderSchema = new mongoose.Schema(
     refundedAt: { type: Date },
     // How the money went back to the customer. 'cash' = out of the refunder's till,
     // even when the bill was paid by bank / card. null = old refunds (cash part of the bill).
-    refundMethod: { type: String, enum: ['cash', 'bank_transfer', 'card', null], default: null },
+    refundMethod: { type: String, enum: ['cash', 'bank_transfer', 'jazzcash', 'card', null], default: null },
     // Who gave the refund (cash leaves THEIR till session, not the original cashier's).
     refundedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     cancelledAt: { type: Date },

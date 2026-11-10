@@ -123,7 +123,8 @@ const paymentPlan = ({ total, paymentMethod, isPartialPayment, paidAmount, cashA
   if (paymentMethod === 'cash') {
     out.cashAmount = Number.isFinite(tendered) && tendered > 0 ? pricing.round2(tendered) : paid;
     out.changeGiven = pending > 0 ? 0 : pricing.round2(Math.max(0, out.cashAmount - total));
-  } else if (paymentMethod === 'bank_transfer') {
+  } else if (paymentMethod === 'bank_transfer' || paymentMethod === 'jazzcash') {
+    // Customer sent more than the bill: the rest given back in cash.
     out.changeGiven = pending === 0 && Number.isFinite(tendered) && tendered > total ? pricing.round2(tendered - total) : undefined;
   } else if (paymentMethod === 'card') {
     out.cardAmount = paid;
@@ -136,7 +137,10 @@ const paymentPlan = ({ total, paymentMethod, isPartialPayment, paidAmount, cashA
   return out;
 };
 
-const PAYMENT_METHODS = ['cash', 'card', 'split', 'bank_transfer'];
+// bank_transfer = Bank (UBL); jazzcash = JazzCash wallet, its own method (owner, 2026-11-11).
+const PAYMENT_METHODS = ['cash', 'card', 'split', 'bank_transfer', 'jazzcash'];
+// Methods that can carry a payment proof photo (bankTransferScreenshot).
+const PROOF_METHODS = ['bank_transfer', 'jazzcash'];
 
 // Body -> pricing input (shared by quote and createOrder so they always agree).
 // Manual discount: `manualDiscount: { type, value, reason }`; the old body
@@ -165,6 +169,7 @@ module.exports = {
   isClientIdDuplicate,
   saveNewOrder,
   PAYMENT_METHODS,
+  PROOF_METHODS,
   paymentPlan,
   pricingInput,
   orderMovement,

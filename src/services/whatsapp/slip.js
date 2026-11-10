@@ -12,7 +12,8 @@ const money = (n) => {
   return `Rs ${v.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 };
 
-const METHOD_LABELS = { cash: 'Cash', card: 'Card', split: 'Cash + Card', bank_transfer: 'Bank transfer' };
+// bank_transfer = Bank (UBL); jazzcash = JazzCash wallet (owner, 2026-11-11).
+const METHOD_LABELS = { cash: 'Cash', card: 'Card', split: 'Cash + Card', bank_transfer: 'Bank (UBL)', jazzcash: 'JazzCash' };
 const methodLabel = (m) => METHOD_LABELS[m] || (m ? String(m) : '—');
 
 function formatDateTime(date, timeZone) {

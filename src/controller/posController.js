@@ -25,6 +25,7 @@ const pricing = require('../services/sales/pricingService');
 const { orderForViewer, productForViewer, attachShelfCodes } = require('../services/sales/posView');
 const {
   PAYMENT_METHODS,
+  PROOF_METHODS,
   paymentPlan,
   pricingInput,
   orderMovement,
@@ -524,7 +525,7 @@ const posController = {
           receivedBy: cashierId,
           note,
           paymentStatus: historyStatus,
-          bankTransferScreenshot: method === 'bank_transfer' ? body.bankTransferScreenshot : undefined,
+          bankTransferScreenshot: PROOF_METHODS.includes(method) ? body.bankTransferScreenshot : undefined,
         });
         let paymentHistory = [];
         if (plan.paid > 0) {
@@ -561,7 +562,7 @@ const posController = {
           cashAmount: plan.cashAmount,
           cardAmount: plan.cardAmount,
           changeGiven: plan.changeGiven,
-          bankTransferScreenshot: paymentMethod === 'bank_transfer' ? body.bankTransferScreenshot : undefined,
+          bankTransferScreenshot: PROOF_METHODS.includes(paymentMethod) ? body.bankTransferScreenshot : undefined,
           cashier: cashierId,
           cashSession: refOf(session),
           counter: refOf(till.counter),
@@ -818,11 +819,12 @@ const posController = {
         { $group: { _id: '$paymentHistory.paymentMethod', total: { $sum: '$paymentHistory.amount' } } },
       ]);
 
-      const paymentsByMethod = { cashSales: 0, cardSales: 0, bankSales: 0 };
+      const paymentsByMethod = { cashSales: 0, cardSales: 0, bankSales: 0, jazzcash: 0 };
       paymentStats.forEach((s) => {
         if (s._id === 'cash') paymentsByMethod.cashSales = s.total;
         else if (s._id === 'card') paymentsByMethod.cardSales = s.total;
         else if (s._id === 'bank_transfer') paymentsByMethod.bankSales = s.total;
+        else if (s._id === 'jazzcash') paymentsByMethod.jazzcash = s.total;
       });
 
       const comparisonStats = await POSOrder.aggregate([
@@ -900,6 +902,7 @@ const posController = {
             cashSales: paymentsByMethod.cashSales,
             cardSales: paymentsByMethod.cardSales,
             bankSales: paymentsByMethod.bankSales,
+            jazzcash: paymentsByMethod.jazzcash,
             salesChange: calcChange(current.totalSales, previous.totalSales),
             ordersChange: calcChange(current.totalOrders, previous.totalOrders),
           },
@@ -1028,7 +1031,7 @@ const posController = {
       if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
         return res.status(400).json({ success: false, message: 'Payment amount must be greater than 0' });
       }
-      if (!['cash', 'card', 'bank_transfer'].includes(paymentMethod)) {
+      if (!['cash', 'card', 'bank_transfer', 'jazzcash'].includes(paymentMethod)) {
         return res.status(400).json({ success: false, message: 'Payment method is required' });
       }
       if (!mongoose.isValidObjectId(id)) return res.status(404).json({ success: false, message: 'Order not found' });
@@ -1090,7 +1093,7 @@ const posController = {
         receivedBy: userId,
         note: discountAmount > 0 ? `${note || PAYMENT_NOTES.PAYMENT} (Discount: ${discountAmount})` : (note || PAYMENT_NOTES.ADDITIONAL),
         paymentStatus: newPaymentStatus,
-        bankTransferScreenshot: paymentMethod === 'bank_transfer' ? bankTransferScreenshot : undefined,
+        bankTransferScreenshot: PROOF_METHODS.includes(paymentMethod) ? bankTransferScreenshot : undefined,
       });
 
       order.paidAmount = pricing.round2((order.paidAmount || 0) + paymentAmount);
@@ -1265,6 +1268,7 @@ const posController = {
           if (counted !== null) set.variance = Math.round((counted - set['expected.expectedCash']) * 100) / 100;
         } else if (method === 'card' && e.card !== undefined) set['expected.card'] = Math.round((Number(e.card) - back) * 100) / 100;
         else if (method === 'bank_transfer' && e.bankTransfer !== undefined) set['expected.bankTransfer'] = Math.round((Number(e.bankTransfer) - back) * 100) / 100;
+        else if (method === 'jazzcash' && e.jazzcash !== undefined) set['expected.jazzcash'] = Math.round((Number(e.jazzcash) - back) * 100) / 100;
         if (Object.keys(set).length) {
           await CashSession.updateOne(
             { _id: session._id, status: 'closed' },
@@ -1281,15 +1285,15 @@ const posController = {
     }
   },
 
-  // POST /api/pos/orders/:id/payment-method — body { method: cash|card|bank_transfer, reason? }.
+  // POST /api/pos/orders/:id/payment-method — body { method: cash|card|bank_transfer|jazzcash, reason? }.
   // Fixes a bill rung up with the wrong method. Only bills paid with one method.
   // A closed (not yet verified) till is worked out again.
   changePaymentMethod: async (req, res) => {
     try {
-      const METHODS = ['cash', 'card', 'bank_transfer'];
+      const METHODS = ['cash', 'card', 'bank_transfer', 'jazzcash'];
       const method = String((req.body || {}).method || '').trim();
       const reason = String((req.body || {}).reason || '').trim().slice(0, 200);
-      if (!METHODS.includes(method)) return res.status(400).json({ success: false, message: 'Choose cash, card or bank transfer' });
+      if (!METHODS.includes(method)) return res.status(400).json({ success: false, message: 'Choose cash, card, bank transfer or JazzCash' });
       if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) return res.status(404).json({ success: false, message: 'Order not found' });
       const order = await POSOrder.findOne({ _id: req.params.id, isDeleted: { $ne: true } });
       if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
@@ -1324,7 +1328,7 @@ const posController = {
       order.markModified('paymentHistory');
       await order.save();
 
-      // Closed till: its cash / card / bank figures follow the bill.
+      // Closed till: its cash / card / bank / JazzCash figures follow the bill.
       if (session && session.status === 'closed') {
         await tillService.refreshClosedSales(session._id, { by: userIdOf(req), note: `${order.orderNumber}: payment ${old} -> ${method}` });
       }
@@ -1342,8 +1346,8 @@ const posController = {
   refundOrder: async (req, res) => {
     try {
       const { reason, refundMethod } = req.body || {};
-      if (refundMethod != null && !['cash', 'bank_transfer', 'card'].includes(refundMethod)) {
-        return res.status(400).json({ success: false, message: 'Refund method must be cash, bank_transfer or card' });
+      if (refundMethod != null && !['cash', 'bank_transfer', 'jazzcash', 'card'].includes(refundMethod)) {
+        return res.status(400).json({ success: false, message: 'Refund method must be cash, bank_transfer, jazzcash or card' });
       }
       const userId = userIdOf(req);
       const order = await POSOrder.findOne({ _id: req.params.id, isDeleted: { $ne: true } });

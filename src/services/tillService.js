@@ -251,7 +251,7 @@ async function attachOrder(session, order) {
  *                             order.cardAmount), kept between 0 and the amount.
  *                             (Split bills stored as separate cash + card entries
  *                             are handled by the 'cash' rule.)
- *   'card', 'bank_transfer' -> 0
+ *   'card', 'bank_transfer', 'jazzcash' -> 0
  */
 function cashPart(entry, order) {
   const amount = Number(entry && entry.amount) || 0;
@@ -279,8 +279,8 @@ const ORDER_FIELDS =
  *     (see cashPart).
  *   - cashSales: payments on bills created in the session, taken at the sale
  *     (within 5 min of the bill time — covers split cash + card entries),
- *     minus cash change handed back on bank-transfer bills paid over the total
- *     (order.changeGiven on a 'bank_transfer' bill).
+ *     minus cash change handed back on bank-transfer / JazzCash bills paid over
+ *     the total (order.changeGiven on a 'bank_transfer' or 'jazzcash' bill).
  *   - cashReceivedOnCredit: every other cash payment (later instalments on
  *     credit / partial bills, however old the bill).
  *   - cashRefunds: bills refunded in [openedAt, until] by this cashier
@@ -516,6 +516,7 @@ async function refreshClosedSales(sessionId, { by = null, note = '' } = {}) {
     'expected.billCount': fresh.billCount,
     'expected.card': round2(nonCash.card),
     'expected.bankTransfer': round2(nonCash.bank_transfer),
+    'expected.jazzcash': round2(nonCash.jazzcash),
     'expected.expectedCash': expectedCash,
     variance: round2(((session.closingCount && session.closingCount.total) || 0) - expectedCash),
   };
@@ -558,7 +559,7 @@ async function computeExpected(session, until = new Date()) {
   let cashSales = 0;
   let cashReceivedOnCredit = 0;
   let cashRefunds = 0;
-  const nonCash = { card: 0, bank_transfer: 0 };
+  const nonCash = { card: 0, bank_transfer: 0, jazzcash: 0 };
   const bills = new Map();
   const bill = (o) => {
     const key = String(o._id);
@@ -594,7 +595,7 @@ async function computeExpected(session, until = new Date()) {
       const other = round2((Number(entry.amount) || 0) - cash);
       if (other > 0) {
         b.nonCash = round2(b.nonCash + other);
-        const k = entry.paymentMethod === 'bank_transfer' ? 'bank_transfer' : 'card';
+        const k = entry.paymentMethod === 'bank_transfer' || entry.paymentMethod === 'jazzcash' ? entry.paymentMethod : 'card';
         nonCash[k] = round2(nonCash[k] + other);
       }
       if (!cash) return;
@@ -607,10 +608,10 @@ async function computeExpected(session, until = new Date()) {
         b.cashCredit = round2(b.cashCredit + cash);
       }
     });
-    // Bank transfer paid over the bill total: the change came out of the drawer.
+    // Bank transfer / JazzCash paid over the bill total: the change came out of the drawer.
     const change = Number(o.changeGiven) || 0;
     if (
-      o.paymentMethod === 'bank_transfer' &&
+      (o.paymentMethod === 'bank_transfer' || o.paymentMethod === 'jazzcash') &&
       change > 0 &&
       String(o.cashier) === cashier &&
       createdAt >= start.getTime() &&
@@ -696,6 +697,7 @@ function serializeSession(s, { full = false } = {}) {
     dayCashAt: s.dayCashAt || null,
     cardTotal: s.cardTotal ?? null,
     bankTransferTotal: s.bankTransferTotal ?? null,
+    jazzcashTotal: s.jazzcashTotal ?? null,
     closeNote: s.closeNote || '',
     draft: s.draft
       ? {
@@ -706,6 +708,7 @@ function serializeSession(s, { full = false } = {}) {
             s.draft.dayCashDenominations instanceof Map ? Object.fromEntries(s.draft.dayCashDenominations) : s.draft.dayCashDenominations || {},
           cardTotal: s.draft.cardTotal ?? null,
           bankTransferTotal: s.draft.bankTransferTotal ?? null,
+          jazzcashTotal: s.draft.jazzcashTotal ?? null,
           note: s.draft.note || '',
           savedAt: s.draft.savedAt || null,
         }
@@ -828,7 +831,7 @@ async function openSession(req, { counterId, denominations, note } = {}) {
   return session.toObject({ flattenMaps: true });
 }
 
-async function closeSession(req, id, { denominations, note, dayCashTotal, dayCashDenominations, cardTotal, bankTransferTotal } = {}) {
+async function closeSession(req, id, { denominations, note, dayCashTotal, dayCashDenominations, cardTotal, bankTransferTotal, jazzcashTotal } = {}) {
   const access = req.access;
   if (!mongoose.Types.ObjectId.isValid(String(id))) throw httpError(404, 'Till session not found');
   const session = await CashSession.findById(id).lean();
@@ -852,6 +855,7 @@ async function closeSession(req, id, { denominations, note, dayCashTotal, dayCas
   const { expected, nonCash, expenses: payouts } = await computeExpected(session, closedAt);
   expected.card = round2(nonCash.card);
   expected.bankTransfer = round2(nonCash.bank_transfer);
+  expected.jazzcash = round2(nonCash.jazzcash);
   const variance = round2(count.total - expected.expectedCash);
   const money = (v, label) => {
     if (v === undefined || v === null || v === '') return null;
@@ -861,6 +865,7 @@ async function closeSession(req, id, { denominations, note, dayCashTotal, dayCas
   };
   const card = money(cardTotal, 'POS machine');
   const bank = money(bankTransferTotal, 'bank transfer');
+  const jazz = money(jazzcashTotal, 'JazzCash');
 
   // Late close: after the counter's close cut-off, or on a later day than it opened.
   let lateClose = false;
@@ -887,6 +892,7 @@ async function closeSession(req, id, { denominations, note, dayCashTotal, dayCas
         ...(day > 0 ? { dayCash: dayC, dayCashAt: closedAt } : {}),
         cardTotal: card,
         bankTransferTotal: bank,
+        jazzcashTotal: jazz,
         closeNote: closerNote,
         expected,
         payoutIds: (payouts || []).map((x) => x._id),
@@ -922,7 +928,7 @@ async function closeSession(req, id, { denominations, note, dayCashTotal, dayCas
  * (handed to the owner). The count becomes drawer + day's cash and the variance is
  * worked out again. Can be entered again (replaces it) until the admin verifies.
  */
-async function addDayCash(req, id, { denominations, note, amount, cardTotal, bankTransferTotal } = {}) {
+async function addDayCash(req, id, { denominations, note, amount, cardTotal, bankTransferTotal, jazzcashTotal } = {}) {
   const access = req.access;
   if (!mongoose.Types.ObjectId.isValid(String(id))) throw httpError(404, 'Till session not found');
   const session = await CashSession.findById(id).lean();
@@ -938,7 +944,7 @@ async function addDayCash(req, id, { denominations, note, amount, cardTotal, ban
   const notes = parseCashCount(denominations || {}, allowed);
   const cash = notes.total > 0 ? notes : Number(amount) > 0 ? { denominations: {}, total: round2(Number(amount)) } : notes;
   const extra = {};
-  for (const [k, v] of [['cardTotal', cardTotal], ['bankTransferTotal', bankTransferTotal]]) {
+  for (const [k, v] of [['cardTotal', cardTotal], ['bankTransferTotal', bankTransferTotal], ['jazzcashTotal', jazzcashTotal]]) {
     if (v === undefined || v === null || v === '') continue;
     const n = round2(Number(v));
     if (!Number.isFinite(n) || n < 0 || n > 100000000) throw httpError(400, 'Enter a valid amount.');
@@ -948,7 +954,7 @@ async function addDayCash(req, id, { denominations, note, amount, cardTotal, ban
   const drawer = session.drawerCount || session.closingCount || { denominations: {}, total: 0 };
   const merged = {};
   const plain = (m) => (m instanceof Map ? Object.fromEntries(m) : m || {});
-  // Only card / bank given: keep the day's cash already entered.
+  // Only card / bank / JazzCash given: keep the day's cash already entered.
   const dayC = cash.total > 0 ? cash : session.dayCash || { denominations: {}, total: 0 };
   for (const src of [plain(drawer.denominations), plain(dayC.denominations)])
     for (const [v, c] of Object.entries(src)) merged[v] = (merged[v] || 0) + (Number(c) || 0);
@@ -961,6 +967,7 @@ async function addDayCash(req, id, { denominations, note, amount, cardTotal, ban
     const { nonCash } = await computeExpected(session, session.closedAt);
     extra['expected.card'] = round2(nonCash.card);
     extra['expected.bankTransfer'] = round2(nonCash.bank_transfer);
+    extra['expected.jazzcash'] = round2(nonCash.jazzcash);
   }
   const updated = await CashSession.findOneAndUpdate(
     { _id: session._id, status: 'closed' },
@@ -996,9 +1003,9 @@ async function addDayCash(req, id, { denominations, note, amount, cardTotal, ban
 }
 
 /**
- * Card (POS machine) and bank transfer taken by the system on this till, so the
- * till report can start with them filled in (owner, 2026-11-08). Not cash, so the
- * blind cash count is not affected.
+ * Card (POS machine), bank transfer (UBL) and JazzCash taken by the system on this
+ * till, so the till report can start with them filled in (owner, 2026-11-08;
+ * JazzCash added 2026-11-11). Not cash, so the blind cash count is not affected.
  */
 async function nonCashTotals(req, id) {
   const access = req.access;
@@ -1009,14 +1016,14 @@ async function nonCashTotals(req, id) {
   if (!sameId(session.cashier, access.userId) && !access.can('till_verify', 'view')) throw httpError(403, 'You can only see your own till.');
   const e = session.expected || {};
   if (session.status !== 'open' && e.card !== undefined && e.card !== null) {
-    return { card: round2(e.card), bankTransfer: round2(e.bankTransfer || 0) };
+    return { card: round2(e.card), bankTransfer: round2(e.bankTransfer || 0), jazzcash: round2(e.jazzcash || 0) };
   }
   const { nonCash } = await computeExpected(session, session.status === 'open' ? new Date() : session.closedAt || new Date());
-  return { card: round2(nonCash.card), bankTransfer: round2(nonCash.bank_transfer) };
+  return { card: round2(nonCash.card), bankTransfer: round2(nonCash.bank_transfer), jazzcash: round2(nonCash.jazzcash) };
 }
 
 /** Save the till report without submitting: the till stays open and can still be edited. */
-async function saveDraft(req, id, { denominations, dayCashTotal, dayCashDenominations, cardTotal, bankTransferTotal, note } = {}) {
+async function saveDraft(req, id, { denominations, dayCashTotal, dayCashDenominations, cardTotal, bankTransferTotal, jazzcashTotal, note } = {}) {
   const access = req.access;
   if (!mongoose.Types.ObjectId.isValid(String(id))) throw httpError(404, 'Till session not found');
   const session = await CashSession.findById(id).lean();
@@ -1040,6 +1047,7 @@ async function saveDraft(req, id, { denominations, dayCashTotal, dayCashDenomina
     dayCashDenominations: dayNotes.denominations,
     cardTotal: money(cardTotal),
     bankTransferTotal: money(bankTransferTotal),
+    jazzcashTotal: money(jazzcashTotal),
     note: typeof note === 'string' ? note.trim().slice(0, 500) : '',
     savedAt: new Date(),
   };

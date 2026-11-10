@@ -108,7 +108,7 @@ Body:
     // the same fields POST /api/pos/orders takes:
     "items": [ { "product", "variantId?", "quantity", "scannedCode?", "isGift?", "giftReason?", "priceOverride?", "price?" } ],
     "manualDiscount?": { "type", "value", "reason" }, "taxIds?": [],
-    "paymentMethod": "cash|card|split|bank_transfer", "cashAmount?", "isPartialPayment?", "paidAmount?",
+    "paymentMethod": "cash|card|split|bank_transfer|jazzcash", "cashAmount?", "isPartialPayment?", "paidAmount?",
     "customer?": "<id>", "customerInfo?": { "name", "phone" }, "notes?",
     // what the PC charged (customer already paid this):
     "bill": { "subtotal", "discount", "tax", "total",

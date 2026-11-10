@@ -35,7 +35,8 @@ const RANGES = {
 // Old ?timeRange values.
 const LEGACY = { week: '7d' };
 
-const PAYMENT_LABELS = { cash: 'Cash', card: 'Card', bank_transfer: 'Bank transfer', split: 'Split (cash + card)' };
+// bank_transfer = the shop's UBL account; JazzCash its own wallet (owner, 2026-11-11).
+const PAYMENT_LABELS = { cash: 'Cash', card: 'Card', bank_transfer: 'Bank (UBL)', jazzcash: 'JazzCash', split: 'Split (cash + card)' };
 
 const HOUR_LABEL = (h) => `${h % 12 === 0 ? 12 : h % 12}${h < 12 ? 'am' : 'pm'}`;
 

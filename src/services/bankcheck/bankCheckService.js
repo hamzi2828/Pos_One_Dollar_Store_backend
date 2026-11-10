@@ -117,16 +117,23 @@ async function notOnStatement(bankId, from, to) {
 }
 
 // Card sales vs card-machine credits, cash counted in tills vs cash deposits.
+// Card and bank transfer sales go into UBL; JazzCash goes to the JazzCash wallet,
+// so it is shown on its own and never expected on this statement (owner, 2026-11-11).
 async function moneyIn(lines, from, to) {
   const db = mongoose.connection.db;
   const range = { $gte: M.startOf(from), $lt: M.endOf(to) };
-  const orders = await db
+  const all = await db
     .collection('posorders')
-    .find({ createdAt: range, isDeleted: { $ne: true }, orderStatus: { $nin: ['cancelled'] }, paymentMethod: { $in: ['card', 'split'] } })
-    .project({ paymentMethod: 1, cardAmount: 1, total: 1 })
+    .find({ createdAt: range, isDeleted: { $ne: true }, orderStatus: { $nin: ['cancelled'] }, paymentMethod: { $in: ['card', 'split', 'bank_transfer', 'jazzcash'] } })
+    .project({ paymentMethod: 1, cardAmount: 1, total: 1, paidAmount: 1, changeGiven: 1 })
     .toArray();
+  const orders = all.filter((o) => o.paymentMethod === 'card' || o.paymentMethod === 'split');
   let cardSales = 0;
   for (const o of orders) cardSales += o.paymentMethod === 'card' ? (Number(o.cardAmount) > 0 ? o.cardAmount : o.total) : Number(o.cardAmount) || 0;
+  // What the customer sent: the amount paid plus any cash change given back.
+  const sent = (o) => (Number(o.paidAmount) || 0) + (Number(o.changeGiven) || 0);
+  const bankBills = all.filter((o) => o.paymentMethod === 'bank_transfer');
+  const jazzBills = all.filter((o) => o.paymentMethod === 'jazzcash');
 
   // Till cash: counted at close minus the float left for the next till on the same counter.
   const sessions = await db
@@ -155,6 +162,12 @@ async function moneyIn(lines, from, to) {
     cardSales: round2(cardSales),
     cardBills: orders.length,
     cardSettled: sum(ins.filter((l) => l.kind === 'card')),
+    bankTransferSales: round2(bankBills.reduce((t, o) => t + sent(o), 0)),
+    bankTransferBills: bankBills.length,
+    transfersIn: sum(ins.filter((l) => l.kind === 'transfer_in')),
+    // Not into UBL: shown for information only.
+    jazzcashSales: round2(jazzBills.reduce((t, o) => t + sent(o), 0)),
+    jazzcashBills: jazzBills.length,
     cashCounted: round2(cashCounted),
     tills,
     cashDeposited: sum(ins.filter((l) => l.kind === 'cash')),
@@ -239,6 +252,8 @@ async function makeMarked(statement, bank, original, rows, lines, extra) {
         items: [
           `Card sales in POS ${rs(mi.cardSales)} vs card machine credits ${rs(mi.cardSettled)}`,
           `Cash counted in closed tills ${rs(mi.cashCounted)} vs cash deposited ${rs(mi.cashDeposited)}`,
+          `Bank (UBL) transfer sales in POS ${rs(mi.bankTransferSales || 0)} vs transfers in ${rs(mi.transfersIn || 0)}`,
+          `JazzCash sales in POS ${rs(mi.jazzcashSales || 0)} (JazzCash wallet, not this bank)`,
           ...mi.otherIn.map((o) => `${o.date}  ${rs(o.amount)}  ${o.label}`),
         ],
       },
@@ -423,4 +438,4 @@ async function remove(id, { user } = {}) {
   return { _id: s._id, statementNo: s.statementNo, linesRemoved: removed.deletedCount || 0 };
 }
 
-module.exports = { preview, create, list, get: full, recheck, setManual, remove, MAX_PDF_BYTES, lineKey };
+module.exports = { preview, create, list, get: full, recheck, setManual, remove, moneyIn, MAX_PDF_BYTES, lineKey };

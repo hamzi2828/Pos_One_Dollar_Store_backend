@@ -52,6 +52,8 @@ const cashSessionSchema = new mongoose.Schema(
     // Entered by the cashier at close (owner 2026-11-06): POS machine slip total and bank transfers.
     cardTotal: { type: Number, default: null },
     bankTransferTotal: { type: Number, default: null },
+    // JazzCash wallet total, its own figure (owner, 2026-11-11).
+    jazzcashTotal: { type: Number, default: null },
     closeNote: { type: String, default: '' },
     // Till report saved by the cashier but NOT submitted yet (owner 2026-11-06).
     // The till stays open (sales keep going into it) and the report can be edited
@@ -65,6 +67,7 @@ const cashSessionSchema = new mongoose.Schema(
           dayCashDenominations: { type: Map, of: Number, default: () => ({}) },
           cardTotal: { type: Number, default: null },
           bankTransferTotal: { type: Number, default: null },
+          jazzcashTotal: { type: Number, default: null },
           note: { type: String, default: '' },
           savedAt: { type: Date, default: null },
         },
@@ -83,9 +86,10 @@ const cashSessionSchema = new mongoose.Schema(
       // All expenses dated the till's day (owner 2026-11-06: taken off the expected cash).
       expenses: { type: Number, default: 0 },
       expectedCash: { type: Number, default: 0 },
-      // Not cash: what the system took by POS machine (card) and bank transfer.
+      // Not cash: what the system took by POS machine (card), bank transfer (UBL) and JazzCash.
       card: { type: Number, default: 0 },
       bankTransfer: { type: Number, default: 0 },
+      jazzcash: { type: Number, default: 0 },
       billCount: { type: Number, default: 0 },
     },
     // Expenses / vendor payments this till took off its cash, saved at close

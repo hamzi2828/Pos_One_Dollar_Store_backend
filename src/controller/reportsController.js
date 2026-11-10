@@ -88,14 +88,16 @@ const normalizeFinanceMethod = (m) => {
   return 'other';
 };
 
-// Normalize POS payment method → 'cash' | 'card' | 'bank' | 'other'.
+// Normalize POS payment method → 'cash' | 'card' | 'bank' | 'jazzcash' | 'other'.
 // Card is split out for sales because cards settle through bank but operators
-// often want to see the card slice independently.
+// often want to see the card slice independently. JazzCash is its own wallet,
+// not the bank (owner, 2026-11-11).
 const normalizePOSMethod = (m) => {
   const v = String(m || '').toLowerCase().trim();
   if (v === 'cash') return 'cash';
   if (v === 'card') return 'card';
   if (v === 'bank_transfer' || v === 'bank') return 'bank';
+  if (v === 'jazzcash') return 'jazzcash';
   return 'other';
 };
 
@@ -122,7 +124,7 @@ const reportsController = {
 
       // Full-paid orders = sales that settled at the register. Their totals go
       // straight to "Total Sales" bucketed by payment method.
-      const salesBreakdown = { totalSales: 0, cashSales: 0, cardSales: 0, bankTransfer: 0 };
+      const salesBreakdown = { totalSales: 0, cashSales: 0, cardSales: 0, bankTransfer: 0, jazzcash: 0 };
       const fullPaidOrders = periodOrders.filter((o) => o.paymentStatus === 'full' || o.paymentStatus === 'completed');
       for (const o of fullPaidOrders) {
         salesBreakdown.totalSales += o.total || 0;
@@ -130,6 +132,7 @@ const reportsController = {
         if (m === 'cash') salesBreakdown.cashSales += o.total || 0;
         else if (m === 'card') salesBreakdown.cardSales += o.total || 0;
         else if (m === 'bank') salesBreakdown.bankTransfer += o.total || 0;
+        else if (m === 'jazzcash') salesBreakdown.jazzcash += o.total || 0;
       }
 
       // Receivables snapshot = pending + partial orders as of now (not date
@@ -163,7 +166,7 @@ const reportsController = {
         .select('total paymentHistory')
         .lean();
 
-      const paymentsReceived = { total: 0, cash: 0, card: 0, bank: 0, count: 0 };
+      const paymentsReceived = { total: 0, cash: 0, card: 0, bank: 0, jazzcash: 0, count: 0 };
       for (const o of ordersWithHistory) {
         const history = o.paymentHistory || [];
         const isDirectFullPayment =
@@ -179,9 +182,10 @@ const reportsController = {
           if (m === 'cash') paymentsReceived.cash += amt;
           else if (m === 'card') paymentsReceived.card += amt;
           else if (m === 'bank') paymentsReceived.bank += amt;
+          else if (m === 'jazzcash') paymentsReceived.jazzcash += amt;
         }
       }
-      paymentsReceived.total = paymentsReceived.cash + paymentsReceived.card + paymentsReceived.bank;
+      paymentsReceived.total = paymentsReceived.cash + paymentsReceived.card + paymentsReceived.bank + paymentsReceived.jazzcash;
 
       // ---------- 3. Expenses in window ----------
       // Shop use (own stock) and personal-money expenses never take shop cash.
@@ -317,6 +321,9 @@ const reportsController = {
         loanSummary.bankIn -
         loanSummary.bankOut;
 
+      // JazzCash wallet: not cash, not the UBL bank (owner, 2026-11-11).
+      const jazzcashBalance = salesBreakdown.jazzcash + paymentsReceived.jazzcash;
+
       return res.status(200).json({
         success: true,
         data: {
@@ -331,7 +338,8 @@ const reportsController = {
           balances: {
             cashBalance,
             bankBalance,
-            totalBalance: cashBalance + bankBalance,
+            jazzcashBalance,
+            totalBalance: cashBalance + bankBalance + jazzcashBalance,
           },
         },
         message: 'Cash in hand report generated',
@@ -393,6 +401,7 @@ const reportsController = {
         cashSales: 0,
         cardSales: 0,
         bankSales: 0,
+        jazzcash: 0,
         itemsSold: 0,
         avgOrderValue: 0,
       };
@@ -412,6 +421,7 @@ const reportsController = {
         if (m === 'cash') summary.cashSales += o.total || 0;
         else if (m === 'card') summary.cardSales += o.total || 0;
         else if (m === 'bank') summary.bankSales += o.total || 0;
+        else if (m === 'jazzcash') summary.jazzcash += o.total || 0;
         return { ...o, costPrice: orderCost, profit, itemCount, counterName: counterOf(o) };
       });
 
@@ -421,7 +431,7 @@ const reportsController = {
         const name = r.counterName || 'No counter';
         const c =
           byCounterMap.get(name) ||
-          { name, orders: 0, sales: 0, paid: 0, pending: 0, cost: 0, profit: 0, cash: 0, card: 0, bank: 0, items: 0 };
+          { name, orders: 0, sales: 0, paid: 0, pending: 0, cost: 0, profit: 0, cash: 0, card: 0, bank: 0, jazzcash: 0, items: 0 };
         c.orders += 1;
         c.sales += r.total || 0;
         c.paid += r.paidAmount || 0;
@@ -433,6 +443,7 @@ const reportsController = {
         if (m === 'cash') c.cash += r.total || 0;
         else if (m === 'card') c.card += r.total || 0;
         else if (m === 'bank') c.bank += r.total || 0;
+        else if (m === 'jazzcash') c.jazzcash += r.total || 0;
         byCounterMap.set(name, c);
       }
       summary.byCounter = [...byCounterMap.values()].sort((a, b) => a.name.localeCompare(b.name));
