@@ -223,7 +223,9 @@ const VX = ['view', 'export'];
 const DEFAULT_ROLES = [
     {
         name: 'Manager',
-        description: 'Runs the shop: sales, cash verification, buying, stock, reports and staff.',
+        // Owner, 2026-11-10: the manager also does cashier + warehouse work, so this
+        // must always cover everything in Cashier and Warehouse Assistant.
+        description: 'Runs the shop and can also do cashier and warehouse work: sales, till, buying, receiving, stock, reports and staff.',
         permissions: {
             dashboard: VX, pos: ['view', 'create', 'edit', 'delete', 'export'], pos_orders: ['view', 'create', 'edit', 'delete', 'export'],
             pos_gifts: VC, till: VCE, till_verify: ['view', 'edit', 'export'], sale_counters: ['view', 'create', 'edit'],

@@ -39,7 +39,7 @@ const NESTED = ['address', 'emergencyContact', 'guarantor', 'bankDetails'];
 
 const newToken = () => crypto.randomBytes(24).toString('base64url');
 
-// Every "Join link" open makes a fresh link (owner, 2026-10-31); links already
+// The popup shows the same saved link; "New link" makes a fresh one (owner, 2026-11-10). Links already
 // shared keep working. Stored: { token: newest, tokens: [all working], enabled }.
 const MAX_LINKS = 2000;
 
