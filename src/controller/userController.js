@@ -20,6 +20,7 @@ const buildTokenPayload = (user) => ({
     lastName: user.lastName,
     role: user.role,
     isSuperAdmin: staffHelpers().isEffectiveSuperAdmin(user),
+    tv: user.tokenVersion || 0,
 });
 
 const DISABLED_MESSAGE = 'Your account is disabled. Please contact the administrator.';

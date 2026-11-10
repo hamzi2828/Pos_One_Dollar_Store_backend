@@ -26,6 +26,9 @@ const userSchema = new mongoose.Schema({
     branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', default: null, index: true },
     isActive: { type: Boolean, default: true },
     lastLogin: { type: Date, default: null },
+    // Bumped to sign this user out everywhere: tokens carry it as `tv` and
+    // loadAccess refuses a token whose `tv` is older.
+    tokenVersion: { type: Number, default: 0 },
 
     // POS customer fields (the /admin/pos customer picker).
     customerType: { type: String, enum: ['walk-in', 'online', null], default: null },

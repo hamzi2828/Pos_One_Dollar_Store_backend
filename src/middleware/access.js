@@ -40,7 +40,7 @@ async function loadUserAccess(userId) {
   if (hit && Date.now() - hit.at < CACHE_MS) return hit.data;
 
   const user = await User.findById(userId)
-    .select('role isSuperAdmin staffRole branch isActive firstName lastName email')
+    .select('role isSuperAdmin staffRole branch isActive firstName lastName email tokenVersion')
     .lean();
   if (!user) return null;
 
@@ -74,6 +74,10 @@ async function loadAccess(req, res, next) {
     const info = await loadUserAccess(userId);
     if (!info) return res.status(401).json({ message: 'User not found' });
     if (info.user.isActive === false) return res.status(403).json({ message: 'Account is disabled' });
+    // Signed out by the admin (tokenVersion bumped): this token is no longer valid.
+    if ((Number(req.user?.tv) || 0) < (Number(info.user.tokenVersion) || 0)) {
+      return res.status(401).json({ message: 'Your session has ended. Please sign in again.', code: 'SESSION_ENDED' });
+    }
 
     const shopId = await getMainBranchId();
     req.access = {

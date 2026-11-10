@@ -165,7 +165,7 @@ async function renewToken(access, { now = new Date() } = {}) {
   const info = await loadUserAccess(access.userId);
   if (!info || !info.user) throw httpError(401, 'User not found');
   const u = info.user;
-  const payload = { id: u._id, email: u.email, firstName: u.firstName, lastName: u.lastName, role: u.role, isSuperAdmin: !!access.isSuperAdmin };
+  const payload = { id: u._id, email: u.email, firstName: u.firstName, lastName: u.lastName, role: u.role, isSuperAdmin: !!access.isSuperAdmin, tv: u.tokenVersion || 0 };
   const token = jwt.sign(payload, secret, { expiresIn: `${TOKEN_DAYS}d` });
   return { token, expiresAt: new Date(now.getTime() + TOKEN_DAYS * 24 * 60 * MIN_MS) };
 }
