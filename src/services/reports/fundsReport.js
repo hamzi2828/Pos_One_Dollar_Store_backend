@@ -48,6 +48,9 @@ function placeOn(day, enteredAt, since) {
   return at < since ? new Date(since) : at;
 }
 
+// Any date/time -> UTC midnight of its Pakistan day (what placeOn expects).
+const pktDay = (d) => (d ? new Date(`${new Date(new Date(d).getTime() + 5 * 3600000).toISOString().slice(0, 10)}T00:00:00Z`) : null);
+
 async function funds() {
   const db = mongoose.connection.db;
   const base = await currentBaseline();
@@ -82,9 +85,11 @@ async function funds() {
   const payments = await db
     .collection('vendorpayments')
     .find({ createdAt: { $gte: since }, status: 'active' })
-    .project({ paymentNo: 1, vendorName: 1, amount: 1, method: 1, createdAt: 1 })
+    .project({ paymentNo: 1, vendorName: 1, amount: 1, method: 1, createdAt: 1, date: 1 })
     .toArray();
-  for (const p of payments) movements.push({ at: p.createdAt, kind: 'vendor_payment', label: `${p.paymentNo} · ${p.vendorName} (${p.method})`, amount: -round2(p.amount) });
+  // On the payment's own date (owner 2026-11-10: a 7 Nov payment entered on 10 Nov shows on 7 Nov).
+  for (const p of payments)
+    movements.push({ at: placeOn(pktDay(p.date), p.createdAt, since), kind: 'vendor_payment', label: `${p.paymentNo} · ${p.vendorName} (${p.method})`, amount: -round2(p.amount) });
 
   // Trip costs count on their date (owner 2026-11-08); old rows have only createdAt.
   const pos = await db
