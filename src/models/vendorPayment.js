@@ -26,6 +26,9 @@ const vendorPaymentSchema = new mongoose.Schema(
     amount: { type: Number, required: true, min: 0.01 },
     method: { type: String, enum: PAYMENT_METHODS, required: true },
     bank: { type: mongoose.Schema.Types.ObjectId, ref: 'Bank', default: null },
+    // Cash only (owner 2026-11-10): which counter's drawer paid it; only that counter's till takes it off.
+    counter: { type: mongoose.Schema.Types.ObjectId, ref: 'SaleCounter', default: null },
+    counterName: { type: String, default: '' },
     reference: { type: String, default: '', trim: true }, // cheque no / transaction id
     date: { type: Date, required: true, default: Date.now },
     attachments: { type: [String], default: [] }, // receipt photos

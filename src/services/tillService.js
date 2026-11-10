@@ -349,7 +349,7 @@ async function sessionExpenses(session) {
     db
       .collection('vendorpayments')
       .find({ $or: [{ date: near }, { createdAt: near }, { _id: { $in: ownIds } }], status: 'active', method: 'cash', branch: branchId, notes: { $not: /^Paid at the market/ } })
-      .project({ vendorName: 1, paymentNo: 1, amount: 1, createdAt: 1, date: 1 })
+      .project({ vendorName: 1, paymentNo: 1, amount: 1, createdAt: 1, date: 1, counter: 1, counterName: 1 })
       .toArray(),
     // Trip costs (owner 2026-11-08): paid from the shop cash on their date.
     db
@@ -391,6 +391,8 @@ async function sessionExpenses(session) {
       createdAt: x.createdAt,
       at: timeOf(x),
       kind: 'vendor_payment',
+      counter: x.counter ? String(x.counter) : null,
+      counterName: x.counterName || '',
     })),
     ...tripRows
       .filter((po) => !po.branch || String(po.branch) === String(branchId))

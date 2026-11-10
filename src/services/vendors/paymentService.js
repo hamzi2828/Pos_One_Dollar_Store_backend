@@ -40,7 +40,16 @@ const notify = async (payload) => {
  * Record a payment (also used by consignment settlements "pay now").
  * @returns the saved payment (plain) with `ledgerEntry` set
  */
-async function recordPayment({ vendorId, branchId, amount, method, bankId, reference, date, notes, attachments = [], settlementId = null, userId }) {
+/** Cash counter that paid ('' = none). */
+async function counterFor(counterId) {
+  if (counterId === undefined || counterId === null || counterId === '' || counterId === 'null') return null;
+  const SaleCounter = require('../../models/saleCounter');
+  const c = await SaleCounter.findOne({ _id: requireId(counterId, 'counter'), isDeleted: { $ne: true } }).select('name isActive').lean();
+  if (!c || c.isActive === false) throw httpError('That counter is not active');
+  return { _id: c._id, name: c.name };
+}
+
+async function recordPayment({ vendorId, branchId, amount, method, bankId, counterId, requireCounter = false, reference, date, notes, attachments = [], settlementId = null, userId }) {
   const vendor = await loadVendor(vendorId);
   const value = money(amount, 'Amount', { positive: true });
   const m = String(method || '').toLowerCase();
@@ -51,6 +60,11 @@ async function recordPayment({ vendorId, branchId, amount, method, bankId, refer
   if (bankId) {
     bank = await Bank.findOne({ _id: requireId(bankId, 'bank'), isDeleted: { $ne: true } }).select('name accountTitle accountNumber').lean();
     if (!bank) throw httpError('Bank account not found', 404);
+  }
+  const counter = m === 'cash' ? await counterFor(counterId) : null;
+  if (m === 'cash' && !counter && requireCounter) {
+    const SaleCounter = require('../../models/saleCounter');
+    if ((await SaleCounter.countDocuments({ isActive: true, isDeleted: { $ne: true } })) > 0) throw httpError('Pick which counter paid it (Paid from Counter 1 / Counter 2).');
   }
   const branch = requireId(branchId, 'branch');
   const when = docDate(date);
@@ -64,6 +78,8 @@ async function recordPayment({ vendorId, branchId, amount, method, bankId, refer
     amount: value,
     method: m,
     bank: bank ? bank._id : null,
+    counter: counter ? counter._id : null,
+    counterName: counter ? counter.name : '',
     reference: ref,
     date: when,
     attachments: (attachments || []).filter(Boolean),
@@ -121,6 +137,8 @@ async function create(req, body = {}, attachments = []) {
     amount: body.amount,
     method: body.method,
     bankId: body.bankId || body.bank,
+    counterId: body.counter,
+    requireCounter: true,
     reference: body.reference,
     date: body.date,
     notes: body.notes,
@@ -230,6 +248,11 @@ async function updatePayment(req, id, body = {}, newAttachments = []) {
     }
   }
   if (method === 'cheque' && !(next.reference ?? p.reference)) throw httpError('Please enter the cheque number');
+  if (has('counter') || has('method')) {
+    const c = method === 'cash' ? await counterFor(has('counter') ? body.counter : p.counter) : null;
+    next.counter = c ? c._id : null;
+    next.counterName = c ? c.name : '';
+  }
 
   let remove = body.removeAttachments || [];
   if (typeof remove === 'string') {
@@ -263,6 +286,12 @@ async function updatePayment(req, id, body = {}, newAttachments = []) {
   if (next.bank !== undefined) {
     if (String(next.bank || '') === String(p.bank || '')) delete next.bank;
     else changes.push('bank account changed');
+  }
+  if (next.counter !== undefined) {
+    if (String(next.counter || '') === String(p.counter || '')) {
+      delete next.counter;
+      delete next.counterName;
+    } else changes.push(`paid from: ${p.counterName || '—'} → ${next.counterName || '—'}`);
   }
   if (next.attachments) {
     const added = (newAttachments || []).length;
