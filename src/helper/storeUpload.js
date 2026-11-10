@@ -8,7 +8,9 @@
 //   const urls = await saveUploads(req, 'purchasing/bills');           // all files
 //   const builty = await saveUploads(req, 'purchasing/builty', 'builtyPhoto'); // one field
 const { uploadToBlob } = require('./blobUpload');
-const { toPublicPath } = require('./upload');
+const fs = require('fs');
+const path = require('path');
+const { toPublicPath, UPLOADS_DIR } = require('./upload');
 
 const USE_BLOB_STORAGE = !!process.env.BLOB_READ_WRITE_TOKEN;
 
@@ -38,4 +40,27 @@ async function saveUploads(req, folder = 'misc', field = null) {
   return urls;
 }
 
-module.exports = { saveUploads };
+/**
+ * Save a buffer we made (e.g. a generated PDF). Same storage as saveUploads.
+ * @returns {Promise<string>} public URL
+ */
+async function saveBuffer(buffer, { folder = 'misc', filename = 'file.pdf', mimetype = 'application/pdf', maxBytes } = {}) {
+  if (USE_BLOB_STORAGE) return uploadToBlob(buffer, filename, mimetype, folder, { allowPdf: true, maxBytes });
+  const ext = path.extname(filename) || (mimetype === 'application/pdf' ? '.pdf' : '');
+  const base = path.basename(filename, path.extname(filename)).replace(/[^\w.-]+/g, '-').slice(0, 60) || 'file';
+  const name = `${Date.now()}-${Math.round(Math.random() * 1e9)}-${base}${ext}`;
+  if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+  await fs.promises.writeFile(path.join(UPLOADS_DIR, name), buffer);
+  return toPublicPath(name);
+}
+
+/** Read back a file saved by saveUploads / saveBuffer (blob URL or /uploads path). */
+async function readSaved(url) {
+  if (!url) return null;
+  if (url.startsWith('/uploads/')) return fs.promises.readFile(path.join(UPLOADS_DIR, path.basename(url)));
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Could not read ${url} (${res.status})`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+module.exports = { saveUploads, saveBuffer, readSaved };

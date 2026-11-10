@@ -21,7 +21,7 @@ const MAX_FILE_SIZE = 5 * 1024 * 1024;
  * @param {string} filename - Original filename
  * @param {string} mimetype - File mimetype
  * @param {string} folder - Folder path (e.g., 'products', 'categories')
- * @param {{ allowPdf?: boolean }} [options] - allowPdf: also accept PDF (document uploads)
+ * @param {{ allowPdf?: boolean, maxBytes?: number }} [options] - allowPdf: also accept PDF (document uploads); maxBytes: other size limit
  * @returns {Promise<string>} - Public URL of uploaded file
  */
 async function uploadToBlob(buffer, filename, mimetype, folder = 'uploads', options = {}) {
@@ -32,8 +32,9 @@ async function uploadToBlob(buffer, filename, mimetype, folder = 'uploads', opti
   }
 
   // Validate file size
-  if (buffer.length > MAX_FILE_SIZE) {
-    throw new Error(`File size exceeds ${MAX_FILE_SIZE / (1024 * 1024)}MB limit`);
+  const maxBytes = options.maxBytes || MAX_FILE_SIZE;
+  if (buffer.length > maxBytes) {
+    throw new Error(`File size exceeds ${maxBytes / (1024 * 1024)}MB limit`);
   }
 
   // Generate unique filename

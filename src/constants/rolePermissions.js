@@ -114,6 +114,8 @@ const PERMISSION_SECTIONS = [
             { key: 'investments', label: 'Investment', actions: ['view', 'create', 'edit', 'delete', 'export'] },
             // Loans the company has taken and pays back (vendor / customer / employee / other).
             { key: 'loans', label: 'Loans', actions: ['view', 'create', 'edit', 'delete'] },
+            // Upload a bank statement PDF and check every bank payment against the POS.
+            { key: 'bank_check', label: 'Bank Check', actions: ['view', 'create', 'edit', 'delete'] },
         ],
     },
     {
