@@ -40,12 +40,13 @@ const notify = async (payload) => {
  * Record a payment (also used by consignment settlements "pay now").
  * @returns the saved payment (plain) with `ledgerEntry` set
  */
-/** Cash counter that paid ('' = none). */
-async function counterFor(counterId) {
+/** Cash counter that paid ('' = none). The one already saved may stay even if it was switched off since. */
+async function counterFor(counterId, current = null) {
   if (counterId === undefined || counterId === null || counterId === '' || counterId === 'null') return null;
   const SaleCounter = require('../../models/saleCounter');
   const c = await SaleCounter.findOne({ _id: requireId(counterId, 'counter'), isDeleted: { $ne: true } }).select('name isActive').lean();
-  if (!c || c.isActive === false) throw httpError('That counter is not active');
+  const keep = current && String(current) === String(counterId);
+  if (!c || (c.isActive === false && !keep)) throw httpError('That counter is not active');
   return { _id: c._id, name: c.name };
 }
 
@@ -249,7 +250,7 @@ async function updatePayment(req, id, body = {}, newAttachments = []) {
   }
   if (method === 'cheque' && !(next.reference ?? p.reference)) throw httpError('Please enter the cheque number');
   if (has('counter') || has('method')) {
-    const c = method === 'cash' ? await counterFor(has('counter') ? body.counter : p.counter) : null;
+    const c = method === 'cash' ? await counterFor(has('counter') ? body.counter : p.counter, p.counter) : null;
     next.counter = c ? c._id : null;
     next.counterName = c ? c.name : '';
   }
