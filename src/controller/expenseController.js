@@ -146,7 +146,8 @@ const expenseController = {
                 });
             }
 
-            const filter = { isDeleted: { $ne: true } };
+            // Display-only rows (e.g. trip costs paid from a till) are listed too, marked.
+            const filter = { isDeleted: { $ne: true }, displayOnly: Expense.ALL_ROWS };
             // Cashier: only the expenses of their open till (dates do not matter).
             if (!scope.full) filter.cashSession = scope.session._id;
             if (category) filter.category = category;
@@ -197,7 +198,7 @@ const expenseController = {
     getExpenseById: async (req, res) => {
         try {
             const { id } = req.params;
-            const expense = await Expense.findOne({ _id: id, isDeleted: { $ne: true } }).lean();
+            const expense = await Expense.findOne({ _id: id, isDeleted: { $ne: true }, displayOnly: Expense.ALL_ROWS }).lean();
             const scope = await scopeOf(req, 'view');
 
             if (!expense || !inScope(scope, expense)) {

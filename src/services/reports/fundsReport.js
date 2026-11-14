@@ -107,7 +107,7 @@ async function funds() {
   const expenses = await db
     .collection('expenses')
     // Shop use = own stock; personal money = never left the shop (its loan is skipped too).
-    .find({ createdAt: { $gte: since }, isDeleted: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true } })
+    .find({ createdAt: { $gte: since }, isDeleted: { $ne: true }, displayOnly: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true } })
     .project({ title: 1, amount: 1, paymentMethod: 1, createdAt: 1, date: 1 })
     .toArray();
   for (const e of expenses) movements.push({ at: placeOn(e.date, e.createdAt, since), kind: 'expense', label: `Expense · ${e.title || ''} (${e.paymentMethod || ''})`, amount: -round2(e.amount) });

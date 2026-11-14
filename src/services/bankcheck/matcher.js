@@ -105,7 +105,7 @@ async function collectCandidates(from, to) {
     db.collection('vendorpayments').find({ status: { $ne: 'voided' }, date: range }).toArray(),
     db
       .collection('expenses')
-      .find({ isDeleted: { $ne: true }, source: { $nin: ['shop_use', 'payroll'] }, sourceType: { $ne: 'Tip' }, fromPersonal: { $ne: true }, date: range })
+      .find({ isDeleted: { $ne: true }, displayOnly: { $ne: true }, source: { $nin: ['shop_use', 'payroll'] }, sourceType: { $ne: 'Tip' }, fromPersonal: { $ne: true }, date: range })
       .toArray(),
     db
       .collection('purchaseorders')
