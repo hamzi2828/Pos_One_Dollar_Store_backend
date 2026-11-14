@@ -154,7 +154,8 @@ const REFUND_METHODS = {
 /**
  * Part refund from the POS order screen (owner 2026-11-14): the same record as a
  * "Refund" expense typed on Add expense, linked to the bill. Stock is not touched.
- * Cash needs the refunder's open till (it comes off that till, dated its opening day).
+ * Cash comes off the refunder's open till; without one (admin) off the counter the bill was
+ * sold on (its open till, else its next till to close). Dated that till's opening day.
  * @returns { expense, bill } (bill = what is left to refund after this one)
  */
 async function createPartialRefund({ orderId, amount, reason = '', method = 'cash', access, user, branch }) {
@@ -165,13 +166,31 @@ async function createPartialRefund({ orderId, amount, reason = '', method = 'cas
   const CashSession = require('../models/cashSession');
   const tillService = require('./tillService');
   const userId = access && access.userId ? access.userId : null;
-  let session = null;
+  // Cash: from the refunder's own open till; someone without one (admin) gives it from the
+  // counter the bill was sold on (that counter's open till, else its next till to close).
+  let session = null; // the refunder's own till (cashier list shows the refund there)
+  let counterTill = null; // open till of the bill's counter (admin refund)
+  let counter = null;
+  let counterName = '';
   if (method === 'cash') {
     session = userId ? await CashSession.findOne({ cashier: userId, status: 'open' }).select('_id counter counterName openedAt').lean() : null;
-    if (!session) throw httpError(409, 'Open your till to give cash back, or pick Bank / JazzCash / Card.');
+    if (session) {
+      counter = session.counter || null;
+      counterName = session.counterName || '';
+    } else {
+      const sold = await POSOrder.findById(bill._id).select('counter').lean();
+      if (sold && sold.counter) {
+        counter = sold.counter;
+        counterTill = await CashSession.findOne({ counter: sold.counter, status: 'open' }).select('openedAt counterName').lean();
+        const SaleCounter = require('../models/saleCounter');
+        const c = await SaleCounter.findById(sold.counter).setOptions({ withDeleted: true }).select('name').lean();
+        counterName = (c && c.name) || (counterTill && counterTill.counterName) || '';
+      }
+    }
   }
   const tz = await tillService.getTimeZone();
-  const dayKey = tillService.zonedParts(session ? session.openedAt : new Date(), tz).dayKey;
+  const tillFor = session || counterTill;
+  const dayKey = tillService.zonedParts(tillFor ? tillFor.openedAt : new Date(), tz).dayKey;
   await ensureCategory();
   const cleanReason = String(reason || '').trim().slice(0, 300);
   const u = user || {};
@@ -183,8 +202,8 @@ async function createPartialRefund({ orderId, amount, reason = '', method = 'cas
     categories: [REFUND_CATEGORY],
     date: new Date(`${dayKey}T00:00:00.000Z`),
     paymentMethod: m.paymentMethod,
-    counter: session ? session.counter || null : null,
-    counterName: session ? session.counterName || '' : '',
+    counter,
+    counterName,
     posOrder: bill._id,
     posOrderNumber: bill.orderNumber,
     cashSession: session ? session._id : null,
