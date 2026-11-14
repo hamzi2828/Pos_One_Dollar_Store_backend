@@ -125,8 +125,13 @@ async function moneyIn(lines, from, to) {
   const all = await db
     .collection('posorders')
     .find({ createdAt: range, isDeleted: { $ne: true }, orderStatus: { $nin: ['cancelled'] }, paymentMethod: { $in: ['card', 'split', 'bank_transfer', 'jazzcash'] } })
-    .project({ paymentMethod: 1, cardAmount: 1, total: 1, paidAmount: 1, changeGiven: 1 })
+    .project({ paymentMethod: 1, cardAmount: 1, total: 1, paidAmount: 1, changeGiven: 1, paymentHistory: 1 })
     .toArray();
+  // Split bills (any mix, owner 2026-11-14): the bank / JazzCash parts are their own payments.
+  const splitPart = (o, method) =>
+    round2((o.paymentHistory || []).filter((p) => p.paymentMethod === method).reduce((t, p) => t + (Number(p.amount) || 0), 0));
+  const splitBank = all.filter((o) => o.paymentMethod === 'split' && splitPart(o, 'bank_transfer') > 0);
+  const splitJazz = all.filter((o) => o.paymentMethod === 'split' && splitPart(o, 'jazzcash') > 0);
   const orders = all.filter((o) => o.paymentMethod === 'card' || o.paymentMethod === 'split');
   let cardSales = 0;
   for (const o of orders) cardSales += o.paymentMethod === 'card' ? (Number(o.cardAmount) > 0 ? o.cardAmount : o.total) : Number(o.cardAmount) || 0;
@@ -162,12 +167,12 @@ async function moneyIn(lines, from, to) {
     cardSales: round2(cardSales),
     cardBills: orders.length,
     cardSettled: sum(ins.filter((l) => l.kind === 'card')),
-    bankTransferSales: round2(bankBills.reduce((t, o) => t + sent(o), 0)),
-    bankTransferBills: bankBills.length,
+    bankTransferSales: round2(bankBills.reduce((t, o) => t + sent(o), 0) + splitBank.reduce((t, o) => t + splitPart(o, 'bank_transfer'), 0)),
+    bankTransferBills: bankBills.length + splitBank.length,
     transfersIn: sum(ins.filter((l) => l.kind === 'transfer_in')),
     // Not into UBL: shown for information only.
-    jazzcashSales: round2(jazzBills.reduce((t, o) => t + sent(o), 0)),
-    jazzcashBills: jazzBills.length,
+    jazzcashSales: round2(jazzBills.reduce((t, o) => t + sent(o), 0) + splitJazz.reduce((t, o) => t + splitPart(o, 'jazzcash'), 0)),
+    jazzcashBills: jazzBills.length + splitJazz.length,
     cashCounted: round2(cashCounted),
     tills,
     cashDeposited: sum(ins.filter((l) => l.kind === 'cash')),

@@ -13,7 +13,7 @@ const money = (n) => {
 };
 
 // bank_transfer = Bank (UBL); jazzcash = JazzCash wallet (owner, 2026-11-11).
-const METHOD_LABELS = { cash: 'Cash', card: 'Card', split: 'Cash + Card', bank_transfer: 'Bank (UBL)', jazzcash: 'JazzCash' };
+const METHOD_LABELS = { cash: 'Cash', card: 'Card', split: 'Split', bank_transfer: 'Bank (UBL)', jazzcash: 'JazzCash' };
 const methodLabel = (m) => METHOD_LABELS[m] || (m ? String(m) : '—');
 
 function formatDateTime(date, timeZone) {
@@ -96,11 +96,14 @@ function buildOrderSlip(order, { shopName = 'Our Shop', header = '', footer = ''
     lines.push(`Paid so far: ${money(o.paidAmount)}`);
   } else {
     let paid = `Paid: ${money(o.paidAmount)} (${methodLabel(o.paymentMethod)})`;
-    if (o.paymentMethod === 'split' && (o.cashAmount || o.cardAmount)) {
-      paid += ` - cash ${money(o.cashAmount)}, card ${money(o.cardAmount)}`;
+    if (o.paymentMethod === 'split') {
+      // One payment per method (any mix of cash / card / bank / JazzCash).
+      const parts = (o.paymentHistory || []).filter((p) => Number(p.amount) > 0);
+      if (parts.length) paid += ` - ${parts.map((p) => `${methodLabel(p.paymentMethod)} ${money(p.amount)}`).join(', ')}`;
+      else if (o.cashAmount || o.cardAmount) paid += ` - cash ${money(o.cashAmount)}, card ${money(o.cardAmount)}`;
     }
     lines.push(paid);
-    if (o.paymentMethod === 'cash' && Number(o.changeGiven) > 0) lines.push(`Change: ${money(o.changeGiven)}`);
+    if ((o.paymentMethod === 'cash' || o.paymentMethod === 'split') && Number(o.changeGiven) > 0) lines.push(`Change: ${money(o.changeGiven)}`);
   }
   if (Number(o.pendingAmount) > 0) lines.push(`*Balance due: ${money(o.pendingAmount)}*`);
   if (o.orderStatus === 'refunded') lines.push('Status: REFUNDED');

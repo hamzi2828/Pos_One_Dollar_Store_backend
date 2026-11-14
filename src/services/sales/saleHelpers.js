@@ -105,8 +105,45 @@ const queueReceipt = async (order, event, { resend = false } = {}) => {
 };
 
 
+// Split payment parts (owner 2026-11-14): any mix of cash / card / bank (UBL) / JazzCash.
+const SPLIT_METHODS = ['cash', 'card', 'bank_transfer', 'jazzcash'];
+const httpError = (status, message, code) => Object.assign(new Error(message), { status, code });
+
+/**
+ * Body `splits: [{ method, amount }]` -> one amount per method (same method added up),
+ * in a fixed order. Throws 400 on a bad list. Empty / missing -> null (old split rule).
+ */
+function normalizeSplits(splits) {
+  if (splits === undefined || splits === null || splits === '') return null;
+  let list = splits;
+  if (typeof list === 'string') {
+    try {
+      list = JSON.parse(list);
+    } catch {
+      throw httpError(400, 'Split payment parts are not valid', 'BAD_SPLIT');
+    }
+  }
+  if (!Array.isArray(list)) throw httpError(400, 'Split payment parts are not valid', 'BAD_SPLIT');
+  const by = new Map();
+  for (const p of list) {
+    const method = String((p && p.method) || '').trim();
+    const amount = pricing.round2(Number(p && p.amount) || 0);
+    if (!SPLIT_METHODS.includes(method)) throw httpError(400, `Unknown split payment method: ${method || '(none)'}`, 'BAD_SPLIT');
+    if (amount < 0) throw httpError(400, 'Split amounts cannot be negative', 'BAD_SPLIT');
+    if (amount > 0) by.set(method, pricing.round2((by.get(method) || 0) + amount));
+  }
+  const out = SPLIT_METHODS.filter((m) => by.has(m)).map((m) => ({ method: m, amount: by.get(m) }));
+  if (!out.length) return null;
+  return out;
+}
+
 // Partial / full payment of a NEW sale from the server total.
-const paymentPlan = ({ total, paymentMethod, isPartialPayment, paidAmount, cashAmount }) => {
+const paymentPlan = ({ total, paymentMethod, isPartialPayment, paidAmount, cashAmount, splits }) => {
+  // Split with parts: each part is its own payment; extra cash = change.
+  if (paymentMethod === 'split') {
+    const parts = normalizeSplits(splits);
+    if (parts) return splitPlan(total, parts, isPartialPayment);
+  }
   let paid = total;
   let status = PAYMENT_STATUS.FULL;
   let orderStatus = 'completed';
@@ -136,6 +173,42 @@ const paymentPlan = ({ total, paymentMethod, isPartialPayment, paidAmount, cashA
   }
   return out;
 };
+
+/**
+ * Split parts -> plan. Paid = parts applied to the bill. More than the bill is only
+ * allowed in cash (change given back); less is a part payment (needs isPartialPayment).
+ */
+function splitPlan(total, parts, isPartialPayment) {
+  const sum = pricing.round2(parts.reduce((t, p) => t + p.amount, 0));
+  const cash = parts.find((p) => p.method === 'cash');
+  let change = 0;
+  if (sum - total > 0.004) {
+    change = pricing.round2(sum - total);
+    if (!cash || cash.amount - change < -0.004) {
+      throw httpError(400, `The parts add up to Rs ${sum}, more than the bill (Rs ${total}). Only cash can be more (change).`, 'BAD_SPLIT');
+    }
+  }
+  const applied = parts
+    .map((p) => (p.method === 'cash' && change > 0 ? { ...p, amount: pricing.round2(p.amount - change) } : p))
+    .filter((p) => p.amount > 0);
+  const paid = pricing.round2(applied.reduce((t, p) => t + p.amount, 0));
+  const pending = pricing.round2(Math.max(0, total - paid));
+  if (pending > 0.004 && !isPartialPayment) {
+    throw httpError(400, `The parts add up to Rs ${paid}; the bill is Rs ${total}. Add the rest (Rs ${pending}).`, 'BAD_SPLIT');
+  }
+  const amountOf = (m) => (applied.find((p) => p.method === m) || {}).amount || 0;
+  const full = pending <= 0.004;
+  return {
+    paid,
+    pending: full ? 0 : pending,
+    status: full ? PAYMENT_STATUS.FULL : paid > 0 ? PAYMENT_STATUS.PARTIAL : PAYMENT_STATUS.PENDING,
+    orderStatus: full ? 'completed' : 'pending',
+    cashAmount: amountOf('cash') + change, // cash handed over (change comes back from it)
+    cardAmount: amountOf('card'),
+    changeGiven: change > 0 ? change : undefined,
+    splits: applied, // what each method paid on the bill
+  };
+}
 
 // bank_transfer = Bank (UBL); jazzcash = JazzCash wallet, its own method (owner, 2026-11-11).
 const PAYMENT_METHODS = ['cash', 'card', 'split', 'bank_transfer', 'jazzcash'];
@@ -171,6 +244,8 @@ module.exports = {
   PAYMENT_METHODS,
   PROOF_METHODS,
   paymentPlan,
+  normalizeSplits,
+  SPLIT_METHODS,
   pricingInput,
   orderMovement,
   loadOrderForResponse,

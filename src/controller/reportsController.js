@@ -126,13 +126,20 @@ const reportsController = {
       // straight to "Total Sales" bucketed by payment method.
       const salesBreakdown = { totalSales: 0, cashSales: 0, cardSales: 0, bankTransfer: 0, jazzcash: 0 };
       const fullPaidOrders = periodOrders.filter((o) => o.paymentStatus === 'full' || o.paymentStatus === 'completed');
+      const addTo = (m, amount) => {
+        if (m === 'cash') salesBreakdown.cashSales += amount;
+        else if (m === 'card') salesBreakdown.cardSales += amount;
+        else if (m === 'bank') salesBreakdown.bankTransfer += amount;
+        else if (m === 'jazzcash') salesBreakdown.jazzcash += amount;
+      };
       for (const o of fullPaidOrders) {
         salesBreakdown.totalSales += o.total || 0;
-        const m = normalizePOSMethod(o.paymentMethod);
-        if (m === 'cash') salesBreakdown.cashSales += o.total || 0;
-        else if (m === 'card') salesBreakdown.cardSales += o.total || 0;
-        else if (m === 'bank') salesBreakdown.bankTransfer += o.total || 0;
-        else if (m === 'jazzcash') salesBreakdown.jazzcash += o.total || 0;
+        if (o.paymentMethod === 'split') {
+          // Split bill: each part under its own method (any mix of cash / card / bank / JazzCash).
+          (o.paymentHistory || []).forEach((p) => addTo(normalizePOSMethod(p.paymentMethod), Number(p.amount) || 0));
+        } else {
+          addTo(normalizePOSMethod(o.paymentMethod), o.total || 0);
+        }
       }
 
       // Receivables snapshot = pending + partial orders as of now (not date

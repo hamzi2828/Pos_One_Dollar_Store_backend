@@ -473,13 +473,20 @@ const posController = {
 
       const branchDoc = await Branch.findById(branchId).select('name code').lean();
       const isPartialPayment = !!body.isPartialPayment;
-      const plan = paymentPlan({
-        total: bill.total,
-        paymentMethod,
-        isPartialPayment,
-        paidAmount: body.paidAmount,
-        cashAmount: body.cashAmount,
-      });
+      let plan;
+      try {
+        plan = paymentPlan({
+          total: bill.total,
+          paymentMethod,
+          isPartialPayment,
+          paidAmount: body.paidAmount,
+          cashAmount: body.cashAmount,
+          splits: body.splits,
+        });
+      } catch (err) {
+        if (err.status) return sendKnownError(res, err);
+        throw err;
+      }
 
       // 3. Id + number first, so every ledger row points at this order.
       const refs = { _id: new mongoose.Types.ObjectId(), orderNumber: await POSOrder.generateOrderNumber() };
@@ -529,10 +536,11 @@ const posController = {
         });
         let paymentHistory = [];
         if (plan.paid > 0) {
-          paymentHistory =
-            paymentMethod === 'split'
-              ? [plan.cashAmount > 0 && entry(plan.cashAmount, 'cash'), plan.cardAmount > 0 && entry(plan.cardAmount, 'card')].filter(Boolean)
-              : [entry(plan.paid, paymentMethod)];
+          paymentHistory = plan.splits
+            ? plan.splits.map((s) => entry(s.amount, s.method)) // one payment per method (the till counts only cash)
+            : paymentMethod === 'split'
+            ? [plan.cashAmount > 0 && entry(plan.cashAmount, 'cash'), plan.cardAmount > 0 && entry(plan.cardAmount, 'card')].filter(Boolean)
+            : [entry(plan.paid, paymentMethod)];
         }
 
         order = new POSOrder({
@@ -562,7 +570,10 @@ const posController = {
           cashAmount: plan.cashAmount,
           cardAmount: plan.cardAmount,
           changeGiven: plan.changeGiven,
-          bankTransferScreenshot: PROOF_METHODS.includes(paymentMethod) ? body.bankTransferScreenshot : undefined,
+          bankTransferScreenshot:
+            PROOF_METHODS.includes(paymentMethod) || (plan.splits && plan.splits.some((s) => PROOF_METHODS.includes(s.method)))
+              ? body.bankTransferScreenshot
+              : undefined,
           cashier: cashierId,
           cashSession: refOf(session),
           counter: refOf(till.counter),
