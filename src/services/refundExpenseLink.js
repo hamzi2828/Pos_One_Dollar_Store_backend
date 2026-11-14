@@ -213,10 +213,11 @@ async function createPartialRefund({ orderId, amount, reason = '', method = 'cas
   });
   // A line on the bill so it shows there too (the bill itself stays as sold).
   const line = `Part refund Rs ${amt} (${m.label})${cleanReason ? `: ${cleanReason}` : ''}`;
-  const order = await POSOrder.findById(bill._id).select('notes');
-  if (order) {
-    order.notes = order.notes ? `${order.notes}\n${line}` : line;
-    await order.save();
+  // Only the note changes. NOT order.save() on a partial document: the bill's pre-save hook
+  // would see no orderNumber and give the bill a NEW number (bug fixed 2026-11-14).
+  const current = await POSOrder.findById(bill._id).select('notes').lean();
+  if (current) {
+    await POSOrder.updateOne({ _id: bill._id }, { $set: { notes: current.notes ? `${current.notes}\n${line}` : line } });
   }
   return { expense, bill: await billInfo(bill._id) };
 }
