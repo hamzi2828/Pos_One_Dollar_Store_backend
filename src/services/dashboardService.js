@@ -441,11 +441,43 @@ async function tillsNow() {
 }
 
 /** Everything the dashboard shows. `req.access` decides the optional blocks. */
+/**
+ * Owner 2026-11-14: each hour's usual sales, to compare the shown day against.
+ * Over the 30 days before the shown day, only days that had sales ("working days"):
+ * avg for hour h = sales in hour h over those days / number of working days.
+ * Only for the hourly view (today / yesterday). -> { days, from, to, hours: [24 numbers] } | null
+ */
+const HOUR_AVG_DAYS = 30;
+async function hourAverages(range) {
+  if (range.bucket !== 'hour') return null;
+  const to = T.dayStart(T.dayKey(range.from)); // shown day's midnight (shop time)
+  const from = new Date(to.getTime() - HOUR_AVG_DAYS * DAY_MS);
+  const rows = await POSOrder.aggregate([
+    { $match: saleMatch(from, to) },
+    {
+      $group: {
+        _id: {
+          d: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: TZ } },
+          h: { $dateToString: { format: '%H', date: '$createdAt', timezone: TZ } },
+        },
+        gross: { $sum: { $ifNull: ['$total', 0] } },
+        tax: { $sum: { $ifNull: ['$tax', 0] } },
+      },
+    },
+  ]);
+  const days = new Set(rows.map((r) => r._id.d)).size;
+  const sum = Array(24).fill(0);
+  rows.forEach((r) => {
+    sum[Number(r._id.h)] += (Number(r.gross) || 0) - (Number(r.tax) || 0);
+  });
+  return { days, from, to, hours: sum.map((s) => (days ? C.round2(s / days) : 0)) };
+}
+
 async function getDashboardData(req, rangeKey) {
   const range = resolveRange(rangeKey);
   const can = (keys) => [].concat(keys).some((k) => req.access.can(k, 'view'));
 
-  const [now, prev, refundRow, trendRows, hours, paymentRows, sellers, bills, attentionItems, stock, tills] = await Promise.all([
+  const [now, prev, refundRow, trendRows, hours, paymentRows, sellers, bills, attentionItems, stock, tills, hourAvg] = await Promise.all([
     totals(range.from, range.to),
     totals(range.prevFrom, range.prevTo),
     refunds(range.from, range.to),
@@ -457,6 +489,7 @@ async function getDashboardData(req, rangeKey) {
     attention(req),
     can(['products', 'product_stock', 'report_stock']) ? stockSnapshot() : null,
     can(['till_verify', 'sale_counters']) ? tillsNow() : null,
+    hourAverages(range),
   ]);
 
   return {
@@ -474,6 +507,7 @@ async function getDashboardData(req, rangeKey) {
     generatedAt: new Date(),
     kpis: { ...now, refunds: refundRow, previous: prev },
     trend: trendRows,
+    hourAvg,
     hours,
     payments: paymentRows,
     topProducts: sellers.products,
