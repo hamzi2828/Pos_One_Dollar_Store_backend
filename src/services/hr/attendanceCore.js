@@ -197,13 +197,19 @@ async function recomputeRange(employeeIds, fromKey, toKey, { now = new Date() } 
 }
 
 /**
- * Which shop day a punch belongs to when yesterday's shift runs past midnight:
- *   - still open (checked in, not out): the punch is yesterday's check-out,
- *     up to 6 h after the shift ends;
+ * Which shop day a punch belongs to after midnight:
+ *   - still clocked in from yesterday and before 06:00: yesterday's check-out
+ *     (any shift, off day or no shift);
+ *   - yesterday's shift runs past midnight and is still open: yesterday's
+ *     check-out up to 6 h after the shift ends;
  *   - not checked in yet and the shift is still running: a (late) check-in
  *     for yesterday's shift.
  * Otherwise the punch belongs to today.
  */
+// Owner 2026-11-14: still clocked in from yesterday -> a scan before 06:00 is
+// yesterday's clock-out, whatever the shift (e.g. in 11:00, out 01:00 next day).
+const NIGHT_OUT_UNTIL_MIN = 6 * 60;
+
 async function shopDayFor(employee, at) {
   const today = T.dayKey(at);
   const yesterday = T.addDays(today, -1);
@@ -211,10 +217,12 @@ async function shopDayFor(employee, at) {
     schedule.planForDay(employee, yesterday),
     AttendanceRecord.findOne({ employee: employee._id, date: yesterday }).select('checkIn checkOut').lean(),
   ]);
+  const open = yRec && yRec.checkIn && !yRec.checkOut;
+  if (open && at < new Date(T.dayStart(today).getTime() + NIGHT_OUT_UNTIL_MIN * MIN)) return yesterday;
   const crossesMidnight = yPlan.type === 'shift' && yPlan.end && new Date(yPlan.end) > T.dayStart(today);
   if (!crossesMidnight) return today;
   const end = new Date(yPlan.end);
-  const open = yRec && yRec.checkIn && !yRec.checkOut;
+  // Night shift ending late (e.g. 02:00): check-out still accepted up to 6 h after its end.
   if (open && at <= new Date(end.getTime() + 6 * 60 * MIN)) return yesterday;
   if (!(yRec && yRec.checkIn) && at < end) return yesterday;
   return today;

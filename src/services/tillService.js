@@ -343,7 +343,15 @@ async function sessionExpenses(session) {
   const [expenseRows, paymentRows, tripRows] = await Promise.all([
     db
       .collection('expenses')
-      .find({ $or: [{ date: near }, { createdAt: near }, { _id: { $in: ownIds } }], isDeleted: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true }, paymentMethod: { $ne: 'Bank Transfer' } }) // bank-paid: not from the counter cash
+      .find({
+        $or: [{ date: near }, { createdAt: near }, { _id: { $in: ownIds } }],
+        isDeleted: { $ne: true },
+        source: { $ne: 'shop_use' },
+        fromPersonal: { $ne: true },
+        paymentMethod: { $ne: 'Bank Transfer' }, // bank-paid: not from the counter cash
+        // Refund given back by JazzCash / card (services/refundExpenseLink.js): not from the till either.
+        $nor: [{ posOrder: { $type: 'objectId' }, paymentMethod: { $ne: 'Cash' } }],
+      })
       .project({ title: 1, amount: 1, paymentMethod: 1, createdAt: 1, branch: 1, date: 1, counter: 1, counterName: 1 })
       .toArray(),
     db
@@ -378,6 +386,7 @@ async function sessionExpenses(session) {
         amount: round2(x.amount),
         paymentMethod: x.paymentMethod || '',
         createdAt: x.createdAt,
+        date: x.date,
         at: timeOf(x),
         kind: 'expense',
         counter: x.counter ? String(x.counter) : null,
@@ -461,6 +470,23 @@ async function sessionExpenses(session) {
   if (!tills.some((t) => String(t._id) === String(session._id))) tills.push(session);
   const closeOf = (t) => (t.closedAt ? new Date(t.closedAt).getTime() : Infinity);
   tills.sort((a, b) => closeOf(a) - closeOf(b) || new Date(a.openedAt) - new Date(b.openedAt));
+  // Owner 2026-11-14: an expense dated the day a till OPENED and entered while that
+  // till was still open (e.g. after midnight) belongs to that till, so use the time
+  // it was entered (not midday of its date, which could hit an earlier till).
+  for (const x of rows) {
+    if (x.kind !== 'expense' || !x.date || !x.createdAt) continue;
+    const entered = new Date(x.createdAt).getTime();
+    if (x.at === entered) continue;
+    const day = dayOf(x.date);
+    const hit = tills.find(
+      (t) =>
+        (!x.counter || String(t.counter || '') === x.counter) &&
+        new Date(t.openedAt).getTime() <= entered &&
+        entered <= closeOf(t) &&
+        dayOf(t.openedAt) === day
+    );
+    if (hit) x.at = entered;
+  }
   // An expense paid from a counter goes only to that counter's tills: the first
   // of them to close after it. Without a counter: the first till of the shop.
   const owner = (at, counter) => {

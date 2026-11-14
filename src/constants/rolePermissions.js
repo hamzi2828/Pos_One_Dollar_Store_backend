@@ -19,6 +19,9 @@ const PERMISSION_SECTIONS = [
             // Own till: open with a float, blind cash closing (cannot see expected cash / sales).
             { key: 'till', label: 'Till & Cash Closing', actions: ['view', 'create', 'edit'] },
             // Admin side of cash closing: see expected vs counted, approve / reject.
+            // Expenses of the user's OWN OPEN till only (add / see / change, never delete).
+            // Gone from their list once the till is closed. Full access = Finance → Expenses.
+            { key: 'till_expenses', label: 'Till Expenses (own open till)', actions: ['view', 'create', 'edit'] },
             { key: 'till_verify', label: 'Verify Cash Closing', actions: ['view', 'edit', 'delete', 'export'] },
             // Sale counters (registers) and their open/close cut-off times.
             { key: 'sale_counters', label: 'Sale Counters', actions: ['view', 'create', 'edit', 'delete'] },
@@ -230,7 +233,7 @@ const DEFAULT_ROLES = [
         description: 'Runs the shop and can also do cashier and warehouse work: sales, till, buying, receiving, stock, reports and staff.',
         permissions: {
             dashboard: VX, pos: ['view', 'create', 'edit', 'delete', 'export'], pos_orders: ['view', 'create', 'edit', 'delete', 'export'],
-            pos_gifts: VC, till: VCE, till_verify: ['view', 'edit', 'export'], sale_counters: ['view', 'create', 'edit'],
+            pos_gifts: VC, till: VCE, till_expenses: VCE, till_verify: ['view', 'edit', 'export'], sale_counters: ['view', 'create', 'edit'],
             purchase_orders: ['view', 'create', 'edit', 'delete', 'export'], goods_receiving: VCE, vendors: ['view', 'create', 'edit', 'export'],
             vendor_payments: VC, consignment: ['view', 'create', 'edit', 'delete'], vendor_returns: ['view', 'create', 'edit', 'delete'], purchasing_log: V,
             racks: ['view', 'create', 'edit'], stock_putaway: VC, stock_movements: VX, damages: ['view', 'create', 'edit', 'delete', 'export'],
@@ -247,8 +250,8 @@ const DEFAULT_ROLES = [
     },
     {
         name: 'Cashier',
-        description: 'Sells at the counter and closes their own till (blind count). Cannot see sales totals.',
-        permissions: { pos: VC, till: VCE, customers: VC, desktop_pos: VC, desktop_download: V },
+        description: 'Sells at the counter, adds expenses / refunds of their own open till and closes it (blind count). Cannot see sales totals.',
+        permissions: { pos: VC, till: VCE, till_expenses: VCE, customers: VC, desktop_pos: VC, desktop_download: V },
     },
     {
         name: 'Warehouse Assistant',

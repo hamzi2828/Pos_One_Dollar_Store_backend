@@ -17,7 +17,62 @@ const EXPENSE_SEARCH_FIELDS = ['title', 'category', 'reference', 'notes'];
 
 const invLink = require('../services/investmentExpenseLink');
 const loanService = require('../services/loanService');
+const refundLink = require('../services/refundExpenseLink');
+const CashSession = require('../models/cashSession');
 const isYes = (v) => v === true || v === 'true';
+
+// ----- Cashier scope (permission `till_expenses`, owner 2026-11-14) -----
+// Users with `expenses` see and change every expense. Users with only
+// `till_expenses` (the cashier) work on the expenses of THEIR OPEN TILL: they add,
+// see and change them while the till is open; once it is closed they are gone
+// from the cashier's list (the next till starts empty). They never delete.
+// Returns { full: true } or { full: false, session } (session null = no open till).
+async function scopeOf(req, action) {
+    if (!req.access || req.access.can('expenses', action)) return { full: true };
+    const session = await CashSession.findOne({ cashier: req.access.userId, status: 'open' })
+        .select('_id sessionNo counter counterName openedAt')
+        .lean();
+    return { full: false, session };
+}
+const NO_TILL = 'Open your till first. Expenses you add are taken off your till.';
+const tillScopeView = (scope) =>
+    scope.full
+        ? null
+        : {
+            open: !!scope.session,
+            sessionNo: scope.session ? scope.session.sessionNo : '',
+            counterName: scope.session ? scope.session.counterName || '' : '',
+            openedAt: scope.session ? scope.session.openedAt : null,
+        };
+// The cashier may only touch an expense of their open till.
+const inScope = (scope, expense) =>
+    scope.full || (!!scope.session && !!expense && !!expense.cashSession && String(expense.cashSession) === String(scope.session._id));
+// Owner 2026-11-14: an expense added while a till is open is dated the day that
+// till OPENED (opened 11:00, expense at 00:30 next day -> still the opening day).
+// Same form as a date picked on the page: 'YYYY-MM-DD' at 00:00 UTC.
+async function tillDayOf(session) {
+    const tillService = require('../services/tillService');
+    const tz = await tillService.getTimeZone();
+    return new Date(`${tillService.zonedParts(session.openedAt, tz).dayKey}T00:00:00.000Z`);
+}
+// Admin adding cash paid from a counter whose till is open: the date left as
+// today (or empty) becomes that till's opening day. Any other date is kept.
+async function adminExpenseDate(date, counterId) {
+    if (!counterId) return date ? new Date(date) : new Date();
+    const open = await CashSession.findOne({ counter: counterId, status: 'open' }).select('openedAt').lean();
+    if (!open) return date ? new Date(date) : new Date();
+    const tillService = require('../services/tillService');
+    const tz = await tillService.getTimeZone();
+    const today = tillService.zonedParts(new Date(), tz).dayKey;
+    const picked = date ? String(date).slice(0, 10) : '';
+    if (!picked || picked === today) return tillDayOf(open);
+    return new Date(date);
+}
+
+const userName = (req) => {
+    const u = req.user || {};
+    return [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email || '';
+};
 
 // ----- Receipt / slip images (many per expense) -----
 const fs = require('fs');
@@ -81,13 +136,24 @@ const expenseController = {
     getAllExpenses: async (req, res) => {
         try {
             const { search, category, paymentMethod, isActive, startDate, endDate, minAmount, maxAmount } = req.query;
+            const scope = await scopeOf(req, 'view');
+            if (!scope.full && !scope.session) {
+                return res.status(200).json({
+                    message: 'Expenses fetched successfully',
+                    data: [],
+                    pagination: { page: 1, limit: Number(req.query.limit) || 10, total: 0, totalPages: 0, hasNext: false, hasPrev: false },
+                    tillScope: tillScopeView(scope),
+                });
+            }
 
             const filter = { isDeleted: { $ne: true } };
+            // Cashier: only the expenses of their open till (dates do not matter).
+            if (!scope.full) filter.cashSession = scope.session._id;
             if (category) filter.category = category;
             if (paymentMethod) filter.paymentMethod = paymentMethod;
             if (isActive === 'true') filter.isActive = true;
             else if (isActive === 'false') filter.isActive = false;
-            if (startDate || endDate) {
+            if (scope.full && (startDate || endDate)) {
                 filter.date = {};
                 if (startDate) filter.date.$gte = new Date(startDate);
                 if (endDate) {
@@ -119,6 +185,7 @@ const expenseController = {
                 message: 'Expenses fetched successfully',
                 data: items.map(withReceipts),
                 pagination,
+                tillScope: tillScopeView(scope),
             });
         } catch (error) {
             console.error('Error fetching expenses:', error);
@@ -131,18 +198,34 @@ const expenseController = {
         try {
             const { id } = req.params;
             const expense = await Expense.findOne({ _id: id, isDeleted: { $ne: true } }).lean();
+            const scope = await scopeOf(req, 'view');
 
-            if (!expense) {
+            if (!expense || !inScope(scope, expense)) {
                 return res.status(404).json({ message: 'Expense not found' });
             }
 
+            const data = withReceipts(expense);
+            // Refund: the bill with what is left to refund besides this expense.
+            if (expense.posOrder) data.refundBill = await refundLink.billInfo(expense.posOrder, expense._id);
             return res.status(200).json({
                 message: 'Expense fetched successfully',
-                data: withReceipts(expense)
+                data,
+                tillScope: tillScopeView(scope),
             });
         } catch (error) {
             console.error('Error fetching expense:', error);
             return res.status(500).json({ message: 'Failed to fetch expense' });
+        }
+    },
+
+    // GET /expenses/refund-bills?q=<at least 3 chars of the bill number> - bills for a Refund expense
+    getRefundBills: async (req, res) => {
+        try {
+            return res.json({ success: true, data: await refundLink.searchBills(req.query.q, req.query.limit) });
+        } catch (error) {
+            if (error.status) return res.status(error.status).json({ message: error.message });
+            console.error('Error searching refund bills:', error);
+            return res.status(500).json({ message: 'Failed to search bills' });
         }
     },
 
@@ -192,13 +275,23 @@ const expenseController = {
                 return res.status(400).json({ message: `At most ${MAX_RECEIPTS} receipt images` });
             }
             const { title, amount, category, categories, date, paymentMethod, reference, notes } = req.body;
+            const scope = await scopeOf(req, 'create');
+            if (!scope.full && !scope.session) {
+                dropLocal(files);
+                return res.status(409).json({ message: NO_TILL, code: 'TILL_NOT_OPEN' });
+            }
+            // Cashier: dated now, paid from their own till's counter; no investment bill / personal money.
+            const tillOnly = !scope.full;
             const bankPick = await bankFor(paymentMethod, req.body.bankId);
             if (bankPick.error) return res.status(400).json({ message: bankPick.error });
-            const counterPick = await counterFor(req.body.counter);
+            const isCash = (paymentMethod?.trim() || 'Cash') === 'Cash';
+            const counterPick = tillOnly
+                ? { counter: isCash ? scope.session.counter || null : null, counterName: isCash ? scope.session.counterName || '' : '' }
+                : await counterFor(req.body.counter);
             if (counterPick.error) return res.status(400).json({ message: counterPick.error });
             let invPick = null;
             try {
-                invPick = await invLink.checkLink(req.body.investmentId, Number(amount));
+                if (!tillOnly) invPick = await invLink.checkLink(req.body.investmentId, Number(amount));
             } catch (e) {
                 return res.status(e.status || 400).json({ message: e.message });
             }
@@ -233,9 +326,25 @@ const expenseController = {
             }
 
             // Paid from personal money -> a loan from that person is made too.
-            const fromPersonal = isYes(req.body.fromPersonal);
+            const fromPersonal = !tillOnly && isYes(req.body.fromPersonal);
+
+            // Refund on a POS bill: the bill is required and the refund can't go over what was paid on it.
+            let refundBill = null;
+            if (refundLink.isRefund(parsedCategories.length ? parsedCategories : categoryValue)) {
+                if (invPick || fromPersonal) {
+                    dropLocal(files);
+                    return res.status(400).json({ message: 'A refund cannot also pay an investment bill or be paid from personal money.' });
+                }
+                try {
+                    refundBill = await refundLink.checkRefund(req.body.posOrderId, Number(amount));
+                } catch (e) {
+                    dropLocal(files);
+                    return res.status(e.status || 400).json({ message: e.message });
+                }
+            }
+
             // Owner 2026-11-10: cash out of a drawer must say which counter, or the till math goes wrong.
-            if ((paymentMethod?.trim() || 'Cash') === 'Cash' && !fromPersonal && !counterPick.counter && (await require('../models/saleCounter').countDocuments({ isActive: true, isDeleted: { $ne: true } })) > 0) {
+            if (!tillOnly && isCash && !fromPersonal && !counterPick.counter && (await require('../models/saleCounter').countDocuments({ isActive: true, isDeleted: { $ne: true } })) > 0) {
                 dropLocal(files);
                 return res.status(400).json({ message: 'Pick which counter paid it (Paid from Counter 1 / Counter 2).' });
             }
@@ -254,7 +363,11 @@ const expenseController = {
                 amount: Number(amount),
                 category: categoryValue,
                 categories: parsedCategories,
-                date: date ? new Date(date) : new Date(),
+                date: tillOnly
+                    ? await tillDayOf(scope.session)
+                    : isCash && !fromPersonal
+                        ? await adminExpenseDate(date, counterPick.counter)
+                        : date ? new Date(date) : new Date(),
                 paymentMethod: paymentMethod?.trim() || 'Cash',
                 bank: bankPick.bank,
                 bankName: bankPick.bankName,
@@ -262,6 +375,11 @@ const expenseController = {
                 counterName: counterPick.counterName,
                 investment: invPick ? invPick._id : null,
                 investmentTitle: invPick ? invPick.title : '',
+                posOrder: refundBill ? refundBill._id : null,
+                posOrderNumber: refundBill ? refundBill.orderNumber : '',
+                cashSession: tillOnly ? scope.session._id : null,
+                createdBy: (req.access && req.access.userId) || null,
+                createdByName: userName(req),
                 reference: reference?.trim() || '',
                 notes: notes?.trim() || '',
                 receipt: receipts.length ? receipts[0].url : null,
@@ -301,9 +419,18 @@ const expenseController = {
             if (!Number.isFinite(delta) || delta === 0) return res.status(400).json({ message: 'Enter the adjustment amount (+ or −).' });
             if (!note) return res.status(400).json({ message: 'Write why the amount changes.' });
             const expense = await Expense.findOne({ _id: id, isDeleted: { $ne: true } });
-            if (!expense) return res.status(404).json({ message: 'Expense not found' });
+            const scope = await scopeOf(req, 'edit');
+            if (!expense || !inScope(scope, expense)) return res.status(404).json({ message: 'Expense not found' });
             const next = Math.round((Number(expense.amount) + delta) * 100) / 100;
             if (next < 0) return res.status(400).json({ message: `The amount cannot go below 0 (now Rs ${expense.amount}).` });
+            // Refund: the new amount still can't go over what was paid on the bill.
+            if (expense.posOrder && next > 0) {
+                try {
+                    await refundLink.checkRefund(expense.posOrder, next, expense._id);
+                } catch (e) {
+                    return res.status(e.status || 400).json({ message: e.message });
+                }
+            }
             if (expense.investment) {
                 try {
                     await invLink.checkLink(expense.investment, next, expense._id);
@@ -342,9 +469,23 @@ const expenseController = {
             const { title, amount, category, date, paymentMethod, reference, notes, isActive, removeReceipt } = req.body;
 
             const expense = await Expense.findOne({ _id: id, isDeleted: { $ne: true } });
-            if (!expense) {
+            const scope = await scopeOf(req, 'edit');
+            if (!expense || !inScope(scope, expense)) {
                 dropLocal(files);
                 return res.status(404).json({ message: 'Expense not found' });
+            }
+            const tillOnly = !scope.full;
+            // A bill refund stays a refund (and a normal expense can't become one here:
+            // add refunds from "Add expense" and pick the bill).
+            // (Old "Refund" expenses saved before bills were linked keep working as they are.)
+            const wantsRefund = category !== undefined && refundLink.isRefund(category);
+            if (category !== undefined && (expense.posOrder ? !wantsRefund : wantsRefund && !refundLink.isRefund(expense.category))) {
+                dropLocal(files);
+                return res.status(400).json({
+                    message: expense.posOrder
+                        ? `This is a refund on bill ${expense.posOrderNumber}: its category must stay Refund.`
+                        : 'To record a refund, add a new expense with the Refund category and pick the bill.',
+                });
             }
 
             // Receipts after this edit: old list (or old single receipt), minus removed, plus new.
@@ -367,9 +508,10 @@ const expenseController = {
                 return res.status(400).json({ message: 'The amount cannot be edited. Add a + or − adjustment instead.' });
             }
             if (category !== undefined) expense.category = category.trim();
-            if (date !== undefined) expense.date = new Date(date);
+            // Cashier: the date, counter, investment bill and status stay as saved.
+            if (date !== undefined && !tillOnly) expense.date = new Date(date);
             if (paymentMethod !== undefined) expense.paymentMethod = paymentMethod?.trim() || 'Cash';
-            const invChanged = req.body.investmentId !== undefined;
+            const invChanged = !tillOnly && req.body.investmentId !== undefined;
             if (invChanged || amount !== undefined) {
                 const want = invChanged ? req.body.investmentId : expense.investment;
                 try {
@@ -386,7 +528,12 @@ const expenseController = {
                 expense.bank = bankPick.bank;
                 expense.bankName = bankPick.bankName;
             }
-            if (req.body.counter !== undefined) {
+            if (tillOnly) {
+                // Cash comes from their own till's counter; bank-paid has no counter.
+                const cash = expense.paymentMethod === 'Cash';
+                expense.counter = cash ? scope.session.counter || null : null;
+                expense.counterName = cash ? scope.session.counterName || '' : '';
+            } else if (req.body.counter !== undefined) {
                 const counterPick = await counterFor(req.body.counter, expense.counter);
                 if (counterPick.error) return res.status(400).json({ message: counterPick.error });
                 expense.counter = counterPick.counter;
@@ -394,7 +541,7 @@ const expenseController = {
             }
             if (reference !== undefined) expense.reference = reference?.trim() || '';
             if (notes !== undefined) expense.notes = notes?.trim() || '';
-            if (isActive !== undefined) expense.isActive = isActive;
+            if (isActive !== undefined && !tillOnly) expense.isActive = isActive;
 
             // Receipt images: kept + new; the first one is also kept in `receipt`.
             if (files.length || gone.length || (!expense.receipts.length && current.length)) {
@@ -489,9 +636,18 @@ const expenseController = {
     getExpenseSummary: async (req, res) => {
         try {
             const { startDate, endDate } = req.query;
+            const scope = await scopeOf(req, 'view');
+            if (!scope.full && !scope.session) {
+                return res.status(200).json({
+                    message: 'Expense summary fetched successfully',
+                    data: { totalExpenses: 0, count: 0, byCategory: {}, byPaymentMethod: {} },
+                });
+            }
 
             const match = { isActive: true, isDeleted: { $ne: true } };
-            if (startDate || endDate) {
+            // Cashier: their open till only (dates do not matter).
+            if (!scope.full) match.cashSession = scope.session._id;
+            if (scope.full && (startDate || endDate)) {
                 match.date = {};
                 if (startDate) match.date.$gte = new Date(startDate);
                 if (endDate) {
@@ -538,6 +694,8 @@ const expenseController = {
     // GET /expenses/categories - Get all expense categories
     getAllCategories: async (req, res) => {
         try {
+            // "Refund" is always there (refunds on a POS bill).
+            try { await refundLink.ensureCategory(); } catch (e) { console.error('Could not add the Refund category:', e.message); }
             const categories = await ExpenseCategory
                 .find({ isDeleted: { $ne: true }, isActive: true })
                 .sort({ name: 1 })
@@ -595,6 +753,9 @@ const expenseController = {
 
             if (!category) {
                 return res.status(404).json({ message: 'Category not found' });
+            }
+            if (refundLink.isRefund(category.name)) {
+                return res.status(400).json({ message: 'The Refund category is used for bill refunds and cannot be deleted.' });
             }
 
             category.isDeleted = true;

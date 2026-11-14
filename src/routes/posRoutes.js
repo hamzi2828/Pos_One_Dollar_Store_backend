@@ -55,6 +55,9 @@ router.post('/orders/:id/whatsapp', can(['pos', 'pos_orders'], 'create'), posCon
 router.post('/orders/:id/discount', can('pos_orders', 'edit'), posController.giveDiscount); // discount after the sale
 router.post('/orders/:id/payment-method', can('pos_orders', 'edit'), posController.changePaymentMethod); // fix cash / card / bank
 router.post('/orders/:id/refund', can('pos_orders', 'edit'), posController.refundOrder); // puts stock back once
+// Part refund: money only (a "Refund" expense on the bill), stock stays.
+router.get('/orders/:id/refund-info', can('pos_orders', 'edit'), posController.refundInfo);
+router.post('/orders/:id/partial-refund', can('pos_orders', 'edit'), posController.partialRefund);
 router.delete('/orders/:id', can('pos_orders', 'delete'), posController.deleteOrder);
 
 // Dashboard (sales figures)

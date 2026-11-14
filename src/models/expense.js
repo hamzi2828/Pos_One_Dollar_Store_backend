@@ -43,6 +43,15 @@ const expenseSchema = new mongoose.Schema({
     // null = not tied to a counter (old rule: the next till to close takes it).
     counter: { type: mongoose.Schema.Types.ObjectId, ref: 'SaleCounter', default: null },
     counterName: { type: String, default: '', trim: true },
+    // Category "Refund": money given back on this POS bill (services/refundExpenseLink.js).
+    // All refunds of one bill together never go over what was paid on it.
+    posOrder: { type: mongoose.Schema.Types.ObjectId, ref: 'POSOrder', default: null, index: true },
+    posOrderNumber: { type: String, default: '', trim: true },
+    // Added by a cashier (permission `till_expenses`) while this till was open. The
+    // cashier sees / edits it only while that till is still open.
+    cashSession: { type: mongoose.Schema.Types.ObjectId, ref: 'CashSession', default: null, index: true },
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    createdByName: { type: String, default: '', trim: true },
     reference: {
         type: String,
         default: '',

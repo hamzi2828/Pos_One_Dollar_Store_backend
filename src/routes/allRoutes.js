@@ -194,15 +194,20 @@ router.put('/assets/:id', ...staff, can('assets', 'edit'), assetController.updat
 router.put('/assets/:id/status', ...staff, can('assets', 'edit'), assetController.updateAssetStatus);
 router.delete('/assets/:id', ...staff, can('assets', 'delete'), assetController.deleteAsset);
 
-router.get('/expenses', ...staff, can('expenses', 'view'), expenseController.getAllExpenses);
-router.get('/expenses/summary', ...staff, can('expenses', 'view'), expenseController.getExpenseSummary);
-router.get('/expenses/categories', ...staff, can('expenses', 'view'), expenseController.getAllCategories);
-router.get('/expenses/banks', ...staff, can('expenses', 'view'), expenseController.getBankOptions);
-router.get('/expenses/counters', ...staff, can('expenses', 'view'), expenseController.getCounterOptions);
+// Cashier (`till_expenses`): add / see / change the expenses of their OPEN till only
+// (scoped in expenseController); never delete, never categories / investment bills.
+const EXPENSES_OR_TILL = ['expenses', 'till_expenses'];
+router.get('/expenses', ...staff, can(EXPENSES_OR_TILL, 'view'), expenseController.getAllExpenses);
+router.get('/expenses/summary', ...staff, can(EXPENSES_OR_TILL, 'view'), expenseController.getExpenseSummary);
+router.get('/expenses/categories', ...staff, can(EXPENSES_OR_TILL, 'view'), expenseController.getAllCategories);
+router.get('/expenses/banks', ...staff, can(EXPENSES_OR_TILL, 'view'), expenseController.getBankOptions);
+router.get('/expenses/counters', ...staff, can(EXPENSES_OR_TILL, 'view'), expenseController.getCounterOptions);
+// Refund expense: find the POS bill by number (at least 3 characters).
+router.get('/expenses/refund-bills', ...staff, can(EXPENSES_OR_TILL, 'view'), expenseController.getRefundBills);
 router.get('/expenses/investment-bills', ...staff, can('expenses', 'view'), expenseController.getInvestmentBills);
 router.post('/expenses/categories', ...staff, can('expenses', 'create'), expenseController.createCategory);
 router.delete('/expenses/categories/:id', ...staff, can('expenses', 'delete'), expenseController.deleteCategory);
-router.get('/expenses/:id', ...staff, can('expenses', 'view'), expenseController.getExpenseById);
+router.get('/expenses/:id', ...staff, can(EXPENSES_OR_TILL, 'view'), expenseController.getExpenseById);
 // Receipt images: `receipts` (up to 10) and the old single `receipt` field.
 const EXPENSE_RECEIPTS = (req, res, next) =>
     uploadFields([{ name: 'receipts', maxCount: 10 }, { name: 'receipt', maxCount: 1 }])(req, res, (err) => {
@@ -213,9 +218,9 @@ const EXPENSE_RECEIPTS = (req, res, next) =>
             message: tooBig ? 'Image is too large' : tooMany ? 'At most 10 receipt images' : err.message || 'Upload failed',
         });
     });
-router.post('/expenses', ...staff, can('expenses', 'create'), EXPENSE_RECEIPTS, expenseController.createExpense);
-router.put('/expenses/:id', ...staff, can('expenses', 'edit'), EXPENSE_RECEIPTS, expenseController.updateExpense);
-router.post('/expenses/:id/adjust', ...staff, can('expenses', 'edit'), expenseController.adjustExpense);
+router.post('/expenses', ...staff, can(EXPENSES_OR_TILL, 'create'), EXPENSE_RECEIPTS, expenseController.createExpense);
+router.put('/expenses/:id', ...staff, can(EXPENSES_OR_TILL, 'edit'), EXPENSE_RECEIPTS, expenseController.updateExpense);
+router.post('/expenses/:id/adjust', ...staff, can(EXPENSES_OR_TILL, 'edit'), expenseController.adjustExpense);
 router.put('/expenses/:id/status', ...staff, can('expenses', 'edit'), expenseController.updateExpenseStatus);
 router.delete('/expenses/:id', ...staff, can('expenses', 'delete'), expenseController.deleteExpense);
 

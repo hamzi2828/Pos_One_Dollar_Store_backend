@@ -1358,6 +1358,18 @@ const posController = {
       if (order.orderStatus === 'cancelled') {
         return res.status(400).json({ success: false, message: 'Cannot refund a cancelled order' });
       }
+      // Part of this bill was already given back as a "Refund" expense: a full refund
+      // here would give that money back a second time.
+      {
+        const refundLink = require('../services/refundExpenseLink');
+        const done = (await refundLink.refundedByExpenses([order._id])).get(String(order._id)) || 0;
+        if (done > 0) {
+          return res.status(400).json({
+            success: false,
+            message: `Rs ${done} of this bill was already refunded as an expense (category Refund). Add the rest as a Refund expense too, or remove that expense first.`,
+          });
+        }
+      }
 
       const cleanReason = reason ? String(reason).trim().slice(0, 300) : '';
       const stock = await restoreOrderStockOnce(order, { userId, note: cleanReason ? `Refund: ${cleanReason}` : 'Refund' });
@@ -1387,6 +1399,45 @@ const posController = {
       return res.status(400).json({ success: false, message: 'Error refunding order', error: error.message });
     }
   },
+  // GET /api/pos/orders/:id/refund-info — paid / already refunded (part refunds) / left to refund.
+  refundInfo: async (req, res) => {
+    try {
+      const bill = await require('../services/refundExpenseLink').billInfo(req.params.id);
+      if (!bill) return res.status(404).json({ success: false, message: 'Order not found' });
+      return res.json({ success: true, data: bill });
+    } catch (error) {
+      return res.status(500).json({ success: false, message: 'Could not load the refund info' });
+    }
+  },
+
+  // POST /api/pos/orders/:id/partial-refund — body { amount, reason?, refundMethod }.
+  // Part of the money back, stock NOT touched: saved as a "Refund" expense on this bill
+  // (same as Add expense → Refund). All refunds together never go over what was paid.
+  partialRefund: async (req, res) => {
+    try {
+      const { amount, reason, refundMethod } = req.body || {};
+      const { resolveWriteBranch } = require('../middleware/access');
+      const { expense, bill } = await require('../services/refundExpenseLink').createPartialRefund({
+        orderId: req.params.id,
+        amount: Number(amount),
+        reason,
+        method: refundMethod || 'cash',
+        access: req.access,
+        user: req.user,
+        branch: await resolveWriteBranch(req),
+      });
+      return res.status(201).json({
+        success: true,
+        data: { expense, bill },
+        message: `Rs ${expense.amount} refunded on ${bill.orderNumber}`,
+      });
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ success: false, message: error.message });
+      console.error('Partial refund error:', error);
+      return res.status(500).json({ success: false, message: 'Could not save the part refund' });
+    }
+  },
+
   // POST /api/pos/upload/screenshot — bank transfer proof upload
   uploadScreenshot: async (req, res) => {
     try {
