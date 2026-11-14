@@ -85,19 +85,24 @@ async function main() {
     fs.writeFileSync(bfile, JSON.stringify({ grnId: grn._id, entry: e, movement: mv, product: { vendor: p.vendor, lastVendorName: p.lastVendorName } }, null, 2));
     console.log(`\nBackup: ${bfile}`);
 
+    // arrayFilters: exactly THIS entry (a positional '$' with two array conditions can hit
+    // another entry of the same bill - fixed 2026-11-14).
     const r = await db.collection('goodsreceipts').updateOne(
-      { _id: grn._id, 'entries._id': e._id, 'entries.bill': from._id },
+      { _id: grn._id, entries: { $elemMatch: { _id: e._id, bill: from._id } } },
       {
         $set: {
-          'entries.$.bill': to._id,
-          'entries.$.vendor': to.vendor,
-          'entries.$.vendorName': to.vendorName,
-          'entries.$.billNo': to.billNo || '',
-          'entries.$.boxNo': boxNo,
+          'entries.$[x].bill': to._id,
+          'entries.$[x].vendor': to.vendor,
+          'entries.$[x].vendorName': to.vendorName,
+          'entries.$[x].billNo': to.billNo || '',
+          'entries.$[x].boxNo': boxNo,
           updatedAt: new Date(),
         },
-      }
+      },
+      { arrayFilters: [{ 'x._id': e._id }] }
     );
+    const check = await db.collection('goodsreceipts').findOne({ _id: grn._id }, { projection: { entries: { $elemMatch: { _id: e._id } } } });
+    if (!check || !check.entries || String(check.entries[0].bill) !== String(to._id)) throw new Error('Entry did not move; stopped before anything else');
     if (r.modifiedCount !== 1) throw new Error('Entry changed meanwhile; nothing else written');
     if (mv) {
       await db.collection('stockmovements').updateOne(
