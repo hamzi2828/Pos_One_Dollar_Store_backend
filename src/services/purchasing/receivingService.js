@@ -824,10 +824,18 @@ async function addEntry(req, id, body = {}, opts = {}) {
   const unit = await products.loadUnit(body.productId || body.product, body.variantId || null, { branchId: first.branch });
   const stockQty = qty - damagedQty;
   const boxNo = boxNoFor(first, bill, body.boxNo);
+  // Already in the shop: only put under this bill, no stock in (never more than is in stock).
+  const alreadyInStock = body.alreadyInStock === true || body.alreadyInStock === 'true';
+  if (alreadyInStock) {
+    const have = Number(unit.stockTotal) || 0;
+    if (stockQty > have) {
+      throw httpError(`Only ${have} piece(s) of ${unit.productName} are in stock. Enter the extra ${stockQty - have} normally (new stock).`, 400, 'NOT_IN_STOCK');
+    }
+  }
 
   let shelf = null;
   let shelfQty = 0;
-  if (h.has(body.shelfId)) {
+  if (h.has(body.shelfId) && !alreadyInStock) {
     shelfQty = h.has(body.shelfQty) ? h.toAmount(body.shelfQty, 'Pieces for the shelf', { int: true }) : stockQty;
     if (shelfQty > stockQty) throw httpError(`Only ${stockQty} good piece(s) can go on the shelf`);
     if (shelfQty > 0) shelf = await locationService.loadShelf(body.shelfId, first.branch);
@@ -890,6 +898,7 @@ async function addEntry(req, id, body = {}, opts = {}) {
       line: line ? line._id : null,
       lineQty,
       lineDamaged,
+      ...(alreadyInStock ? { alreadyInStock: true, posted: true, postedAt: new Date(), movement: null } : {}),
       createdBy: userId,
       createdByName: h.userName(req),
       createdAt: new Date(),
@@ -901,7 +910,7 @@ async function addEntry(req, id, body = {}, opts = {}) {
   // Sticker code of this stock, before the stock goes in ("first stock" reads the stock).
   const warnings = [];
   try {
-    await stockCodes.assignForEntry(grn, entry, { keepCode: opts.keepCode });
+    await stockCodes.assignForEntry(grn, entry, { keepCode: opts.keepCode || (alreadyInStock ? unit.code : undefined) });
   } catch (err) {
     warnings.push(`Saved, but no own code was made for this stock (${err.message}). Open the entry again to make it.`);
   }
@@ -911,6 +920,24 @@ async function addEntry(req, id, body = {}, opts = {}) {
     } catch (err) {
       await dropUnpostedEntry(req, id, entryId).catch(() => {});
       throw httpError(`Could not put ${entry.productName} into stock: ${err.message}`, err.status && err.status < 500 ? err.status : 400, 'ENTRY_FAILED');
+    }
+  }
+
+  // Already in the shop: stickers printed outside receiving (no bill) now count on this bill;
+  // the product's vendor / last price follow the bill (no stock row: nothing came in).
+  if (alreadyInStock) {
+    try {
+      const LabelPrint = require('../../models/labelPrint');
+      await LabelPrint.updateMany(
+        { product: entry.product, variantId: entry.variantId || null, bill: null, ignored: { $ne: true } },
+        { $set: { bill: entry.bill, note: `Already in stock · put under ${entry.vendorName} (${grn.grnNumber})` } }
+      );
+      if (!entry.variantId) {
+        const Product = require('../../models/product');
+        await Product.updateOne({ _id: entry.product }, { $set: { vendor: entry.vendor, lastPurchasePrice: entry.costPrice, lastVendorName: entry.vendorName } });
+      }
+    } catch (err) {
+      warnings.push(`Saved, but stickers / vendor were not updated: ${err.message}`);
     }
   }
 
@@ -991,7 +1018,8 @@ async function undoEntry(req, id, entryId) {
     const entry = grn.entries.id(entryId);
     if (!entry.posted) await postEntry(grn, entry, userId); // half-saved: make it whole first
     let undoMovement = null;
-    if (entry.stockQty > 0) {
+    // Already in the shop before: this entry added no stock, so Undo takes none out.
+    if (entry.stockQty > 0 && !entry.alreadyInStock) {
       const done = await StockMovement.findOne({ refType: 'GoodsReceipt', refId: grn._id, type: 'adjustment_out', note: tagRx(undoTag(entry)) })
         .select('_id')
         .lean();
@@ -1100,7 +1128,7 @@ async function editEntry(req, id, entryId, body = {}) {
     });
     carried = 0;
   };
-  if (old.posted && old.stockQty > 0) {
+  if (old.posted && old.stockQty > 0 && !old.alreadyInStock) {
     const split = await locationService.unitSplit({ branchId: first.branch, productId: old.product, variantId: old.variantId });
     const gone = Math.max(0, old.stockQty - split.total);
     if (gone > 0) {
@@ -1135,6 +1163,7 @@ async function editEntry(req, id, entryId, body = {}) {
       costPrice,
       boxNo,
       requestId,
+      alreadyInStock: !!old.alreadyInStock,
     }, { keepCode: old.batchCode || old.code || '' });
   } catch (err) {
     // The old entry is out with its sold pieces counted: stock is right, keep it.

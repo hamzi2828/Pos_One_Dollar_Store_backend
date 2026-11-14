@@ -150,6 +150,10 @@ const entrySchema = new mongoose.Schema({
   posted: { type: Boolean, default: false }, // stock received (never twice)
   postedAt: { type: Date, default: null },
   movement: { type: ObjectId, ref: 'StockMovement', default: null },
+  // Owner 2026-11-14: the pieces were ALREADY in the shop (entered / stickered before the
+  // trip was received): the entry only puts them under this vendor bill, NO stock is added,
+  // and Undo / Edit never take stock out for it.
+  alreadyInStock: { type: Boolean, default: false },
   shelved: { type: Number, min: 0, default: 0 }, // put on a shelf in the same step
   shelf: { type: ObjectId, ref: 'Shelf', default: null },
   shelfCode: { type: String, default: '' },

@@ -131,6 +131,7 @@ async function main() {
       posted: true,
       postedAt: new Date(),
       movement: movement ? movement._id : null,
+      alreadyInStock: true, // no stock added; Undo / Edit never take stock out for it
       shelved: 0,
       shelf: null,
       shelfCode: '',
