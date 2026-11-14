@@ -30,7 +30,8 @@ const expenseSchema = new mongoose.Schema({
     paymentMethod: {
         type: String,
         trim: true,
-        enum: ['Cash', 'Credit Card', 'Debit Card', 'Bank Transfer', 'Check', 'Other'],
+        // JazzCash (owner 2026-11-14): paid from the JazzCash wallet, never from a till.
+        enum: ['Cash', 'Credit Card', 'Debit Card', 'Bank Transfer', 'JazzCash', 'Check', 'Other'],
         default: 'Cash'
     },
     // Our bank account the money left from (Bank Transfer); name kept for lists.

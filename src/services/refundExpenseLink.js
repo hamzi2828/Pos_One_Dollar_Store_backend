@@ -147,7 +147,7 @@ async function ensureCategory() {
 const REFUND_METHODS = {
   cash: { paymentMethod: 'Cash', label: 'Cash' },
   bank_transfer: { paymentMethod: 'Bank Transfer', label: 'Bank (UBL)' },
-  jazzcash: { paymentMethod: 'Other', label: 'JazzCash' },
+  jazzcash: { paymentMethod: 'JazzCash', label: 'JazzCash' },
   card: { paymentMethod: 'Other', label: 'Card' },
 };
 

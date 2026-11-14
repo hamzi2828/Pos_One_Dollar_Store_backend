@@ -49,6 +49,15 @@ router.post(
     res.json({ success: true, data: await require('../../services/reports/fundsReport').setBaseline(req, req.body || {}) });
   })
 );
+// JazzCash wallet for a period: every JazzCash in / out with a running balance (Cash in Hand tab).
+router.get(
+  '/analytics/jazzcash',
+  ...staff,
+  can(['report_cash_in_hand', 'report_expenses'], 'view'),
+  handle(async (req, res) => {
+    res.json({ success: true, data: await require('../../services/reports/jazzcashReport').jazzcash(req.query || {}) });
+  })
+);
 // Spending: bought from vendors, paid, trip costs, shop expenses for a period.
 router.get(
   '/analytics/spending',

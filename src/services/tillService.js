@@ -312,7 +312,7 @@ async function legacyPayoutIds(t, tz) {
   const dayDate = new Date(`${day}T00:00:00.000Z`);
   const rows = await mongoose.connection.db
     .collection('expenses')
-    .find({ date: { $gte: dayDate, $lt: new Date(dayDate.getTime() + 86400000) }, isDeleted: { $ne: true }, displayOnly: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true }, paymentMethod: { $ne: 'Bank Transfer' } }) // bank-paid: not from the counter cash
+    .find({ date: { $gte: dayDate, $lt: new Date(dayDate.getTime() + 86400000) }, isDeleted: { $ne: true }, displayOnly: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true }, paymentMethod: { $nin: ['Bank Transfer', 'JazzCash'] } }) // bank / JazzCash: not from the counter cash
     .project({ createdAt: 1, branch: 1 })
     .toArray();
   if (!rows.length) return [];
@@ -349,7 +349,7 @@ async function sessionExpenses(session) {
         displayOnly: { $ne: true }, // shown on the list only (e.g. a trip cost, counted as the trip cost)
         source: { $ne: 'shop_use' },
         fromPersonal: { $ne: true },
-        paymentMethod: { $ne: 'Bank Transfer' }, // bank-paid: not from the counter cash
+        paymentMethod: { $nin: ['Bank Transfer', 'JazzCash'] }, // bank / JazzCash: not from the counter cash
         // Refund given back by JazzCash / card (services/refundExpenseLink.js): not from the till either.
         $nor: [{ posOrder: { $type: 'objectId' }, paymentMethod: { $ne: 'Cash' } }],
       })
