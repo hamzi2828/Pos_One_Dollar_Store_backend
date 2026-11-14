@@ -28,6 +28,14 @@ async function jazzcash(query = {}) {
   const rows = [];
   const inRange = (d) => d && new Date(d) >= start && new Date(d) <= end;
 
+  // The JazzCash wallet as a bank account (Finance → Banks, e.g. "Just cash 03406372828"):
+  // anything paid by bank FROM it is JazzCash money too.
+  const banks = await db.collection('banks').find({ isDeleted: { $ne: true } }).project({ name: 1, accountTitle: 1, accountNumber: 1 }).toArray();
+  const walletIds = banks
+    .filter((b) => /jazz\s*cash|just\s*cash/i.test(`${b.name || ''} ${b.accountTitle || ''}`) || /^03\d{9}$/.test(String(b.accountNumber || '').replace(/\D/g, '')))
+    .map((b) => b._id);
+  const fromWallet = (id) => !!id && walletIds.some((w) => String(w) === String(id));
+
   // ---- POS: money received by JazzCash ----
   const orders = await db
     .collection('posorders')
@@ -71,9 +79,13 @@ async function jazzcash(query = {}) {
       isDeleted: { $ne: true },
       displayOnly: { $ne: true },
       date: { $gte: new Date(`${from}T00:00:00.000Z`), $lte: new Date(`${to}T00:00:00.000Z`) },
-      $or: [{ paymentMethod: 'JazzCash' }, { posOrder: { $type: 'objectId' }, paymentMethod: 'Other', notes: /\(JazzCash\)/ }],
+      $or: [
+        { paymentMethod: 'JazzCash' },
+        { posOrder: { $type: 'objectId' }, paymentMethod: 'Other', notes: /\(JazzCash\)/ },
+        ...(walletIds.length ? [{ bank: { $in: walletIds } }] : []), // paid by bank from the JazzCash wallet account
+      ],
     })
-    .project({ title: 1, amount: 1, posOrderNumber: 1, posOrder: 1, category: 1, date: 1, createdAt: 1 })
+    .project({ title: 1, amount: 1, posOrderNumber: 1, posOrder: 1, category: 1, date: 1, createdAt: 1, bankName: 1 })
     .toArray();
   for (const e of jazzExpenses) {
     const refund = !!e.posOrder;
@@ -81,7 +93,7 @@ async function jazzcash(query = {}) {
       date: e.createdAt || e.date,
       kind: refund ? 'part_refund' : 'expense',
       ref: refund ? e.posOrderNumber || '' : e.category || '',
-      label: refund ? 'Part refund' : `Expense · ${e.title || ''}`,
+      label: refund ? 'Part refund' : `Expense · ${e.title || ''}${e.bankName ? ` (${e.bankName})` : ''}`,
       in: 0,
       out: round2(e.amount),
     });
@@ -90,7 +102,7 @@ async function jazzcash(query = {}) {
   // ---- vendor payments by JazzCash ----
   const vpays = await db
     .collection('vendorpayments')
-    .find({ status: 'active', method: 'jazzcash', date: { $gte: start, $lte: end } })
+    .find({ status: 'active', date: { $gte: start, $lte: end }, $or: [{ method: 'jazzcash' }, ...(walletIds.length ? [{ bank: { $in: walletIds } }] : [])] })
     .project({ paymentNo: 1, vendorName: 1, amount: 1, date: 1, reference: 1 })
     .toArray();
   for (const v of vpays) {
@@ -100,13 +112,13 @@ async function jazzcash(query = {}) {
   // ---- trip costs paid by JazzCash ----
   const pos = await db
     .collection('purchaseorders')
-    .find({ status: { $ne: 'cancelled' }, charges: { $elemMatch: { method: 'jazzcash' } } })
+    .find({ status: { $ne: 'cancelled' }, $or: [{ charges: { $elemMatch: { method: 'jazzcash' } } }, ...(walletIds.length ? [{ 'charges.bank': { $in: walletIds } }] : [])] })
     .project({ poNumber: 1, charges: 1 })
     .toArray();
   for (const po of pos) {
     for (const c of po.charges || []) {
       const at = c.date || c.createdAt;
-      if (c.method !== 'jazzcash' || !inRange(at)) continue;
+      if ((c.method !== 'jazzcash' && !fromWallet(c.bank)) || !inRange(at)) continue;
       rows.push({ date: at, kind: 'trip_cost', ref: po.poNumber || '', label: `Trip cost · ${String(c.type || 'other').replace(/_/g, ' ')}${c.note ? ` · ${c.note}` : ''}`, in: 0, out: round2(c.amount) });
     }
   }
