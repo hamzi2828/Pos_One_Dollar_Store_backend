@@ -673,6 +673,16 @@ const posController = {
 
       // Enrich customerInfo with customerType/source if missing. Costs only for dashboard viewers.
       const ordersData = orders.map((o) => orderForViewer(o, req.access));
+      // Part refunds (Refund expenses on the bill): the list shows "Partly refunded" and the amount after it.
+      try {
+        const done = await require('../services/refundExpenseLink').refundedByExpenses(ordersData.map((o) => o._id));
+        ordersData.forEach((o) => {
+          const r = done.get(String(o._id)) || 0;
+          if (r > 0) o.refundedAmount = r;
+        });
+      } catch (err) {
+        console.error('[pos] part refunds for list failed:', err.message);
+      }
       const phonesToLookup = ordersData
         .filter((o) => o.customerInfo?.phone && (!o.customerInfo.customerType || !o.customerInfo.source))
         .map((o) => o.customerInfo.phone);
