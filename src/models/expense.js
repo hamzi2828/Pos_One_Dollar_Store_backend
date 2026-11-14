@@ -111,9 +111,11 @@ const expenseSchema = new mongoose.Schema({
     fromPersonal: { type: Boolean, default: false },
     loan: { type: mongoose.Schema.Types.ObjectId, ref: 'Loan', default: null, index: true },
     loanNo: { type: String, default: '' },
-    // Shown on the Expenses page only: no till, spending or funds report counts it
-    // (e.g. a trip cost, which already comes off the till and goes into the goods cost).
-    displayOnly: { type: Boolean, default: false },
+    // Shown on the Expenses list only (owner 2026-11-14), e.g. a trip cost paid from a
+    // till: the trip cost already takes the money off the till and into the goods' cost,
+    // so no till, total or report counts this row. Hidden from every read unless the
+    // query names displayOnly (see the hooks below).
+    displayOnly: { type: Boolean, default: false, index: true },
     isDeleted: { type: Boolean, default: false, index: true },
     deletedAt: { type: Date, default: null },
     deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
@@ -129,6 +131,21 @@ expenseSchema.index(
     { title: 'text', category: 'text', reference: 'text', notes: 'text' },
     { name: 'expense_text_idx', weights: { title: 5, category: 3, reference: 2, notes: 1 } }
 );
+
+// Display-only rows (see displayOnly) never reach totals: every find / count / aggregate
+// leaves them out unless the query itself says something about displayOnly.
+function hideDisplayOnly() {
+    const q = this.getQuery();
+    if (!Object.prototype.hasOwnProperty.call(q, 'displayOnly')) this.where({ displayOnly: { $ne: true } });
+}
+expenseSchema.pre(['find', 'findOne', 'countDocuments', 'count', 'findOneAndUpdate', 'updateOne', 'updateMany'], hideDisplayOnly);
+expenseSchema.pre('aggregate', function hideDisplayOnlyAgg() {
+    const first = this.pipeline()[0];
+    const named = first && first.$match && Object.prototype.hasOwnProperty.call(first.$match, 'displayOnly');
+    if (!named) this.pipeline().unshift({ $match: { displayOnly: { $ne: true } } });
+});
+/** Query value that includes display-only rows too (e.g. the Expenses list). */
+expenseSchema.statics.ALL_ROWS = { $in: [true, false, null] };
 
 // Receipts list for any expense (doc or lean): old records give their single
 // `receipt` as the only item.
