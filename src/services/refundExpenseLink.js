@@ -190,7 +190,7 @@ async function createPartialRefund({ orderId, amount, reason = '', method = 'cas
   }
   const tz = await tillService.getTimeZone();
   const tillFor = session || counterTill;
-  const dayKey = tillService.zonedParts(tillFor ? tillFor.openedAt : new Date(), tz).dayKey;
+  const dayKey = tillFor ? tillService.tillExpenseDayKey(tillFor.openedAt, new Date(), tz) : tillService.zonedParts(new Date(), tz).dayKey;
   await ensureCategory();
   const cleanReason = String(reason || '').trim().slice(0, 300);
   const u = user || {};

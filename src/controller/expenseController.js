@@ -47,13 +47,13 @@ const tillScopeView = (scope) =>
 // The cashier may only touch an expense of their open till.
 const inScope = (scope, expense) =>
     scope.full || (!!scope.session && !!expense && !!expense.cashSession && String(expense.cashSession) === String(scope.session._id));
-// Owner 2026-11-14: an expense added while a till is open is dated the day that
-// till OPENED (opened 11:00, expense at 00:30 next day -> still the opening day).
-// Same form as a date picked on the page: 'YYYY-MM-DD' at 00:00 UTC.
+// Owner 2026-11-14: an expense added while a till is open counts on that till's day
+// (tillService.tillExpenseDayKey: today; before 06:00 the day the till started; a till
+// opened at 22:00+ is the next day's). Same form as a date picked on the page.
 async function tillDayOf(session) {
     const tillService = require('../services/tillService');
     const tz = await tillService.getTimeZone();
-    return new Date(`${tillService.zonedParts(session.openedAt, tz).dayKey}T00:00:00.000Z`);
+    return new Date(`${tillService.tillExpenseDayKey(session.openedAt, new Date(), tz)}T00:00:00.000Z`);
 }
 // Admin adding cash paid from a counter whose till is open: the date left as
 // today (or empty) becomes that till's opening day. Any other date is kept.

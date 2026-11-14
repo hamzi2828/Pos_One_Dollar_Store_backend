@@ -1328,7 +1328,24 @@ async function maybeCheckCutoffs() {
   }
 }
 
+/**
+ * Day an expense of an OPEN till counts on (owner 2026-11-14), 'YYYY-MM-DD':
+ *   - a till opened late at night (22:00 or later) is the NEXT day's till;
+ *   - entered before 06:00 while the till started on an earlier day -> that day
+ *     (opened 11:00, expense at 00:30 -> the opening day);
+ *   - otherwise today.
+ */
+const LATE_OPEN_MIN = 22 * 60;
+const NIGHT_UNTIL_MIN = 6 * 60;
+function tillExpenseDayKey(openedAt, now = new Date(), tz = DEFAULT_TZ) {
+  const o = zonedParts(openedAt, tz);
+  const openDay = o.minutes >= LATE_OPEN_MIN ? new Date(Date.parse(`${o.dayKey}T00:00:00Z`) + 86400000).toISOString().slice(0, 10) : o.dayKey;
+  const n = zonedParts(now, tz);
+  return n.minutes < NIGHT_UNTIL_MIN && openDay < n.dayKey ? openDay : n.dayKey;
+}
+
 module.exports = {
+  tillExpenseDayKey,
   resolveSaleSession,
   findSessionAt,
   attachOrder,
