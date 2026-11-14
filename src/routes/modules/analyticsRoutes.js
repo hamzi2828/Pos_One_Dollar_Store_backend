@@ -36,7 +36,7 @@ router.get('/analytics/expenses', ...staff, can('report_expenses', 'view'), hand
 router.get(
   '/analytics/funds',
   ...staff,
-  can('report_expenses', 'view'),
+  can(['report_cash_in_hand', 'report_expenses'], 'view'), // Cash in Hand report (was Spending)
   handle(async (req, res) => {
     res.json({ success: true, data: await require('../../services/reports/fundsReport').funds() });
   })
@@ -53,7 +53,7 @@ router.post(
 router.get(
   '/analytics/spending',
   ...staff,
-  can('report_expenses', 'view'),
+  can(['report_cash_in_hand', 'report_expenses'], 'view'), // Cash in Hand report (was Spending)
   handle(async (req, res) => {
     const data = await require('../../services/reports/spendingReport').spending(req.query || {});
     res.json({ success: true, data });
