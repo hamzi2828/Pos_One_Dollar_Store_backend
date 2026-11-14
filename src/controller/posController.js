@@ -27,6 +27,7 @@ const {
   PAYMENT_METHODS,
   PROOF_METHODS,
   paymentPlan,
+  normalizeSplits,
   pricingInput,
   orderMovement,
   loadOrderForResponse,
@@ -1311,24 +1312,47 @@ const posController = {
   // A closed (not yet verified) till is worked out again.
   changePaymentMethod: async (req, res) => {
     try {
-      const METHODS = ['cash', 'card', 'bank_transfer', 'jazzcash'];
-      const method = String((req.body || {}).method || '').trim();
+      // Owner 2026-11-14: 'split' too = any mix of cash / card / bank (UBL) / JazzCash,
+      // body.splits [{ method, amount }] adding up to what was paid.
+      const METHODS = ['cash', 'card', 'bank_transfer', 'jazzcash', 'split'];
+      let method = String((req.body || {}).method || '').trim();
       const reason = String((req.body || {}).reason || '').trim().slice(0, 200);
-      if (!METHODS.includes(method)) return res.status(400).json({ success: false, message: 'Choose cash, card, bank transfer or JazzCash' });
+      if (!METHODS.includes(method)) return res.status(400).json({ success: false, message: 'Choose cash, card, bank transfer, JazzCash or split' });
       if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) return res.status(404).json({ success: false, message: 'Order not found' });
       const order = await POSOrder.findOne({ _id: req.params.id, isDeleted: { $ne: true } });
       if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
       if (['refunded', 'cancelled'].includes(order.orderStatus) || order.paymentStatus === 'refunded') {
         return res.status(400).json({ success: false, message: 'This bill is refunded / cancelled' });
       }
-      const pays = order.paymentHistory || [];
-      const used = new Set(pays.filter((p) => Number(p.amount) > 0).map((p) => p.paymentMethod));
-      if (order.paymentMethod) used.add(order.paymentMethod);
-      if (used.size > 1 || used.has('split')) {
-        return res.status(400).json({ success: false, message: 'This bill was paid in parts; change it from the invoice' });
+      const pays = (order.paymentHistory || []).filter((p) => Number(p.amount) > 0);
+      // Only money taken AT THE SALE can be re-labelled here (later instalments: from the invoice).
+      const created = new Date(order.createdAt).getTime();
+      const atSale = pays.every((p) => Math.abs(new Date(p.paidAt).getTime() - created) <= 10 * 60 * 1000);
+      if (!atSale) {
+        return res.status(400).json({ success: false, message: 'This bill was paid in parts later; change it from the invoice' });
       }
-      const old = order.paymentMethod || [...used][0] || 'cash';
-      if (old === method) return res.status(400).json({ success: false, message: 'The bill is already paid this way' });
+      const paid = Math.round(pays.reduce((t, p) => t + (Number(p.amount) || 0), 0) * 100) / 100;
+
+      // Parts: one per method. A split with one part is just that method.
+      let parts;
+      if (method === 'split') {
+        try {
+          parts = normalizeSplits((req.body || {}).splits) || [];
+        } catch (err) {
+          return res.status(err.status || 400).json({ success: false, message: err.message });
+        }
+        const sum = Math.round(parts.reduce((t, x) => t + x.amount, 0) * 100) / 100;
+        if (!parts.length || Math.abs(sum - paid) > 0.009) {
+          return res.status(400).json({ success: false, message: `The parts must add up to what was paid on the bill (Rs ${paid}); now Rs ${sum}.` });
+        }
+        if (parts.length === 1) method = parts[0].method;
+      }
+      if (method !== 'split') parts = paid > 0 ? [{ method, amount: paid }] : [];
+
+      const old = order.paymentMethod || (pays[0] && pays[0].paymentMethod) || 'cash';
+      const oldParts = pays.map((p) => `${p.paymentMethod} ${p.amount}`).join(' + ');
+      const newParts = parts.map((x) => `${x.method} ${x.amount}`).join(' + ');
+      if (oldParts === newParts && old === method) return res.status(400).json({ success: false, message: 'The bill is already paid this way' });
 
       const CashSession = require('../models/cashSession');
       const session = order.cashSession ? await CashSession.findById(order.cashSession).lean() : null;
@@ -1336,22 +1360,34 @@ const posController = {
         return res.status(409).json({ success: false, message: 'The till of this bill is already verified, so the bill cannot change.' });
       }
 
+      // Same time / person / note as the payment at the sale, one entry per part.
+      const first = pays[0] || { paidAt: order.createdAt, receivedBy: order.cashier, note: '', paymentStatus: 'full' };
+      const keep = (order.paymentHistory || []).filter((p) => !(Number(p.amount) > 0));
+      order.paymentHistory = [
+        ...keep,
+        ...parts.map((x) => ({
+          amount: x.amount,
+          paymentMethod: x.method,
+          paidAt: first.paidAt,
+          receivedBy: first.receivedBy,
+          note: first.note,
+          paymentStatus: first.paymentStatus,
+          bankTransferScreenshot: first.bankTransferScreenshot,
+        })),
+      ];
       order.paymentMethod = method;
-      pays.forEach((p) => {
-        p.paymentMethod = method;
-      });
-      const paid = Math.round(Number(order.paidAmount || 0) * 100) / 100;
-      order.cashAmount = method === 'cash' ? paid : 0;
-      order.cardAmount = method === 'card' ? paid : 0;
+      const partOf = (m) => (parts.find((x) => x.method === m) || {}).amount || 0;
+      order.cashAmount = partOf('cash');
+      order.cardAmount = partOf('card');
       order.changeGiven = 0;
       const by = (req.user && (req.user.firstName || req.user.email)) || 'admin';
-      order.notes = `${order.notes ? `${order.notes}\n` : ''}Payment changed ${old} -> ${method} by ${by}${reason ? `: ${reason}` : ''}`;
+      order.notes = `${order.notes ? `${order.notes}\n` : ''}Payment changed ${oldParts || old} -> ${newParts || method} by ${by}${reason ? `: ${reason}` : ''}`;
       order.markModified('paymentHistory');
       await order.save();
 
       // Closed till: its cash / card / bank / JazzCash figures follow the bill.
       if (session && session.status === 'closed') {
-        await tillService.refreshClosedSales(session._id, { by: userIdOf(req), note: `${order.orderNumber}: payment ${old} -> ${method}` });
+        await tillService.refreshClosedSales(session._id, { by: userIdOf(req), note: `${order.orderNumber}: payment ${oldParts || old} -> ${newParts || method}` });
       }
 
       const populatedOrder = await loadOrderForResponse(order._id);
