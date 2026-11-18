@@ -26,7 +26,7 @@ const MAX_PER_HOUR = 5;
 const TOKEN_LIFE = '7d';
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PORTAL_STATUS = 'active';
-const DEFAULT_SITE = 'https://pos-one-dollar-store-frontend.vercel.app';
+const DEFAULT_SITE = 'https://pos.dollarandco.org';
 
 function secret() {
   const s = process.env.JWT_SECRET;
