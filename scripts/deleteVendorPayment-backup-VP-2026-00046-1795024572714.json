@@ -1,0 +1,65 @@
+{
+  "payment": {
+    "_id": "6af45ac3e353d2153f9c31b4",
+    "paymentNo": "VP-2026-00046",
+    "vendor": "6ae496bcd14bd523b09bc1af",
+    "vendorName": "ASIF TRADING CORPORATION",
+    "branch": "6ad50372e12dddc6f6d7cf76",
+    "amount": 1,
+    "method": "bank",
+    "bank": "6adf171faef50e35ed937b8c",
+    "counter": null,
+    "counterName": "",
+    "reference": "",
+    "date": "2026-11-11T12:08:35.672Z",
+    "attachments": [],
+    "notes": "",
+    "settlement": null,
+    "ledgerEntry": "6af45ac3e353d2153f9c31b8",
+    "status": "active",
+    "voidedAt": null,
+    "voidedBy": null,
+    "voidReason": "",
+    "createdBy": "6ad503685cb25e75150575f1",
+    "history": [
+      {
+        "at": "2026-11-11T12:08:35.677Z",
+        "by": "6ad503685cb25e75150575f1",
+        "action": "created",
+        "note": "Bank transfer Rs 1"
+      }
+    ],
+    "createdAt": "2026-11-11T12:08:35.678Z",
+    "updatedAt": "2026-11-11T12:08:35.694Z",
+    "__v": 0
+  },
+  "ledgerRows": [
+    {
+      "_id": "6af45ac3e353d2153f9c31b8",
+      "vendor": "6ae496bcd14bd523b09bc1af",
+      "vendorName": "ASIF TRADING CORPORATION",
+      "branch": "6ad50372e12dddc6f6d7cf76",
+      "date": "2026-11-11T12:08:35.672Z",
+      "type": "payment",
+      "credit": 0,
+      "debit": 1,
+      "method": "bank",
+      "bank": "6adf171faef50e35ed937b8c",
+      "reference": "",
+      "attachments": [],
+      "refType": "VendorPayment",
+      "refId": "6af45ac3e353d2153f9c31b4",
+      "refNo": "VP-2026-00046",
+      "description": "Bank transfer payment from UBL",
+      "createdBy": "6ad503685cb25e75150575f1",
+      "isVoided": false,
+      "voidedAt": null,
+      "voidedBy": null,
+      "voidReason": "",
+      "createdAt": "2026-11-11T12:08:35.689Z",
+      "updatedAt": "2026-11-11T12:08:35.689Z",
+      "__v": 0
+    }
+  ],
+  "bankLines": []
+}

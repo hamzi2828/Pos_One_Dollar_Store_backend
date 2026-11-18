@@ -182,6 +182,152 @@ async function saveBatch(req, cartId) {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* Path: the steps of one bill from start to end, across hold / retrieve */
+/* ------------------------------------------------------------------ */
+
+// Only what the path needs from each event.
+const PATH_EVENTS = {
+  $map: {
+    input: { $ifNull: ['$events', []] },
+    as: 'e',
+    in: { type: '$$e.type', at: '$$e.at', label: '$$e.label', heldId: '$$e.data.heldId' },
+  },
+};
+const SEGMENT_FIELDS = { cartId: 1, user: 1, userName: 1, counterName: 1, status: 1, orderNumber: 1, order: 1, lastAt: 1, ev: PATH_EVENTS };
+const ITEM_TYPES = new Set(['scan', 'add', 'qty', 'scan_not_found']);
+const MAX_LINKS = 6;
+const LINK_WINDOW_MS = 7 * 86400000; // a held order is brought back within a week
+
+/** One cart's events as short steps: Scanned 5 > Held, or Retrieved > Added 2 > Paid card > Completed. */
+function cartSteps(seg) {
+  const ev = seg.ev || [];
+  const steps = [];
+  const retrieved = ev.length && ev[0].type === 'retrieve';
+  const push = (s) => steps.push({ cartId: seg.cartId, ...s });
+  let i = 0;
+  while (i < ev.length) {
+    const e = ev[i];
+    if (ITEM_TYPES.has(e.type)) {
+      let adds = 0;
+      let qty = 0;
+      const at = e.at;
+      while (i < ev.length && ITEM_TYPES.has(ev[i].type)) {
+        if (ev[i].type === 'add') adds += 1;
+        if (ev[i].type === 'qty') qty += 1;
+        i += 1;
+      }
+      if (adds) push({ kind: 'items', label: `${retrieved ? 'Added' : 'Scanned'} ${adds} item${adds === 1 ? '' : 's'}`, at });
+      else if (qty) push({ kind: 'items', label: 'Changed quantity', at });
+      continue;
+    }
+    if (e.type === 'remove') {
+      let n = 0;
+      const at = e.at;
+      while (i < ev.length && ev[i].type === 'remove') {
+        n += 1;
+        i += 1;
+      }
+      push({ kind: 'remove', label: `Removed ${n} item${n === 1 ? '' : 's'}`, at });
+      continue;
+    }
+    if (e.type === 'pay_open' || e.type === 'pay_submit' || e.type === 'pay_close') {
+      let submit = null;
+      let closed = false;
+      const at = e.at;
+      while (i < ev.length && ['pay_open', 'pay_submit', 'pay_close'].includes(ev[i].type)) {
+        if (ev[i].type === 'pay_submit') submit = ev[i];
+        if (ev[i].type === 'pay_close') closed = true;
+        i += 1;
+      }
+      if (submit) push({ kind: 'pay', label: String(submit.label || 'Paid').replace(/^Pay pressed:\s*/i, 'Paid '), at: submit.at });
+      else if (closed) push({ kind: 'pay_cancel', label: 'Payment closed (not paid)', at });
+      continue;
+    }
+    if (e.type === 'retrieve') push({ kind: 'retrieve', label: 'Retrieved', at: e.at, by: seg.userName, counter: seg.counterName });
+    else if (e.type === 'hold') push({ kind: 'hold', label: 'Held', at: e.at, by: seg.userName, counter: seg.counterName });
+    else if (e.type === 'discount') push({ kind: 'discount', label: e.label || 'Discount', at: e.at });
+    else if (e.type === 'completed')
+      push({ kind: 'completed', label: 'Completed', at: e.at, orderNumber: seg.orderNumber || '', orderId: seg.order ? String(seg.order) : '' });
+    else if (e.type === 'offline_saved') push({ kind: 'completed', label: 'Saved offline', at: e.at });
+    else if (e.type === 'failed') push({ kind: 'failed', label: 'Failed', at: e.at });
+    else if (e.type === 'clear') push({ kind: 'cleared', label: 'Cleared', at: e.at });
+    i += 1;
+  }
+  if (!steps.length || seg.status === 'open') {
+    const last = steps[steps.length - 1];
+    if (!last || !['completed', 'hold', 'cleared', 'failed'].includes(last.kind)) push({ kind: 'open', label: 'Not finished', at: seg.lastAt });
+  }
+  if (!retrieved) steps.unshift({ cartId: seg.cartId, kind: 'start', label: 'Started', at: ev[0] ? ev[0].at : seg.lastAt, by: seg.userName, counter: seg.counterName });
+  return steps;
+}
+
+const segmentOf = async (match) => (await PosActivity.aggregate([{ $match: match }, { $sort: { lastAt: 1 } }, { $limit: 1 }, { $project: SEGMENT_FIELDS }]))[0] || null;
+
+/** The cart that held this held order (by its id, else same cashier at the same time). */
+async function holderOf(heldId, before) {
+  const HeldOrder = require('../models/heldOrder');
+  const b = new Date(before).getTime();
+  const exact = await segmentOf({ lastAt: { $gte: new Date(b - LINK_WINDOW_MS), $lte: new Date(b) }, 'events.data.heldId': String(heldId), 'events.type': 'hold' });
+  if (exact) return exact;
+  const h = await HeldOrder.findById(heldId).select('heldBy createdAt').lean();
+  if (!h || !h.heldBy) return null;
+  const at = new Date(h.createdAt).getTime();
+  const list = await PosActivity.aggregate([
+    { $match: { user: h.heldBy, status: 'held', lastAt: { $gte: new Date(at - 2 * 60000), $lte: new Date(at + 60000) } } },
+    { $project: SEGMENT_FIELDS },
+  ]);
+  const holdAt = (s) => {
+    const e = [...(s.ev || [])].reverse().find((x) => x.type === 'hold');
+    return e ? Math.abs(new Date(e.at).getTime() - at) : Infinity;
+  };
+  return list.sort((a, b) => holdAt(a) - holdAt(b))[0] || null;
+}
+
+/** The held order a hold cart created (saved id, else same cashier just after the hold). */
+async function heldIdOf(seg) {
+  const hold = [...(seg.ev || [])].reverse().find((x) => x.type === 'hold');
+  if (!hold) return null;
+  if (hold.heldId) return String(hold.heldId);
+  if (!seg.user) return null;
+  const HeldOrder = require('../models/heldOrder');
+  const at = new Date(hold.at).getTime();
+  const h = await HeldOrder.find({ heldBy: seg.user, createdAt: { $gte: new Date(at - 60000), $lte: new Date(at + 2 * 60000) } })
+    .select('_id createdAt')
+    .lean();
+  h.sort((a, b) => Math.abs(new Date(a.createdAt) - at) - Math.abs(new Date(b.createdAt) - at));
+  return h[0] ? String(h[0]._id) : null;
+}
+
+/** Full path of the bill this cart is part of: earlier carts (held) + this one + later carts (retrieved). */
+async function pathOf(row) {
+  const seg = (await PosActivity.aggregate([{ $match: { cartId: row.cartId } }, { $project: SEGMENT_FIELDS }]))[0];
+  if (!seg) return [];
+  const chain = [seg];
+  const seen = new Set([seg.cartId]);
+  // Back: this cart started from a held order -> the cart that held it.
+  for (let n = 0; n < MAX_LINKS; n++) {
+    const first = chain[0].ev && chain[0].ev[0];
+    if (!first || first.type !== 'retrieve' || !first.heldId) break;
+    const prev = await holderOf(first.heldId, first.at);
+    if (!prev || seen.has(prev.cartId)) break;
+    seen.add(prev.cartId);
+    chain.unshift(prev);
+  }
+  // Forward: this cart was held -> the cart that brought it back.
+  for (let n = 0; n < MAX_LINKS; n++) {
+    const last = chain[chain.length - 1];
+    if (last.status !== 'held') break;
+    const heldId = await heldIdOf(last);
+    if (!heldId) break;
+    const next = await segmentOf({ 'events.0.type': 'retrieve', 'events.0.data.heldId': heldId, lastAt: { $gte: new Date(last.lastAt), $lte: new Date(new Date(last.lastAt).getTime() + LINK_WINDOW_MS) } });
+    if (!next || seen.has(next.cartId)) break;
+    seen.add(next.cartId);
+    chain.push(next);
+  }
+  return chain.flatMap((s) => cartSteps(s).map((st) => ({ ...st, current: s.cartId === row.cartId })));
+}
+
 const LIST_FIELDS = {
   cartId: 1,
   userName: 1,
@@ -245,6 +391,17 @@ module.exports = {
         PosActivity.countDocuments(base),
         PosActivity.countDocuments({ ...base, status: 'completed' }),
       ]);
+
+      // Each row: its bill's path from start to end (never fails the list).
+      await Promise.all(
+        rows.map(async (r) => {
+          try {
+            r.path = await pathOf(r);
+          } catch (e) {
+            r.path = [];
+          }
+        })
+      );
 
       const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
       return res.json({
