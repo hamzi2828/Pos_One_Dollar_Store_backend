@@ -28,5 +28,5 @@ run('cloneDatabase.js', [], {
 });
 
 console.log('\n== 2/2 Copy Vercel Blob -> S3 and rewrite URLs');
-run('scripts/migrateBlobToS3.js', ['--copy', '--rewrite'], { TARGET_URI: MONGO_URI, TARGET_DB: DST_DB });
+run('scripts/migrateBlobToS3.js', ['--copy-refs', '--rewrite'], { TARGET_URI: MONGO_URI, TARGET_DB: DST_DB });
 console.log('\nDone.');

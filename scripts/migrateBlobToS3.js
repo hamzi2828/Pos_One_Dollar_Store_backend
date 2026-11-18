@@ -6,6 +6,7 @@
 //   TARGET_URI=mongodb://... TARGET_DB=pos_mirpur_dollar_shop node scripts/migrateBlobToS3.js [--copy] [--rewrite]
 //
 // --copy     list all blobs and copy any missing in S3 (re-runnable, skips existing)
+// --copy-refs  copy every Blob URL referenced in TARGET_DB from its public URL (no token needed)
 // --rewrite  replace https://<store>.public.blob.vercel-storage.com/<key> with S3_PUBLIC_URL/<key>
 //            in every string of every document of TARGET_DB. Never run against the live Vercel DB.
 // The Blob store is only read.
@@ -16,7 +17,7 @@ const { MongoClient } = require('mongodb');
 const args = new Set(process.argv.slice(2));
 const { BLOB_READ_WRITE_TOKEN, S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY, S3_SECRET_KEY, TARGET_URI, TARGET_DB } = process.env;
 const PUBLIC_URL = (process.env.S3_PUBLIC_URL || `${S3_ENDPOINT}/${S3_BUCKET}`).replace(/\/+$/, '');
-const BLOB_RE = /https:\/\/[a-z0-9]+\.public\.blob\.vercel-storage\.com\/([^\s"'<>)?#]+)(\?[^\s"'<>)#]*)?/gi;
+const BLOB_RE = /https:\/\/[a-z0-9]+\.public\.blob\.vercel-storage\.com\/([^\s"'<>)?#\\]+)(\?[^\s"'<>)#\\]*)?/gi;
 
 const s3 = new S3Client({
   endpoint: S3_ENDPOINT, region: process.env.S3_REGION || 'us-east-1', forcePathStyle: true,
@@ -58,6 +59,46 @@ async function copyAll() {
   } while (cursor);
   if (failed.length) console.log('FAILED:\n' + failed.join('\n'));
   return { total: n, copied, skipped, failed };
+}
+
+async function copyRefs() {
+  if (!TARGET_URI || !TARGET_DB) throw new Error('Set TARGET_URI and TARGET_DB');
+  try { await s3.send(new HeadBucketCommand({ Bucket: S3_BUCKET })); }
+  catch { await s3.send(new CreateBucketCommand({ Bucket: S3_BUCKET })); console.log(`Created bucket ${S3_BUCKET}`); }
+  const client = await MongoClient.connect(TARGET_URI);
+  const db = client.db(TARGET_DB);
+  const urls = new Map(); // key -> url
+  for (const { name } of await db.listCollections({ type: 'collection' }).toArray()) {
+    for await (const doc of db.collection(name).find({})) {
+      for (const m of JSON.stringify(doc).matchAll(BLOB_RE)) urls.set(decodeURIComponent(m[1]), m[0].split('?')[0]);
+    }
+  }
+  await client.close();
+  console.log(`${urls.size} distinct Blob files referenced`);
+  let copied = 0; let skipped = 0; const failed = [];
+  const jobs = [...urls].map(([Key, url]) => async () => {
+    if (await exists(Key)) { skipped++; return; }
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const body = Buffer.from(await res.arrayBuffer());
+        await s3.send(new PutObjectCommand({
+          Bucket: S3_BUCKET, Key, Body: body,
+          ContentType: res.headers.get('content-type') || 'application/octet-stream',
+          CacheControl: 'public, max-age=31536000, immutable',
+        }));
+        copied++; return;
+      } catch (e) { if (attempt === 3) failed.push(`${url}: ${e.message}`); }
+    }
+  });
+  for (let i = 0; i < jobs.length; i += 8) {
+    await Promise.all(jobs.slice(i, i + 8).map((j) => j()));
+    if (i % 200 === 0) console.log(`  ${Math.min(i + 8, jobs.length)}/${jobs.length}`);
+  }
+  console.log(`copied ${copied}, already there ${skipped}, failed ${failed.length}`);
+  if (failed.length) console.log('FAILED: ' + failed.join(' | '));
+  return { total: urls.size, copied, skipped, failed: failed.length };
 }
 
 const fixStr = (s, refs) => s.replace(BLOB_RE, (_m, path) => { refs.add(decodeURIComponent(path)); return `${PUBLIC_URL}/${path}`; });
@@ -104,6 +145,7 @@ async function rewrite() {
 
 (async () => {
   if (args.has('--copy')) console.log('Copy:', await copyAll());
+  if (args.has('--copy-refs')) console.log('Copy refs:', await copyRefs());
   if (args.has('--rewrite')) console.log('Rewrite:', await rewrite());
-  if (!args.has('--copy') && !args.has('--rewrite')) console.log('Pass --copy and/or --rewrite');
+  if (!args.has('--copy') && !args.has('--copy-refs') && !args.has('--rewrite')) console.log('Pass --copy and/or --rewrite');
 })().catch((e) => { console.error(e); process.exit(1); });
