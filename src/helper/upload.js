@@ -32,7 +32,7 @@ const MAX_FILE_MB = Number(process.env.UPLOAD_MAX_FILE_SIZE_MB || 5);
 const MAX_FILE_BYTES = Math.max(1, MAX_FILE_MB) * 1024 * 1024;
 
 // Check if Vercel Blob is configured
-const USE_BLOB_STORAGE = !!process.env.BLOB_READ_WRITE_TOKEN;
+const USE_BLOB_STORAGE = !!(process.env.S3_BUCKET || process.env.BLOB_READ_WRITE_TOKEN);
 
 // Use memory storage for Vercel Blob, disk storage for local
 const storage = USE_BLOB_STORAGE

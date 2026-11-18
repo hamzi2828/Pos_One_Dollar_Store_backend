@@ -8,7 +8,7 @@ const { invalidate } = require('../middleware/cache');
 
 const SETTINGS_CACHE_TAG = 'settings:public';
 
-const USE_BLOB_STORAGE = !!process.env.BLOB_READ_WRITE_TOKEN;
+const USE_BLOB_STORAGE = !!(process.env.S3_BUCKET || process.env.BLOB_READ_WRITE_TOKEN);
 const blobUpload = USE_BLOB_STORAGE ? require('../helper/blobUpload') : null;
 
 const IMAGE_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];

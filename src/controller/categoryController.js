@@ -4,7 +4,7 @@
 const Category = require('../models/category');
 const Product = require('../models/product');
 
-const USE_BLOB_STORAGE = !!process.env.BLOB_READ_WRITE_TOKEN;
+const USE_BLOB_STORAGE = !!(process.env.S3_BUCKET || process.env.BLOB_READ_WRITE_TOKEN);
 const blobUpload = USE_BLOB_STORAGE ? require('../helper/blobUpload') : null;
 
 const toBool = (v) => v === true || v === 'true';

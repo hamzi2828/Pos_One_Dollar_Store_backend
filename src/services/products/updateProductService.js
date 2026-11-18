@@ -5,7 +5,7 @@ const mongoose = require('mongoose');
 const Product = require('../../models/product');
 
 // Check if Vercel Blob is configured
-const USE_BLOB_STORAGE = !!process.env.BLOB_READ_WRITE_TOKEN;
+const USE_BLOB_STORAGE = !!(process.env.S3_BUCKET || process.env.BLOB_READ_WRITE_TOKEN);
 
 // Helper function to convert uploaded filename to public path (for local storage)
 const toPublicPath = (filename) => {

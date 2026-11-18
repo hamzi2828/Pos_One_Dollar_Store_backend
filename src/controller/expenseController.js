@@ -11,7 +11,7 @@ const { resolveWriteBranch } = require('../middleware/access');
 // Expenses of the shop (stamped with the shop's branch id).
 
 // Check if using Vercel Blob storage
-const USE_BLOB_STORAGE = !!process.env.BLOB_READ_WRITE_TOKEN;
+const USE_BLOB_STORAGE = !!(process.env.S3_BUCKET || process.env.BLOB_READ_WRITE_TOKEN);
 
 const EXPENSE_SORTABLE = ['date', 'createdAt', 'amount', 'title', 'category'];
 const EXPENSE_SEARCH_FIELDS = ['title', 'category', 'reference', 'notes'];
@@ -119,7 +119,7 @@ const saveFiles = async (files) => {
 };
 
 const dropBlob = async (url) => {
-    if (url && USE_BLOB_STORAGE && url.includes('blob')) {
+    if (url && USE_BLOB_STORAGE && /^https?:\/\//.test(url)) {
         try { await deleteFromBlob(url); } catch (e) { console.error('Could not delete receipt:', e.message); }
     }
 };

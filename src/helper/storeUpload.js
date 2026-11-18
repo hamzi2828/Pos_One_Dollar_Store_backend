@@ -12,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const { toPublicPath, UPLOADS_DIR } = require('./upload');
 
-const USE_BLOB_STORAGE = !!process.env.BLOB_READ_WRITE_TOKEN;
+const USE_BLOB_STORAGE = !!(process.env.S3_BUCKET || process.env.BLOB_READ_WRITE_TOKEN);
 
 const filesOf = (req, field) => {
   if (req.file && (!field || req.file.fieldname === field)) return [req.file];

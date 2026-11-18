@@ -1,5 +1,8 @@
 // src/helper/blobUpload.js
+// Remote file storage. S3 (SeaweedFS on Coolify) when S3_BUCKET is set,
+// otherwise Vercel Blob when BLOB_READ_WRITE_TOKEN is set.
 const { put, del } = require('@vercel/blob');
+const s3 = require('./s3Storage');
 
 // Allowed image mime types
 const ALLOWED_IMAGE_MIME_TYPES = new Set([
@@ -45,6 +48,8 @@ async function uploadToBlob(buffer, filename, mimetype, folder = 'uploads', opti
   const baseName = filename.replace(/\.[^/.]+$/, '').replace(/\s+/g, '-');
   const uniqueFilename = `${folder}/${timestamp}-${rand}-${baseName}.${ext}`;
 
+  if (s3.enabled) return s3.putObject(uniqueFilename, buffer, mimetype);
+
   // Upload to Vercel Blob
   const { url } = await put(uniqueFilename, buffer, {
     access: 'public',
@@ -78,6 +83,7 @@ async function deleteFromBlob(url) {
   if (!url) return;
 
   try {
+    if (s3.isOwnUrl(url)) return await s3.deleteObject(url);
     await del(url);
   } catch (error) {
     console.error('Failed to delete blob:', error);
@@ -123,7 +129,7 @@ async function deleteFile(url) {
   if (!url) return;
 
   // If it's a blob URL, use deleteFromBlob
-  if (url.includes('blob.vercel-storage.com')) {
+  if (url.includes('blob.vercel-storage.com') || s3.isOwnUrl(url)) {
     await deleteFromBlob(url);
   } else {
     // Local file - try to delete

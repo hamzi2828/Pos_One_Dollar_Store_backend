@@ -116,7 +116,8 @@ async function cloneDatabase() {
       results.push(await cloneCollection(sourceDb, targetDb, name));
     }
 
-    const mismatched = results.filter((r) => r.copied !== r.total);
+    // copied > total just means the live shop wrote new rows while we copied.
+    const mismatched = results.filter((r) => r.copied < r.total);
 
     console.log('\n========================================');
     console.log('Database clone completed');

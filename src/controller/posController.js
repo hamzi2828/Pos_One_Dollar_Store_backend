@@ -1663,25 +1663,18 @@ const posController = {
         return res.status(400).json({ success: false, message: 'No file uploaded' });
       }
       const { toPublicPath } = require('../helper/upload');
-      // Vercel Blob flow
-      if (process.env.BLOB_READ_WRITE_TOKEN) {
+      // Remote storage flow (S3 or Vercel Blob)
+      if (process.env.S3_BUCKET || process.env.BLOB_READ_WRITE_TOKEN) {
         try {
-          const { put } = require('@vercel/blob');
-          const extMatch = (req.file.originalname || '').match(/\.[a-z0-9]+$/i);
-          const ext = extMatch ? extMatch[0] : '';
-          const key = `pos/screenshots/${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
-          const blob = await put(key, req.file.buffer, {
-            access: 'public',
-            contentType: req.file.mimetype,
-            token: process.env.BLOB_READ_WRITE_TOKEN,
-          });
+          const { uploadToBlob } = require('../helper/blobUpload');
+          const url = await uploadToBlob(req.file.buffer, req.file.originalname || 'screenshot.jpg', req.file.mimetype, 'pos/screenshots', { allowPdf: true });
           return res.status(200).json({
             success: true,
-            data: { url: blob.url, originalFilename: req.file.originalname, uploadedAt: new Date().toISOString() },
+            data: { url, originalFilename: req.file.originalname, uploadedAt: new Date().toISOString() },
             message: 'Screenshot uploaded',
           });
         } catch (e) {
-          console.error('Blob upload failed:', e);
+          console.error('Remote upload failed:', e);
         }
       }
       // Local disk flow (default)
