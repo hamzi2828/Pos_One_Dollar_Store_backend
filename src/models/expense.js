@@ -107,6 +107,13 @@ const expenseSchema = new mongoose.Schema({
         ],
         default: [],
     },
+    // Category "Loan Repayment": pays back this loan (services/loanRepayExpenseLink.js).
+    // Not a shop cost: reports count it as a loan paid back, never as an expense.
+    loanRepayLoan: { type: mongoose.Schema.Types.ObjectId, ref: 'Loan', default: null, index: true },
+    // Category "Profit Distribution": the partner who took this money (services/partnerDrawExpenseLink.js).
+    partner: { type: mongoose.Schema.Types.ObjectId, ref: 'InvestmentPartner', default: null, index: true },
+    partnerName: { type: String, default: '' },
+    loanRepayNo: { type: String, default: '' },
     // Paid from someone's personal money (owner 2026-11-06): a loan is made for it
     // too (models/loan.js `expense`), so both sides match. Not taken from the till.
     fromPersonal: { type: Boolean, default: false },

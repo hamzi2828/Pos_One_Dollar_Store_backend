@@ -15,6 +15,8 @@ const repaymentSchema = new mongoose.Schema(
     by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     byName: { type: String, default: '' },
     at: { type: Date, default: Date.now },
+    // Paid by a "Loan Repayment" expense (cash from a till / bank): that expense.
+    expense: { type: mongoose.Schema.Types.ObjectId, ref: 'Expense', default: null },
   },
   { _id: true }
 );

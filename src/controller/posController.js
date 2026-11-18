@@ -80,6 +80,50 @@ const restoreOrderStockOnce = async (order, { userId = null, note = '' } = {}) =
   return { claimed: true, errors };
 };
 
+// ---- Bill edit log (owner 2026-11-18): every change after the sale, before -> after ----
+const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+/** The bill's money at this moment (saved as before / after in order.editLog). */
+const billSnapshot = (o, refunded = 0) => ({
+  paymentMethod: o.paymentMethod || '',
+  payments: (o.paymentHistory || [])
+    .filter((p) => Number(p.amount) > 0)
+    .map((p) => ({ method: p.paymentMethod, amount: r2(p.amount) })),
+  total: r2(o.total),
+  discount: r2(o.discount),
+  paidAmount: r2(o.paidAmount),
+  pendingAmount: r2(o.pendingAmount),
+  refunded: r2(refunded),
+  orderStatus: o.orderStatus || '',
+  paymentStatus: o.paymentStatus || '',
+  refundMethod: o.refundMethod || null,
+});
+
+/** One editLog entry for the person making the change. */
+const editEntry = (req, action, { before, after, summary = '', reason = '' }) => {
+  const u = req.user || {};
+  return {
+    at: new Date(),
+    by: (req.access && req.access.userId) || userIdOf(req),
+    byName: [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email || '',
+    byRole: (req.access && req.access.roleName) || '',
+    action,
+    summary: String(summary).slice(0, 300),
+    reason: String(reason || '').trim().slice(0, 300),
+    before,
+    after,
+  };
+};
+
+/** Part refunds already given on the bill (Refund expenses). */
+const partRefundedOn = async (orderId) => {
+  try {
+    return (await require('../services/refundExpenseLink').refundedByExpenses([orderId])).get(String(orderId)) || 0;
+  } catch (err) {
+    console.error('[pos] part refunds lookup failed:', err.message);
+    return 0;
+  }
+};
 
 const posController = {
   // GET /api/pos/products — published products with stock > 0 in the shop.
@@ -648,6 +692,11 @@ const posController = {
           { 'customerInfo.name': { $regex: esc, $options: 'i' } },
           { 'customerInfo.phone': { $regex: esc, $options: 'i' } },
         ];
+        // A number (e.g. "1,250" or "Rs 1250") also finds bills with that total (owner 2026-11-17).
+        const asAmount = Number(String(search).replace(/rs\.?|,|\s/gi, ''));
+        if (Number.isFinite(asAmount) && asAmount > 0 && /\d/.test(String(search))) {
+          query.$or.push({ total: { $gte: asAmount - 0.009, $lte: asAmount + 0.009 } });
+        }
       }
 
       // Pagination — default 25 per page, matches admin convention.
@@ -733,6 +782,57 @@ const posController = {
     } catch (error) {
       console.error('Get POS orders error:', error);
       return res.status(400).json({ success: false, message: 'Error fetching orders', error: error.message });
+    }
+  },
+
+  // GET /api/pos/orders/lookup?search=  (owner 2026-11-17)
+  // Cashier bill lookup: no full list, no totals. No search -> this cashier's last
+  // 5 bills. Search needs at least 4 characters and returns at most 5 bills.
+  lookupOrders: async (req, res) => {
+    try {
+      const LIMIT = 5;
+      const MIN = 4;
+      const search = String(req.query.search || '').trim();
+      const query = { isDeleted: { $ne: true } };
+      if (!search) {
+        query.cashier = req.access.userId;
+      } else {
+        if (search.replace(/\s/g, '').length < MIN) {
+          return res.status(400).json({ success: false, message: `Type at least ${MIN} characters to search` });
+        }
+        const esc = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        query.$or = [
+          { orderNumber: { $regex: esc, $options: 'i' } },
+          { 'offline.number': { $regex: esc, $options: 'i' } },
+          { 'customerInfo.name': { $regex: esc, $options: 'i' } },
+          { 'customerInfo.phone': { $regex: esc, $options: 'i' } },
+        ];
+        const asAmount = Number(search.replace(/rs\.?|,|\s/gi, ''));
+        if (Number.isFinite(asAmount) && asAmount > 0 && /\d/.test(search)) {
+          query.$or.push({ total: { $gte: asAmount - 0.009, $lte: asAmount + 0.009 } });
+        }
+      }
+      const orders = await POSOrder.find(query)
+        .populate('customer', 'firstName lastName email phone')
+        .populate('cashier', 'firstName lastName email')
+        .populate('counter', 'name code')
+        .populate('items.product', 'name thumbnailUrl bannerUrls price')
+        .sort({ createdAt: -1 })
+        .limit(LIMIT);
+      const data = orders.map((o) => orderForViewer(o, req.access));
+      try {
+        const done = await require('../services/refundExpenseLink').refundedByExpenses(data.map((o) => o._id));
+        data.forEach((o) => {
+          const r = done.get(String(o._id)) || 0;
+          if (r > 0) o.refundedAmount = r;
+        });
+      } catch (err) {
+        console.error('[pos] part refunds for lookup failed:', err.message);
+      }
+      return res.status(200).json({ success: true, data, mine: !search, limit: LIMIT, minChars: MIN });
+    } catch (error) {
+      console.error('Lookup POS orders error:', error);
+      return res.status(400).json({ success: false, message: 'Error searching bills', error: error.message });
     }
   },
 
@@ -1256,6 +1356,8 @@ const posController = {
       }
 
       const userId = userIdOf(req);
+      const refundedBefore = await partRefundedOn(order._id);
+      const before = billSnapshot(order, refundedBefore);
       order.discount = Math.round((Number(order.discount || 0) + amt) * 100) / 100;
       if (!order.discountType) order.discountType = 'fixed';
       if (reason) order.discountReason = order.discountReason ? `${order.discountReason} · ${reason}` : reason;
@@ -1277,6 +1379,14 @@ const posController = {
       const by = (req.user && (req.user.firstName || req.user.email)) || 'admin';
       order.notes = `${order.notes ? `${order.notes}\n` : ''}Discount Rs ${amt} after sale by ${by}${reason ? `: ${reason}` : ''}`;
       order.markModified('paymentHistory');
+      order.editLog.push(
+        editEntry(req, 'discount', {
+          before,
+          after: billSnapshot(order, refundedBefore),
+          summary: `Discount Rs ${amt} after sale${back > 0 ? ` (Rs ${back} given back, ${method})` : ''}`,
+          reason,
+        })
+      );
       await order.save();
 
       // Closed till: its saved figures change with the bill.
@@ -1360,6 +1470,8 @@ const posController = {
         return res.status(409).json({ success: false, message: 'The till of this bill is already verified, so the bill cannot change.' });
       }
 
+      const refundedBefore = await partRefundedOn(order._id);
+      const before = billSnapshot(order, refundedBefore);
       // Same time / person / note as the payment at the sale, one entry per part.
       const first = pays[0] || { paidAt: order.createdAt, receivedBy: order.cashier, note: '', paymentStatus: 'full' };
       const keep = (order.paymentHistory || []).filter((p) => !(Number(p.amount) > 0));
@@ -1383,6 +1495,14 @@ const posController = {
       const by = (req.user && (req.user.firstName || req.user.email)) || 'admin';
       order.notes = `${order.notes ? `${order.notes}\n` : ''}Payment changed ${oldParts || old} -> ${newParts || method} by ${by}${reason ? `: ${reason}` : ''}`;
       order.markModified('paymentHistory');
+      order.editLog.push(
+        editEntry(req, 'payment_method', {
+          before,
+          after: billSnapshot(order, refundedBefore),
+          summary: `Payment ${oldParts || old} -> ${newParts || method}`,
+          reason,
+        })
+      );
       await order.save();
 
       // Closed till: its cash / card / bank / JazzCash figures follow the bill.
@@ -1429,6 +1549,7 @@ const posController = {
       }
 
       const cleanReason = reason ? String(reason).trim().slice(0, 300) : '';
+      const before = billSnapshot(order, 0);
       const stock = await restoreOrderStockOnce(order, { userId, note: cleanReason ? `Refund: ${cleanReason}` : 'Refund' });
 
       order.orderStatus = 'refunded';
@@ -1441,6 +1562,15 @@ const posController = {
       if (cleanReason) {
         order.notes = order.notes ? `${order.notes}\nRefund reason: ${cleanReason}` : `Refund reason: ${cleanReason}`;
       }
+      const given = r2(Number(before.paidAmount) > 0 ? before.paidAmount : before.total - before.pendingAmount);
+      order.editLog.push(
+        editEntry(req, 'refund', {
+          before,
+          after: { ...billSnapshot(order, given), stockBack: !!stock.claimed },
+          summary: `Full refund Rs ${given}${refundMethod ? ` (${refundMethod})` : ''}, stock back`,
+          reason: cleanReason,
+        })
+      );
       await order.save();
 
       const populatedOrder = await loadOrderForResponse(order._id);
@@ -1474,6 +1604,10 @@ const posController = {
     try {
       const { amount, reason, refundMethod } = req.body || {};
       const { resolveWriteBranch } = require('../middleware/access');
+      const beforeDoc = mongoose.Types.ObjectId.isValid(String(req.params.id))
+        ? await POSOrder.findOne({ _id: req.params.id, isDeleted: { $ne: true } }).lean()
+        : null;
+      const refundedBefore = beforeDoc ? await partRefundedOn(beforeDoc._id) : 0;
       const { expense, bill } = await require('../services/refundExpenseLink').createPartialRefund({
         orderId: req.params.id,
         amount: Number(amount),
@@ -1483,6 +1617,19 @@ const posController = {
         user: req.user,
         branch: await resolveWriteBranch(req),
       });
+      if (beforeDoc) {
+        // The bill itself is not saved here (only its note changed), so the log goes in with $push.
+        const entry = editEntry(req, 'partial_refund', {
+          before: billSnapshot(beforeDoc, refundedBefore),
+          after: { ...billSnapshot(beforeDoc, bill.refunded), refundMethod: refundMethod || 'cash' },
+          summary: `Part refund Rs ${expense.amount} (${refundMethod || 'cash'}), stock stays`,
+          reason,
+        });
+        entry.after.expense = String(expense._id);
+        await POSOrder.updateOne({ _id: beforeDoc._id }, { $push: { editLog: entry } }).catch((err) =>
+          console.error('[pos] part refund edit log failed:', err.message)
+        );
+      }
       return res.status(201).json({
         success: true,
         data: { expense, bill },
@@ -1492,6 +1639,20 @@ const posController = {
       if (error.status) return res.status(error.status).json({ success: false, message: error.message });
       console.error('Partial refund error:', error);
       return res.status(500).json({ success: false, message: 'Could not save the part refund' });
+    }
+  },
+
+  // GET /api/pos/orders/:id/edit-log — changes made to the bill after the sale, newest first.
+  getEditLog: async (req, res) => {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(String(req.params.id))) return res.status(404).json({ success: false, message: 'Order not found' });
+      const order = await POSOrder.findOne({ _id: req.params.id, isDeleted: { $ne: true } }).select('orderNumber editLog').lean();
+      if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+      const data = [...(order.editLog || [])].sort((a, b) => new Date(b.at) - new Date(a.at));
+      return res.json({ success: true, data, orderNumber: order.orderNumber });
+    } catch (error) {
+      console.error('Edit log error:', error);
+      return res.status(500).json({ success: false, message: 'Could not load the edit history' });
     }
   },
 

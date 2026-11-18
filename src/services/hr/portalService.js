@@ -31,6 +31,18 @@ const EXTRA_FIELDS = 'department phone email employmentType salaryPayDay salaryP
 
 /** The login's own employee (404 when none is linked). */
 async function employeeFor(userId) {
+  // Admin preview or email-code login: { employeeId } (the route decides who).
+  if (userId && typeof userId === 'object' && userId.employeeId) {
+    // activeOnly: an email-code login; only status "active" (anyone else loses access at once).
+    const q = { _id: userId.employeeId, isDeleted: { $ne: true } };
+    if (userId.activeOnly) q.status = 'active';
+    const e = await Employee.findOne(q)
+      .select(`${core.EMP_FIELDS} ${EXTRA_FIELDS}`)
+      .lean();
+    if (!e && userId.activeOnly) throw httpError(401, 'Your portal access has ended. Ask the shop admin.', 'SESSION_ENDED');
+    if (!e) throw httpError(404, 'Employee not found', 'NO_EMPLOYEE');
+    return e;
+  }
   if (!userId || !mongoose.Types.ObjectId.isValid(String(userId))) throw httpError(404, NO_LINK, 'NO_EMPLOYEE');
   const e = await Employee.findOne({ user: userId, isDeleted: { $ne: true } })
     .select(`${core.EMP_FIELDS} ${EXTRA_FIELDS}`)
@@ -147,6 +159,7 @@ async function profile(userId, { now = new Date() } = {}) {
       : null;
 
   const last = lastRun[0] ? payslipRow(lastRun[0]) : null;
+  const pay = await payThisMonth(e, now);
 
   return {
     employee: {
@@ -188,7 +201,61 @@ async function profile(userId, { now = new Date() } = {}) {
     lastPayslip: last ? { runId: last.runId, lineId: last.lineId, month: last.month, monthLabel: last.monthLabel, net: last.net, status: last.status, paidAt: last.paidAt } : null,
     openAdvanceBalance: (adv[0] && adv[0].total) || 0,
     tipsThisMonth: (tips[0] && tips[0].total) || 0,
+    pay,
   };
+}
+
+/**
+ * This month's money in plain words (owner, 2026-11-17: the portal must be
+ * simple): salary, earned so far, overtime (normal + after-12-hours), cuts
+ * (approved = taken, pending = waiting for the manager), tips.
+ */
+const DED_LABEL = { till_shortage: 'Till short', damage: 'Damage', other: 'Penalty', absent: 'Absent', half_day: 'Half day', late: 'Late' };
+async function payThisMonth(e, now) {
+  try {
+    const month = T.monthKey(now);
+    const start = T.dayStart(`${month}-01`);
+    const [sal, deds, tips] = await Promise.all([
+      payroll.salaryToDate({ now }),
+      PayrollDeduction.find({
+        employee: e._id,
+        status: { $ne: 'waived' },
+        $or: [{ date: { $gte: start } }, { status: { $in: ['pending', 'approved'] } }],
+      })
+        .sort({ date: -1 })
+        .lean(),
+      StaffTip.find({ employee: e._id, isDeleted: { $ne: true }, day: { $regex: `^${month}` } }).select('amount day method note').sort({ day: -1 }).lean(),
+    ]);
+    const rows = (sal && (sal.rows || sal.employees || sal.data || sal)) || [];
+    const me = (Array.isArray(rows) ? rows : []).find((r) => String(r.employee) === String(e._id)) || {};
+    return {
+      month,
+      salary: Number(me.salary ?? e.salary) || 0,
+      earned: Number(me.earned) || 0,
+      payableNow: Number(me.payableNow) || 0,
+      overtime: {
+        normalMinutes: Number(me.otNormalMinutes) || 0,
+        normalAmount: Number(me.overtimeNormal) || 0,
+        doubleMinutes: Number(me.otDoubleMinutes) || 0,
+        doubleAmount: Number(me.overtimeDouble) || 0,
+        doubleAfterHours: Number(me.doubleAfterHours) || 0,
+        waitingMinutes: Number(me.otPendingMinutes ?? 0) || 0,
+      },
+      deductions: deds.map((d) => ({
+        id: String(d._id),
+        type: d.type,
+        label: DED_LABEL[d.type] || 'Deduction',
+        amount: Number(d.amount) || 0,
+        date: d.date,
+        note: d.note || '',
+        status: d.status, // pending = manager has not decided; approved / applied = taken from pay
+      })),
+      tips: tips.map((t) => ({ amount: Number(t.amount) || 0, day: t.day, toSalary: t.method === 'salary', note: t.note || '' })),
+    };
+  } catch (err) {
+    console.error('Portal pay summary failed:', err.message);
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------- attendance
@@ -234,10 +301,36 @@ async function attendance(userId, month, { now = new Date() } = {}) {
       overtimeMinutes: ev.overtimeMinutes || 0,
       overtimeApproved: ev.overtimeApproved,
       lateExcused: core.lateExcusedOf(record, ev),
+      lateNote: (record && record.lateNote) || '',
+      lateNoteAt: (record && record.lateNoteAt) || null,
     };
   });
 
   return { month: m, summary: shortSummary(m, s), days };
+}
+
+// ---------------------------------------------------------------- late note
+
+const LATE_NOTE_MIN_WORDS = 100;
+const wordCount = (t) => (String(t || '').trim().match(/\S+/g) || []).length;
+
+/** The employee explains a late day in their own words (at least 100 words). */
+async function saveLateNote(userId, date, body = {}, { now = new Date() } = {}) {
+  const e = await employeeFor(userId);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))) throw httpError(400, 'Bad date');
+  const text = String(body.text || '').trim();
+  const words = wordCount(text);
+  if (words < LATE_NOTE_MIN_WORDS) throw httpError(400, `Write at least ${LATE_NOTE_MIN_WORDS} words (you wrote ${words}).`);
+  if (text.length > 5000) throw httpError(400, 'The note is too long (5000 letters at most).');
+  const record = await AttendanceRecord.findOne({ employee: e._id, date }).lean();
+  if (!record) throw httpError(404, 'No attendance for this day');
+  const plans = await schedule.planFor([e], date, date);
+  const plan = (plans.get(String(e._id)) || [])[0];
+  const policy = await policies.policyFor(e);
+  const ev = plan ? core.evaluate(plan, record, policy, now) : null;
+  if (!ev || !(ev.lateMinutes > 0)) throw httpError(400, 'You were not late on this day');
+  await AttendanceRecord.updateOne({ _id: record._id }, { $set: { lateNote: text, lateNoteAt: now } });
+  return { date, lateNote: text, lateNoteAt: now, words };
 }
 
 // ---------------------------------------------------------------- payslips
@@ -341,4 +434,5 @@ async function money(userId) {
   };
 }
 
-module.exports = { profile, attendance, payslips, payslip, money, employeeFor, mask, NO_LINK };
+module.exports = {
+  saveLateNote, profile, attendance, payslips, payslip, money, employeeFor, mask, NO_LINK };

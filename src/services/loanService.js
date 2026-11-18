@@ -76,12 +76,29 @@ async function list(query = {}) {
   const filter = { isDeleted: { $ne: true } };
   if (['open', 'paid'].includes(query.status)) filter.status = query.status;
   if (TYPES.includes(query.lenderType)) filter.lenderType = query.lenderType;
+  // One person (owner 2026-11-17): exact lender name, any case. The cards then show that person's totals.
+  const person = String(query.lender || '').trim();
+  const personFilter = person ? { lenderName: { $regex: `^${person.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } } : {};
+  Object.assign(filter, personFilter);
   if (query.search) {
     const esc = String(query.search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     filter.$or = [{ lenderName: { $regex: esc, $options: 'i' } }, { loanNo: { $regex: esc, $options: 'i' } }, { notes: { $regex: esc, $options: 'i' } }];
   }
   const rows = await Loan.find(filter).sort({ date: -1, createdAt: -1 }).lean();
-  const all = await Loan.find({ isDeleted: { $ne: true } }).select('amount paid left status').lean();
+  const everyone = await Loan.find({ isDeleted: { $ne: true } }).select('amount paid left status lenderName').lean();
+  const all = person ? everyone.filter((l) => String(l.lenderName || '').trim().toLowerCase() === person.toLowerCase()) : everyone;
+  // People for the filter: name, loans, still to give back.
+  const byName = new Map();
+  for (const l of everyone) {
+    const name = String(l.lenderName || '').trim();
+    const k = name.toLowerCase();
+    if (!k) continue;
+    const p = byName.get(k) || { name, loans: 0, left: 0 };
+    p.loans += 1;
+    p.left = round2(p.left + (l.left || 0));
+    byName.set(k, p);
+  }
+  const lenders = [...byName.values()].sort((a, b) => b.left - a.left || a.name.localeCompare(b.name));
   const summary = {
     loans: all.length,
     taken: round2(all.reduce((t, l) => t + l.amount, 0)),
@@ -89,7 +106,7 @@ async function list(query = {}) {
     left: round2(all.reduce((t, l) => t + (l.left || 0), 0)),
     open: all.filter((l) => l.status === 'open').length,
   };
-  return { data: rows, meta: { summary } };
+  return { data: rows, meta: { summary, lenders } };
 }
 
 async function get(id) {

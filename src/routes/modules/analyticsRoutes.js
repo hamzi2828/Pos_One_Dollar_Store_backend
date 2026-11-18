@@ -68,6 +68,24 @@ router.get(
     res.json({ success: true, data });
   })
 );
+// Financial statements: Income Statement, Balance Sheet, Cash Flow (services/reports/financialStatements.js).
+const FIN = () => require('../../services/reports/financialStatements');
+router.get('/analytics/financial/income', ...staff, can('report_financial_statements', 'view'), handle(async (req, res) => {
+  res.json({ success: true, data: await FIN().incomeStatement(req.query || {}) });
+}));
+router.get('/analytics/financial/balance-sheet', ...staff, can('report_financial_statements', 'view'), handle(async (req, res) => {
+  res.json({ success: true, data: await FIN().balanceSheet() });
+}));
+// Partners: capital, share of profit, money taken, balance (owner 2026-11-17).
+router.get('/analytics/financial/partners', ...staff, can(['report_financial_statements', 'investments'], 'view'), handle(async (req, res) => {
+  res.json({ success: true, data: await FIN().partners() });
+}));
+router.put('/analytics/financial/partners/:id/share', ...staff, superAdmin, handle(async (req, res) => {
+  res.json({ success: true, data: await FIN().setPartnerShare(req.params.id, req.body || {}) });
+}));
+router.get('/analytics/financial/cash-flow', ...staff, can('report_financial_statements', 'view'), handle(async (req, res) => {
+  res.json({ success: true, data: await FIN().cashFlow(req.query || {}) });
+}));
 router.get('/analytics/expenses/export', ...staff, can('report_expenses', 'export'), handle(ctrl.expensesExport));
 
 // Footfall + daily visitor counts

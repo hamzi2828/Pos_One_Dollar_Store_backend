@@ -68,6 +68,10 @@ async function loadUserAccess(userId) {
 
 async function loadAccess(req, res, next) {
   try {
+    // Employee Portal tokens (email code) open only /api/me/portal/... .
+    if (req.user?.kind === 'portal') {
+      return res.status(403).json({ message: 'This sign-in only opens the Employee Portal', code: 'PORTAL_ONLY' });
+    }
     const userId = req.user?._id || req.user?.id;
     if (!userId) return res.status(401).json({ message: 'Authorization token required' });
 

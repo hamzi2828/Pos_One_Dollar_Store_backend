@@ -1,0 +1,605 @@
+// Financial statements (owner, 2026-11-17): Income Statement, Balance Sheet and
+// Cash Flow Statement, worked out from the records the shop already keeps.
+// There is no general ledger yet, so each line reads its own source:
+//
+// INCOME STATEMENT (a period, Pakistan days)
+//   Net sales        bill lines (price x qty - discounts), tax left out       analytics/sales.js
+//   - Refunds        expenses in the "Refund" category (money back, stock kept).
+//                    Bills refunded in full are already out of the sales.
+//   - Cost of goods  cost snapshot x qty of every line sold (trip costs are
+//                    inside the landed cost, so they are NOT an expense here)
+//   = Gross profit
+//   - Expenses       every expense by category (salaries, shop use, ...);
+//                    display-only rows (trip costs paid from a till) left out
+//   - Damage         approved damage records (cost of the lost stock)
+//   - Stock count    applied stock adjustments: value out - value in
+//   - Depreciation   straight-line on fixed assets for the days in the period
+//   = Net profit
+//
+// BALANCE SHEET (now; stock has no history to value it on an older day)
+//   Assets       cash + bank (Cash in Hand "money left"), stock at cost
+//                (consignment stock is the vendor's), salary advances,
+//                vendor advances, fixed assets at book value
+//   Liabilities  owed to vendors, loans, salaries approved but not paid,
+//                investment bills not paid yet, sales tax collected
+//   Equity       partner money (investments paid) + profit since 25 Oct 2026;
+//                what is left over is shown as a difference line, so a missing
+//                record is visible instead of hidden.
+//
+// CASH FLOW (a period): the Cash in Hand movements (start balance onwards),
+//   grouped as operating / financing; opening + net change = closing.
+
+const mongoose = require('mongoose');
+const { salesLines } = require('../analytics/sales');
+const { SALE_MATCH } = require('../analytics/common');
+const { depreciate } = require('../hr/depreciation');
+const { funds } = require('./fundsReport');
+const { jazzcash } = require('./jazzcashReport');
+
+const START = '2026-10-25'; // system start
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+const bad = (m) => Object.assign(new Error(m), { status: 400 });
+const pkStart = (d) => new Date(`${d}T00:00:00.000+05:00`);
+const pkEnd = (d) => new Date(`${d}T23:59:59.999+05:00`);
+const pkToday = () => new Date(Date.now() + 5 * 3600 * 1000).toISOString().slice(0, 10);
+const NOT_DELETED = { isDeleted: { $ne: true } };
+const REFUND_RX = /^\s*refund\s*$/i;
+
+function range(query = {}) {
+  const from = String(query.from || START);
+  const to = String(query.to || pkToday());
+  if (!DAY.test(from) || !DAY.test(to)) throw bad('Dates must be YYYY-MM-DD');
+  if (from > to) throw bad('"From" is after "To"');
+  return { from, to, start: pkStart(from), end: pkEnd(to) };
+}
+
+const isRefundExpense = (e) => {
+  const list = [e.category, ...(Array.isArray(e.categories) ? e.categories : [])]
+    .flatMap((c) => String(c || '').split(','))
+    .filter(Boolean);
+  return list.some((c) => REFUND_RX.test(c));
+};
+
+/** Depreciation of one asset between two moments (stops at disposal). */
+function assetDepreciation(a, start, end) {
+  const qty = Number(a.quantity) || 1;
+  const args = {
+    cost: (Number(a.purchasePrice) || 0) * qty,
+    salvage: (Number(a.salvageValue) || 0) * qty,
+    lifeYears: a.usefulLifeYears,
+    method: a.depreciationMethod,
+    purchaseDate: a.purchaseDate,
+  };
+  const stop = a.disposal && a.disposal.date ? new Date(a.disposal.date) : null;
+  const cap = (d) => (stop && stop < d ? stop : d);
+  const at = (d) => (a.purchaseDate && new Date(a.purchaseDate) < d ? depreciate({ ...args, asOf: cap(d) }).accumulated : 0);
+  return Math.max(0, at(end) - at(start));
+}
+
+/**
+ * Trip-cost share of each product's landed cost (owner 2026-11-17: show goods and
+ * trip costs apart). From the goods receipts: trip part = landed − vendor price.
+ * -> Map productId -> share (0..1) of the landed cost that is trip costs.
+ */
+async function tripShares() {
+  const db = mongoose.connection.db;
+  const [fromEntries, fromLines] = await Promise.all([
+    db
+      .collection('goodsreceipts')
+      .aggregate([
+        { $unwind: '$entries' },
+        { $match: { 'entries.posted': true, 'entries.landedUnitCost': { $gt: 0 } } },
+        {
+          $project: {
+            p: '$entries.product',
+            pcs: { $ifNull: ['$entries.stockQty', '$entries.qty'] },
+            landed: '$entries.landedUnitCost',
+            price: '$entries.costPrice',
+          },
+        },
+        { $group: { _id: '$p', landed: { $sum: { $multiply: ['$pcs', '$landed'] } }, trip: { $sum: { $multiply: ['$pcs', { $max: [0, { $subtract: ['$landed', '$price'] }] }] } } } },
+      ])
+      .toArray(),
+    db
+      .collection('goodsreceipts')
+      .aggregate([
+        { $unwind: '$lines' },
+        { $match: { 'lines.posted': true, 'lines.landedUnitCost': { $gt: 0 } } },
+        { $group: { _id: '$lines.product', landed: { $sum: { $multiply: ['$lines.acceptedQty', '$lines.landedUnitCost'] } }, trip: { $sum: { $ifNull: ['$lines.allocatedCharges', 0] } } } },
+      ])
+      .toArray(),
+  ]);
+  const acc = new Map();
+  for (const r of [...fromEntries, ...fromLines]) {
+    const k = String(r._id);
+    const a = acc.get(k) || { landed: 0, trip: 0 };
+    a.landed += Number(r.landed) || 0;
+    a.trip += Number(r.trip) || 0;
+    acc.set(k, a);
+  }
+  const out = new Map();
+  for (const [k, a] of acc) if (a.landed > 0) out.set(k, Math.min(1, Math.max(0, a.trip / a.landed)));
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Income statement
+// ---------------------------------------------------------------------------
+async function incomeFor(start, end) {
+  const db = mongoose.connection.db;
+  const orderMatch = { ...SALE_MATCH, createdAt: { $gte: start, $lte: end } };
+
+  const [lines, billAgg, expenses, damage, adjust, assets] = await Promise.all([
+    salesLines({ orderMatch, groupBy: {} }),
+    db
+      .collection('posorders')
+      .aggregate([
+        { $match: orderMatch },
+        { $group: { _id: null, bills: { $sum: 1 }, discount: { $sum: { $ifNull: ['$discount', 0] } }, tax: { $sum: { $ifNull: ['$tax', 0] } } } },
+      ])
+      .toArray(),
+    db
+      .collection('expenses')
+      .find({ ...NOT_DELETED, displayOnly: { $ne: true }, date: { $gte: start, $lte: end } })
+      .project({ amount: 1, category: 1, categories: 1, source: 1, loanRepayLoan: 1, partner: 1 })
+      .toArray(),
+    db
+      .collection('damagerecords')
+      .aggregate([
+        { $match: { status: 'approved', date: { $gte: start, $lte: end } } },
+        { $group: { _id: null, total: { $sum: { $ifNull: ['$totalLoss', 0] } }, count: { $sum: 1 } } },
+      ])
+      .toArray(),
+    db
+      .collection('stockadjustments')
+      .aggregate([
+        { $match: { status: 'applied', $expr: { $and: [{ $gte: [{ $ifNull: ['$appliedAt', '$createdAt'] }, start] }, { $lte: [{ $ifNull: ['$appliedAt', '$createdAt'] }, end] }] } } },
+        { $group: { _id: null, out: { $sum: { $ifNull: ['$totals.valueOut', 0] } }, in: { $sum: { $ifNull: ['$totals.valueIn', 0] } }, count: { $sum: 1 } } },
+      ])
+      .toArray(),
+    db
+      .collection('assets')
+      .find({ ...NOT_DELETED, purchaseDate: { $lte: end } })
+      .project({ purchasePrice: 1, quantity: 1, salvageValue: 1, usefulLifeYears: 1, depreciationMethod: 1, purchaseDate: 1, disposal: 1 })
+      .toArray(),
+  ]);
+
+  let revenue = 0;
+  let cogs = 0;
+  let qty = 0;
+  let tripPart = 0;
+  const shares = await tripShares().catch(() => new Map());
+  for (const l of lines) {
+    revenue += l.revenue;
+    cogs += l.cost;
+    qty += l.qty;
+    tripPart += l.cost * (shares.get(String(l.productId)) || 0);
+  }
+  const b = billAgg[0] || { bills: 0, discount: 0, tax: 0 };
+
+  let refunds = 0;
+  const byCat = new Map();
+  for (const e of expenses) {
+    const amount = Number(e.amount) || 0;
+    if (e.loanRepayLoan || e.partner) continue; // paying back a loan / a partner taking money is not a cost
+    if (isRefundExpense(e)) {
+      refunds += amount;
+      continue;
+    }
+    const cat = String(e.category || 'Other').split(',')[0].trim() || 'Other';
+    // Shop use: automatic rows and hand-typed "Shop Use ..." categories are one line (owner 2026-11-17).
+    const name = e.source === 'payroll' ? 'Salaries' : e.source === 'shop_use' || /^shop\s*use\b/i.test(cat) ? 'Shop use (own stock)' : cat;
+    const row = byCat.get(name) || { category: name, amount: 0, count: 0 };
+    row.amount += amount;
+    row.count += 1;
+    byCat.set(name, row);
+  }
+  const expenseRows = [...byCat.values()].map((r) => ({ ...r, amount: round2(r.amount) })).sort((x, y) => y.amount - x.amount);
+  const totalExpenses = expenseRows.reduce((t, r) => t + r.amount, 0);
+
+  const damageLoss = (damage[0] && damage[0].total) || 0;
+  const countLoss = adjust[0] ? (adjust[0].out || 0) - (adjust[0].in || 0) : 0;
+  const depreciation = assets.reduce((t, a) => t + assetDepreciation(a, start, end), 0);
+
+  const netSales = revenue - refunds;
+  const gross = netSales - cogs;
+  const otherCosts = damageLoss + countLoss + depreciation;
+  const operating = gross - totalExpenses;
+  const net = operating - otherCosts;
+  const pct = (n) => (netSales > 0 ? Math.round((n / netSales) * 1000) / 10 : null);
+
+  return {
+    bills: b.bills,
+    itemsSold: qty,
+    sales: round2(revenue),
+    billDiscounts: round2(b.discount),
+    taxCollected: round2(b.tax),
+    refunds: round2(refunds),
+    netSales: round2(netSales),
+    costOfGoods: round2(cogs),
+    // Cost of goods split: vendor price of what was sold + its share of trip costs.
+    goodsCost: round2(cogs - tripPart),
+    tripCost: round2(tripPart),
+    grossProfit: round2(gross),
+    grossMargin: pct(gross),
+    expenses: expenseRows,
+    totalExpenses: round2(totalExpenses),
+    operatingProfit: round2(operating),
+    damage: round2(damageLoss),
+    damageCount: (damage[0] && damage[0].count) || 0,
+    stockCount: round2(countLoss),
+    depreciation: round2(depreciation),
+    otherCosts: round2(otherCosts),
+    netProfit: round2(net),
+    netMargin: pct(net),
+  };
+}
+
+async function incomeStatement(query = {}) {
+  const r = range(query);
+  const current = await incomeFor(r.start, r.end);
+  // Same number of days just before, for comparison.
+  let previous = null;
+  if (String(query.compare || '1') !== '0') {
+    const days = Math.round((r.end - r.start) / 86400000);
+    const pEnd = new Date(r.start.getTime() - 1);
+    const pStart = new Date(r.start.getTime() - days * 86400000);
+    if (pEnd >= pkStart(START)) previous = { from: new Date(pStart.getTime() + 5 * 3600000).toISOString().slice(0, 10), to: new Date(pEnd.getTime() + 5 * 3600000).toISOString().slice(0, 10), ...(await incomeFor(pStart < pkStart(START) ? pkStart(START) : pStart, pEnd)) };
+  }
+  return { range: { from: r.from, to: r.to, systemStart: START }, current, previous };
+}
+
+// ---------------------------------------------------------------------------
+// Balance sheet (as of now)
+// ---------------------------------------------------------------------------
+async function balanceSheet() {
+  const db = mongoose.connection.db;
+  const now = new Date();
+
+  const [money, stockAgg, consignAgg, advances, ledger, assets, loans, payroll, investments, taxAgg, profit] = await Promise.all([
+    funds(),
+    db
+      .collection('products')
+      .aggregate([
+        { $match: { ...NOT_DELETED, isConsignment: { $ne: true }, stock: { $gt: 0 } } },
+        { $group: { _id: null, value: { $sum: { $multiply: ['$stock', { $ifNull: ['$costPrice', 0] }] } }, units: { $sum: '$stock' }, products: { $sum: 1 } } },
+      ])
+      .toArray(),
+    db
+      .collection('products')
+      .aggregate([
+        { $match: { ...NOT_DELETED, isConsignment: true, stock: { $gt: 0 } } },
+        { $group: { _id: null, value: { $sum: { $multiply: ['$stock', { $ifNull: ['$consignmentRate', { $ifNull: ['$costPrice', 0] }] }] } }, units: { $sum: '$stock' } } },
+      ])
+      .toArray(),
+    db
+      .collection('salaryadvances')
+      .aggregate([{ $match: { status: 'open' } }, { $group: { _id: null, total: { $sum: { $ifNull: ['$balance', 0] } }, count: { $sum: 1 } } }])
+      .toArray(),
+    db
+      .collection('vendorledgerentries')
+      .aggregate([
+        { $match: { isVoided: { $ne: true } } },
+        { $group: { _id: '$vendor', name: { $last: '$vendorName' }, balance: { $sum: { $subtract: [{ $ifNull: ['$credit', 0] }, { $ifNull: ['$debit', 0] }] } } } },
+      ])
+      .toArray(),
+    db
+      .collection('assets')
+      .find({ ...NOT_DELETED, status: { $nin: ['sold', 'disposed'] } })
+      .project({ name: 1, purchasePrice: 1, quantity: 1, salvageValue: 1, usefulLifeYears: 1, depreciationMethod: 1, purchaseDate: 1 })
+      .toArray(),
+    db
+      .collection('loans')
+      .find({ ...NOT_DELETED })
+      .project({ amount: 1, repayments: 1, lenderName: 1, loanNo: 1 })
+      .toArray(),
+    db
+      .collection('payrollruns')
+      .aggregate([{ $match: { status: { $in: ['approved', 'paid'] } } }, { $group: { _id: null, unpaid: { $sum: { $ifNull: ['$totals.unpaid', 0] } } } }])
+      .toArray(),
+    db
+      .collection('investments')
+      .find({ ...NOT_DELETED })
+      .project({ amount: 1, paidAmount: 1, balance: 1, partner: 1 })
+      .toArray(),
+    db
+      .collection('posorders')
+      .aggregate([{ $match: SALE_MATCH }, { $group: { _id: null, tax: { $sum: { $ifNull: ['$tax', 0] } } } }])
+      .toArray(),
+    incomeFor(pkStart(START), now),
+  ]);
+
+  // Vendors: credit - debit > 0 = we owe them; < 0 = we paid ahead.
+  let payables = 0;
+  let vendorAdvances = 0;
+  for (const v of ledger) {
+    if (v.balance > 0.005) payables += v.balance;
+    else if (v.balance < -0.005) vendorAdvances += -v.balance;
+  }
+
+  let fixedCost = 0;
+  let fixedDep = 0;
+  for (const a of assets) {
+    const qty = Number(a.quantity) || 1;
+    const cost = (Number(a.purchasePrice) || 0) * qty;
+    fixedCost += cost;
+    fixedDep += depreciate({ cost, salvage: (Number(a.salvageValue) || 0) * qty, lifeYears: a.usefulLifeYears, method: a.depreciationMethod, purchaseDate: a.purchaseDate, asOf: now }).accumulated;
+  }
+
+  let loansLeft = 0;
+  for (const l of loans) {
+    const paid = (l.repayments || []).reduce((t, x) => t + (Number(x.amount) || 0), 0);
+    loansLeft += Math.max(0, (Number(l.amount) || 0) - paid);
+  }
+
+  // Investment bills: paid by partners (capital) and part still unpaid.
+  const pids = [...new Set(investments.map((i) => String(i.partner || '')).filter((x) => /^[a-f\d]{24}$/i.test(x)))];
+  const partners = pids.length
+    ? await db.collection('investmentpartners').find({ _id: { $in: pids.map((x) => new mongoose.Types.ObjectId(x)) } }).project({ name: 1 }).toArray()
+    : [];
+  const pname = new Map(partners.map((p) => [String(p._id), p.name || 'Partner']));
+  const byPartner = new Map();
+  let capital = 0;
+  let investUnpaid = 0;
+  for (const i of investments) {
+    const paid = Number(i.paidAmount ?? i.amount) || 0;
+    const left = Number(i.balance ?? Math.max(0, (Number(i.amount) || 0) - paid)) || 0;
+    capital += paid;
+    investUnpaid += left;
+    const name = pname.get(String(i.partner)) || 'Partner (not set)';
+    byPartner.set(name, (byPartner.get(name) || 0) + paid);
+  }
+
+  const cash = money.left; // null when no start balance was set
+  const stock = (stockAgg[0] && stockAgg[0].value) || 0;
+  const advancesTotal = (advances[0] && advances[0].total) || 0;
+  const fixedNet = fixedCost - fixedDep;
+  // JazzCash wallet (owner 2026-11-17): shown on its own line, taken out of "money left"
+  // (same start as the start balance, so the two lines still add up to money left).
+  let jazz = 0;
+  if (cash !== null) {
+    try {
+      const fromDay = new Date(new Date(money.baseline.at).getTime() + 5 * 3600000).toISOString().slice(0, 10);
+      const j = await jazzcash({ from: fromDay < START ? START : fromDay });
+      jazz = round2((j.totals && j.totals.net) || 0);
+    } catch (err) {
+      console.error('JazzCash balance failed:', err.message);
+    }
+  }
+
+  const assetRows = [
+    { key: 'cash', label: 'Cash + bank (UBL)', amount: round2((cash || 0) - jazz), missing: cash === null },
+    { key: 'jazzcash', label: 'JazzCash wallet', amount: jazz, hint: 'Money received by JazzCash minus paid out from it' },
+    { key: 'stock', label: 'Stock at cost', amount: round2(stock), hint: stockAgg[0] ? `${Math.round(stockAgg[0].units)} pieces · ${stockAgg[0].products} products` : '' },
+    { key: 'advances', label: 'Salary advances (staff owe)', amount: round2(advancesTotal) },
+    { key: 'vendorAdvances', label: 'Paid ahead to vendors', amount: round2(vendorAdvances) },
+    { key: 'fixed', label: 'Fixed assets (book value)', amount: round2(fixedNet), hint: `Cost ${round2(fixedCost)} − depreciation ${round2(fixedDep)}` },
+  ];
+  const liabilityRows = [
+    { key: 'payables', label: 'Owed to vendors', amount: round2(payables) },
+    { key: 'loans', label: 'Loans to pay back', amount: round2(loansLeft) },
+    { key: 'salaries', label: 'Salaries approved, not paid', amount: round2((payroll[0] && payroll[0].unpaid) || 0) },
+    { key: 'investBills', label: 'Investment bills not paid yet', amount: round2(investUnpaid) },
+    { key: 'tax', label: 'Sales tax collected', amount: round2((taxAgg[0] && taxAgg[0].tax) || 0) },
+  ];
+  const totalAssets = round2(assetRows.reduce((t, r) => t + r.amount, 0));
+  const totalLiabilities = round2(liabilityRows.reduce((t, r) => t + r.amount, 0));
+  const netWorth = round2(totalAssets - totalLiabilities);
+  // Money partners took out (Profit Distribution expenses) lowers the owners' share.
+  const drawAgg = await db
+    .collection('expenses')
+    .aggregate([{ $match: { ...NOT_DELETED, displayOnly: { $ne: true }, partner: { $type: 'objectId' } } }, { $group: { _id: null, total: { $sum: '$amount' } } }])
+    .toArray();
+  const drawings = round2((drawAgg[0] && drawAgg[0].total) || 0);
+  const difference = round2(netWorth - capital - profit.netProfit + drawings);
+
+  return {
+    asOf: now,
+    systemStart: START,
+    assets: assetRows,
+    totalAssets,
+    liabilities: liabilityRows,
+    totalLiabilities,
+    equity: [
+      { key: 'capital', label: 'Partner money put in', amount: round2(capital), partners: [...byPartner].map(([name, amount]) => ({ name, amount: round2(amount) })) },
+      { key: 'profit', label: `Profit made (since ${START})`, amount: round2(profit.netProfit) },
+      { key: 'drawings', label: 'Taken by partners (profit distribution)', amount: -drawings },
+      { key: 'difference', label: 'Opening balances / not explained', amount: difference },
+    ],
+    totalEquity: netWorth,
+    // Off the balance sheet: the vendor's own stock sitting on our shelves.
+    consignmentStock: round2((consignAgg[0] && consignAgg[0].value) || 0),
+    cashMissing: cash === null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Cash flow (a period) — built on the Cash in Hand movements.
+// ---------------------------------------------------------------------------
+async function cashFlow(query = {}) {
+  const r = range(query);
+  const f = await funds();
+  if (!f.baseline) return { range: { from: r.from, to: r.to }, baseline: null };
+  const base = new Date(f.baseline.at);
+  const moves = [...f.movements].reverse(); // oldest first
+  let opening = f.baseline.amount;
+  for (const m of moves) if (new Date(m.at) < r.start) opening += m.amount;
+  const inside = moves.filter((m) => new Date(m.at) >= r.start && new Date(m.at) <= r.end);
+  const sum = (k) => round2(inside.filter((m) => m.kind === k).reduce((t, m) => t + m.amount, 0));
+
+  const operating = [
+    { key: 'sales', label: 'Money received from sales', amount: sum('sales') },
+    { key: 'refund', label: 'Refunds paid to customers', amount: sum('refund') },
+    { key: 'vendor_payment', label: 'Paid to vendors', amount: sum('vendor_payment') },
+    { key: 'trip_cost', label: 'Trip costs (rent, builty, loading)', amount: sum('trip_cost') },
+    { key: 'expense', label: 'Shop expenses + salaries', amount: sum('expense') },
+  ];
+  const financing = [
+    { key: 'loan_in', label: 'Loans received', amount: sum('loan_in') },
+    { key: 'loan_out', label: 'Loans paid back', amount: sum('loan_out') },
+    { key: 'partner_draw', label: 'Taken by partners (profit distribution)', amount: sum('partner_draw') },
+  ];
+
+  // Assets bought in the period and partner-paid bills: they do not pass
+  // through the till / bank, so they are shown for information only.
+  const db = mongoose.connection.db;
+  const [assetsBought, partnerPaid] = await Promise.all([
+    db
+      .collection('assets')
+      .aggregate([
+        { $match: { ...NOT_DELETED, purchaseDate: { $gte: r.start, $lte: r.end } } },
+        { $group: { _id: null, total: { $sum: { $multiply: [{ $ifNull: ['$purchasePrice', 0] }, { $ifNull: ['$quantity', 1] }] } } } },
+      ])
+      .toArray(),
+    db
+      .collection('investments')
+      .aggregate([
+        { $match: { ...NOT_DELETED } },
+        { $unwind: '$payments' },
+        { $match: { 'payments.date': { $gte: r.start, $lte: r.end } } },
+        { $group: { _id: null, total: { $sum: '$payments.amount' } } },
+      ])
+      .toArray(),
+  ]);
+
+  const opTotal = round2(operating.reduce((t, x) => t + x.amount, 0));
+  const finTotal = round2(financing.reduce((t, x) => t + x.amount, 0));
+  const net = round2(opTotal + finTotal);
+  return {
+    range: { from: r.from, to: r.to },
+    baseline: f.baseline,
+    startsAtBaseline: r.start < base,
+    opening: round2(opening),
+    operating,
+    operatingTotal: opTotal,
+    investing: [],
+    investingTotal: 0,
+    financing,
+    financingTotal: finTotal,
+    netChange: net,
+    closing: round2(opening + net),
+    nonCash: {
+      assetsBought: round2((assetsBought[0] && assetsBought[0].total) || 0),
+      partnerPaid: round2((partnerPaid[0] && partnerPaid[0].total) || 0),
+    },
+    // Closing money split (owner 2026-11-17): JazzCash wallet on the last day, rest = cash + bank.
+    closingSplit: await (async () => {
+      try {
+        const baseDay = new Date(base.getTime() + 5 * 3600000).toISOString().slice(0, 10);
+        const j = await jazzcash({ from: baseDay < START ? START : baseDay, to: r.to });
+        const jz = round2((j.totals && j.totals.net) || 0);
+        return { cashBank: round2(opening + net - jz), jazzcash: jz };
+      } catch (err) {
+        return null;
+      }
+    })(),
+    // JazzCash part of the money above, for the same days (owner 2026-11-17).
+    jazzcash: await jazzcash({ from: r.from, to: r.to })
+      .then((j) => ({ in: round2(j.totals.in), out: round2(j.totals.out), net: round2(j.totals.net), bills: j.totals.bills }))
+      .catch(() => null),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Partners (owner 2026-11-17): who owns what. Hamza 30% / Adil 70% (sharePercent).
+//   capital   money each partner put in (investment bills they paid)
+//   profit    net profit since the start × their share %
+//   taken     "Profit Distribution" expenses for that partner
+//   balance   capital + profit − taken = their part of the company today
+// ---------------------------------------------------------------------------
+async function partners() {
+  const db = mongoose.connection.db;
+  const [list, invest, draws, profit] = await Promise.all([
+    db.collection('investmentpartners').find({ ...NOT_DELETED }).project({ name: 1, sharePercent: 1 }).sort({ name: 1 }).toArray(),
+    db
+      .collection('investments')
+      .aggregate([
+        { $match: { ...NOT_DELETED } },
+        { $group: { _id: '$partner', paid: { $sum: { $ifNull: ['$paidAmount', '$amount'] } } } },
+      ])
+      .toArray(),
+    db
+      .collection('expenses')
+      .aggregate([
+        { $match: { ...NOT_DELETED, displayOnly: { $ne: true }, partner: { $type: 'objectId' } } },
+        { $sort: { date: -1 } },
+        {
+          $group: {
+            _id: '$partner',
+            taken: { $sum: '$amount' },
+            count: { $sum: 1 },
+            rows: { $push: { _id: '$_id', title: '$title', amount: '$amount', date: '$date', paymentMethod: '$paymentMethod', counterName: '$counterName' } },
+          },
+        },
+      ])
+      .toArray(),
+    incomeFor(pkStart(START), new Date()),
+  ]);
+  const investBy = new Map(invest.map((r) => [String(r._id), Number(r.paid) || 0]));
+  const drawBy = new Map(draws.map((r) => [String(r._id), r]));
+  const net = profit.netProfit;
+  const totalShare = list.reduce((t, p) => t + (Number(p.sharePercent) || 0), 0);
+
+  const rows = list.map((p) => {
+    const id = String(p._id);
+    const share = Number(p.sharePercent) || 0;
+    const capital = round2(investBy.get(id) || 0);
+    const profitShare = round2((net * share) / 100);
+    const d = drawBy.get(id);
+    const taken = round2((d && d.taken) || 0);
+    return {
+      _id: id,
+      name: p.name,
+      sharePercent: share,
+      capital,
+      profitShare,
+      taken,
+      balance: round2(capital + profitShare - taken),
+      profitLeft: round2(profitShare - taken),
+      draws: d ? d.rows.slice(0, 50).map((x) => ({ ...x, _id: String(x._id), amount: round2(x.amount) })) : [],
+    };
+  });
+  const sum = (k) => round2(rows.reduce((t, r) => t + r[k], 0));
+  // Where the owners' money is today (owner 2026-11-17): goods/stock vs money.
+  let worth = null;
+  try {
+    const b = await balanceSheet();
+    const a = (k) => (b.assets.find((x) => x.key === k) || {}).amount || 0;
+    worth = {
+      netWorth: b.totalEquity,
+      totalAssets: b.totalAssets,
+      totalLiabilities: b.totalLiabilities,
+      stock: a('stock'),
+      money: round2(a('cash') + a('jazzcash')),
+      other: round2(a('advances') + a('vendorAdvances') + a('fixed')),
+    };
+  } catch (err) {
+    console.error('Partners worth failed:', err.message);
+  }
+  return {
+    worth,
+    since: START,
+    grossProfit: round2(profit.grossProfit),
+    grossMargin: profit.grossMargin,
+    netMargin: profit.netMargin,
+    netProfit: round2(net),
+    totalShare,
+    rows,
+    totals: { capital: sum('capital'), profitShare: sum('profitShare'), taken: sum('taken'), balance: sum('balance'), profitLeft: sum('profitLeft') },
+  };
+}
+
+/** Change a partner's share % (all partners should add up to 100). */
+async function setPartnerShare(id, body = {}) {
+  if (!/^[a-f\d]{24}$/i.test(String(id || ''))) throw bad('Bad partner');
+  const pct = Number(body.sharePercent);
+  if (!Number.isFinite(pct) || pct < 0 || pct > 100) throw bad('Share must be between 0 and 100');
+  const r = await mongoose.connection.db
+    .collection('investmentpartners')
+    .updateOne({ _id: new mongoose.Types.ObjectId(String(id)), ...NOT_DELETED }, { $set: { sharePercent: Math.round(pct * 100) / 100, updatedAt: new Date() } });
+  if (!r.matchedCount) throw Object.assign(new Error('Partner not found'), { status: 404 });
+  return partners();
+}
+
+module.exports = { incomeStatement, balanceSheet, cashFlow, partners, setPartnerShare, START };

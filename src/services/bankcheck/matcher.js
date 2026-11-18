@@ -142,6 +142,7 @@ async function collectCandidates(from, to) {
   for (const l of loans)
     for (const r of l.repayments || []) {
       if (!inRange(r.date)) continue;
+      if (r.expense) continue; // its "Loan Repayment" expense is matched instead
       push({ src: 'loan', id: l._id, subId: r._id, ref: l.loanNo, label: `${l.loanNo} paid back to ${l.lenderName}`, who: [l.lenderName, r.note].filter(Boolean).join(' '), date: pktDay(r.date), amount: r.amount, method: r.method });
     }
   for (const i of invs)

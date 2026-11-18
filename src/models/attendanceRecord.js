@@ -66,6 +66,9 @@ const attendanceRecordSchema = new mongoose.Schema(
 
     // Late excused by a manager: the late minutes stay on the day (shown), but
     // the day counts as present — no late cut, no half day for lateness.
+    // Employee's own reason for coming late (portal, owner 2026-11-17: at least 100 words).
+    lateNote: { type: String, default: '', trim: true, maxlength: 5000 },
+    lateNoteAt: { type: Date, default: null },
     lateExcused: { type: Boolean, default: false },
     lateExcuseReason: { type: String, default: '', trim: true },
     lateExcusedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },

@@ -49,15 +49,22 @@ router.post('/quote', can('pos', 'view'), posController.quote);
 router.post('/orders', can('pos', 'create'), posController.createOrder);
 router.get('/orders', can(SALES_VIEWERS, 'view'), posController.getOrders);
 router.get('/orders/pending', can(['pos', 'pos_orders'], 'view'), posController.getPendingOrders);
+// Cashier bill lookup: own last 5, or search (4+ characters, max 5 results). No totals.
+router.get('/orders/lookup', can(['pos', ...SALES_VIEWERS], 'view'), posController.lookupOrders);
 router.get('/orders/:id', can(['pos', ...SALES_VIEWERS], 'view'), posController.getOrderById);
 router.post('/orders/:id/payment', can(['pos', 'pos_orders'], 'edit'), posController.addPayment);
 router.post('/orders/:id/whatsapp', can(['pos', 'pos_orders'], 'create'), posController.resendWhatsapp); // resend slip
 router.post('/orders/:id/discount', can('pos_orders', 'edit'), posController.giveDiscount); // discount after the sale
-router.post('/orders/:id/payment-method', can('pos_orders', 'edit'), posController.changePaymentMethod); // fix cash / card / bank
-router.post('/orders/:id/refund', can('pos_orders', 'edit'), posController.refundOrder); // puts stock back once
+// Bill edits: admins (pos_orders edit) and cashiers with pos_bill_edit. Each one is kept in order.editLog.
+const BILL_EDITORS = ['pos_orders', 'pos_bill_edit'];
+router.post('/orders/:id/payment-method', can(BILL_EDITORS, 'edit'), posController.changePaymentMethod); // fix cash / card / bank / split
+router.post('/orders/:id/refund', can(BILL_EDITORS, 'edit'), posController.refundOrder); // puts stock back once
 // Part refund: money only (a "Refund" expense on the bill), stock stays.
-router.get('/orders/:id/refund-info', can('pos_orders', 'edit'), posController.refundInfo);
-router.post('/orders/:id/partial-refund', can('pos_orders', 'edit'), posController.partialRefund);
+router.get('/orders/:id/refund-info', can(BILL_EDITORS, 'edit'), posController.refundInfo);
+router.post('/orders/:id/partial-refund', can(BILL_EDITORS, 'edit'), posController.partialRefund);
+// Edit history of a bill (who changed what, before -> after).
+// Same people who can open the bill (getOrderById).
+router.get('/orders/:id/edit-log', can(['pos', ...SALES_VIEWERS], 'view'), posController.getEditLog);
 router.delete('/orders/:id', can('pos_orders', 'delete'), posController.deleteOrder);
 
 // Dashboard (sales figures)

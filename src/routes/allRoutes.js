@@ -203,6 +203,8 @@ router.get('/expenses/categories', ...staff, can(EXPENSES_OR_TILL, 'view'), expe
 router.get('/expenses/banks', ...staff, can(EXPENSES_OR_TILL, 'view'), expenseController.getBankOptions);
 router.get('/expenses/counters', ...staff, can(EXPENSES_OR_TILL, 'view'), expenseController.getCounterOptions);
 // Refund expense: find the POS bill by number (at least 3 characters).
+router.get('/expenses/partner-options', ...staff, can(EXPENSES_OR_TILL, 'view'), expenseController.getPartnerOptions);
+router.get('/expenses/loan-options', ...staff, can(EXPENSES_OR_TILL, 'view'), expenseController.getLoanOptions);
 router.get('/expenses/refund-bills', ...staff, can(EXPENSES_OR_TILL, 'view'), expenseController.getRefundBills);
 router.get('/expenses/investment-bills', ...staff, can('expenses', 'view'), expenseController.getInvestmentBills);
 router.post('/expenses/categories', ...staff, can('expenses', 'create'), expenseController.createCategory);
@@ -248,6 +250,7 @@ router.use('/api/pos', require('./posRoutes'));
 // ----- Reports — server-side aggregations for the admin Reports section -----
 router.get('/api/reports/cash-in-hand', ...staff, can('report_cash_in_hand', 'view'), reportsController.cashInHand);
 router.get('/api/reports/sales-summary', ...staff, can('report_sales', 'view'), reportsController.salesSummary);
+router.get('/api/reports/sales-tills', ...staff, can('report_sales', 'view'), reportsController.salesTills);
 router.get('/api/reports/purchases-summary', ...staff, can('report_purchases', 'view'), reportsController.purchasesSummary);
 router.get('/api/reports/cost-analysis', ...staff, can('report_cost_analysis', 'view'), reportsController.costAnalysis);
 router.get('/api/reports/stock', ...staff, can('report_stock', 'view'), reportsController.stock);

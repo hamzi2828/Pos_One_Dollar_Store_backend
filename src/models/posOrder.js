@@ -141,6 +141,22 @@ const posOrderSchema = new mongoose.Schema(
     // Who gave the refund (cash leaves THEIR till session, not the original cashier's).
     refundedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     cancelledAt: { type: Date },
+    // Every change made to the bill after the sale (owner 2026-11-18): payment method / split,
+    // full refund, part refund, discount. before / after = the bill's money at that moment.
+    editLog: [
+      {
+        _id: false,
+        at: { type: Date, default: Date.now },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+        byName: { type: String, default: '' },
+        byRole: { type: String, default: '' },
+        action: { type: String, enum: ['payment_method', 'refund', 'partial_refund', 'discount'], required: true },
+        summary: { type: String, default: '' },
+        reason: { type: String, default: '' },
+        before: { type: mongoose.Schema.Types.Mixed, default: null },
+        after: { type: mongoose.Schema.Types.Mixed, default: null },
+      },
+    ],
     // True once this order's pieces were put back into stock (delete/refund),
     // so stock is never restored twice.
     stockRestored: { type: Boolean, default: false },

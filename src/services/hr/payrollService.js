@@ -324,8 +324,8 @@ async function employeeOptions(query = {}) {
 /* Deductions                                                          */
 /* ------------------------------------------------------------------ */
 
-const DEDUCTION_TYPES = ['till_shortage', 'damage', 'other'];
-const DEDUCTION_LABEL = { till_shortage: 'Till shortage', damage: 'Damage', other: 'Deduction' };
+const DEDUCTION_TYPES = ['till_shortage', 'damage', 'other', 'absent', 'half_day', 'late'];
+const DEDUCTION_LABEL = { till_shortage: 'Till shortage', damage: 'Damage', other: 'Deduction', absent: 'Absent', half_day: 'Half days', late: 'Late' };
 
 async function deductionViews(rows) {
   const emps = await employeeMap([...new Set(rows.map((d) => idOf(d.employee)))]);
@@ -342,6 +342,16 @@ async function deductionViews(rows) {
 }
 
 async function listDeductions(query = {}) {
+  // Keep the absent / late cuts up to date (this month and last month).
+  const nowMonth = T.monthKey(new Date());
+  const prevMonth = T.monthKey(new Date(T.dayStart(`${nowMonth}-01`).getTime() - 86400000));
+  for (const m of [prevMonth, nowMonth]) {
+    try {
+      await syncAttendanceDeductions(m);
+    } catch (err) {
+      console.error('Attendance deductions sync failed:', err.message);
+    }
+  }
   const { page, limit, skip } = paging(query);
   const filter = {};
   if (query.status && query.status !== 'all') {
@@ -907,11 +917,72 @@ const manualOf = (l) => ({
 });
 const manualFromRun = (run) => new Map((run.lines || []).map((l) => [idOf(l.employee), manualOf(l)]));
 
+
+/* ------------------------------------------------------------------ */
+/* Attendance cuts need approval (owner, 2026-11-17)                    */
+/* ------------------------------------------------------------------ */
+// Absent / half day / late are worked out from attendance as before, but are
+// NOT taken from pay. Each month every employee gets one PENDING deduction per
+// kind (Deductions tab, next to till shortages and penalties). Approve = cut in
+// payroll; waive = never cut. New absences after a decision make a new pending
+// row for the extra only.
+const NEEDS_APPROVAL = new Set(['absent', 'half_day', 'late']);
+const ATT_REF = 'AttendanceMonth';
+
+async function syncAttendanceDeductions(month, { now = new Date() } = {}) {
+  const run = await PayrollRun.findOne({ month }).select('status').lean();
+  if (run && run.status !== 'draft') return; // month closed: leave it as it is
+  const { period, lines } = await buildMonthRaw(month, { now });
+  const existing = await PayrollDeduction.find({ refType: ATT_REF, refNo: month }).lean();
+  const by = new Map();
+  for (const d of existing) {
+    const k = `${idOf(d.employee)}|${d.type}`;
+    if (!by.has(k)) by.set(k, []);
+    by.get(k).push(d);
+  }
+  const date = new Date(Math.min(now.getTime(), period.endExclusive.getTime() - 1));
+  const wanted = new Set();
+  for (const l of lines) {
+    for (const c of l.pendingCuts || []) {
+      const k = `${idOf(l.employee)}|${c.key}`;
+      wanted.add(k);
+      const list = by.get(k) || [];
+      const decided = sum(list.filter((d) => d.status !== 'pending'), (d) => d.covers ?? d.amount);
+      const [pend, ...extra] = list.filter((d) => d.status === 'pending');
+      if (extra.length) await PayrollDeduction.deleteMany({ _id: { $in: extra.map((d) => d._id) }, status: 'pending' });
+      const left = rs(c.amount - decided);
+      const note = `${period.label}: ${c.detail}${decided > 0 ? ` (${fmtRs(decided)} already decided)` : ''}`.slice(0, 500);
+      if (left >= 1) {
+        if (!pend) {
+          await PayrollDeduction.create({ employee: l.employee, type: c.key, amount: left, covers: left, date, refType: ATT_REF, refNo: month, note, status: 'pending' });
+        } else if (pend.amount !== left || pend.note !== note) {
+          await PayrollDeduction.updateOne({ _id: pend._id, status: 'pending' }, { $set: { amount: left, covers: left, note, date } });
+        }
+      } else if (pend) {
+        await PayrollDeduction.deleteOne({ _id: pend._id, status: 'pending' });
+      }
+    }
+  }
+  // Absence fixed in attendance: its pending cut goes away.
+  const stale = existing.filter((d) => d.status === 'pending' && !wanted.has(`${idOf(d.employee)}|${d.type}`));
+  if (stale.length) await PayrollDeduction.deleteMany({ _id: { $in: stale.map((d) => d._id) }, status: 'pending' });
+}
+
+/** Sync the attendance cuts first, then build (every payroll read goes through here). */
+async function buildMonth(month, opts = {}) {
+  try {
+    await syncAttendanceDeductions(month, opts);
+  } catch (err) {
+    console.error('Attendance deductions sync failed:', err.message);
+  }
+  return buildMonthRaw(month, opts);
+}
+
 /**
  * Lines + warnings for a month (no writes).
  * @param manual Map employeeId -> manual inputs to keep (regenerate / approve check)
  */
-async function buildMonth(month, { now = new Date(), manual = new Map() } = {}) {
+async function buildMonthRaw(month, { now = new Date(), manual = new Map() } = {}) {
   const period = periodOf(month);
   // Everyone who may have worked in the month: active staff + those who left on/after the 1st.
   const candidates = await Employee.find({
@@ -989,6 +1060,9 @@ async function buildMonth(month, { now = new Date(), manual = new Map() } = {}) 
     if (tip && tip.amount > 0) {
       line.earnings = [...(line.earnings || []), { key: 'tips_salary', label: 'Tips (added to salary)', amount: rs(tip.amount), detail: `${tip.count} tip${tip.count === 1 ? '' : 's'}` }];
     }
+    // Absent / half day / late are not cut here: they wait in Deductions until approved.
+    line.pendingCuts = (line.deductions || []).filter((r) => NEEDS_APPROVAL.has(r.key));
+    line.deductions = (line.deductions || []).filter((r) => !NEEDS_APPROVAL.has(r.key));
     Object.assign(line, manualOf(manual.get(s.employeeId) || {}));
     return finishLine(line);
   });
@@ -1096,9 +1170,11 @@ async function salaryToDate({ now = new Date() } = {}) {
     const base = l.earnings.filter((r) => r.key === 'base').reduce((t, r) => t + r.amount, 0);
     const otherEarned = l.earnings.filter((r) => r.key !== 'base').reduce((t, r) => t + r.amount, 0);
     const baseSoFar = employed > 0 ? (base * daysSoFar) / employed : 0;
-    const cuts = l.deductions.filter((r) => AUTO_CUTS.has(r.key)).reduce((t, r) => t + r.amount, 0);
+    // Approved absent / half day / late deductions count as cuts here; pending ones are not cut.
+    const attApproved = (l.deductionItems || []).filter((d) => NEEDS_APPROVAL.has(d.type));
+    const cuts = l.deductions.filter((r) => AUTO_CUTS.has(r.key)).reduce((t, r) => t + r.amount, 0) + sum(attApproved, (d) => d.amount);
     const earned = Math.max(0, rs(baseSoFar + otherEarned - cuts));
-    const due = rs(sum(l.deductionItems || [], (d) => d.amount) + (Number(l.advanceSuggested) || 0));
+    const due = rs(sum((l.deductionItems || []).filter((d) => !NEEDS_APPROVAL.has(d.type)), (d) => d.amount) + (Number(l.advanceSuggested) || 0));
     return {
       employee: l.employee,
       name: l.name,
@@ -1731,6 +1807,7 @@ async function exportCsv(id) {
 
 module.exports = {
   salaryToDate,
+  syncAttendanceDeductions,
   // advances
   createAdvance,
   listAdvances,

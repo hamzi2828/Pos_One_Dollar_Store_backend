@@ -5,6 +5,7 @@
 // so the frontend displays a single trusted snapshot. Dates are interpreted in
 // the server's local timezone at the day boundary (start: 00:00:00, end:
 // 23:59:59.999) — the client sends YYYY-MM-DD strings.
+const mongoose = require('mongoose');
 const POSOrder = require('../models/posOrder');
 const Expense = require('../models/expense');
 const Salary = require('../models/salary');
@@ -278,6 +279,7 @@ const reportsController = {
         }
         for (const r of l.repayments || []) {
           if (!r.date || r.date < start || r.date > end) continue;
+          if (r.expense) continue; // paid by a "Loan Repayment" expense: counted with the expenses
           const amt = Number(r.amount) || 0;
           loanSummary.paidBack += amt;
           if (loanSide(r.method) === 'cash') loanSummary.cashOut += amt;
@@ -363,19 +365,68 @@ const reportsController = {
 
   // GET /api/reports/sales-summary?startDate=&endDate=&page=&limit=
   // Every POS bill of the window with cost / profit and payment-method totals.
+  // GET /api/reports/sales-tills — tills for the sales report's till picker (newest first).
+  // current = the latest till of each counter (open, or the last one closed).
+  salesTills: async (req, res) => {
+    try {
+      const CashSession = require('../models/cashSession');
+      const tills = await CashSession.find({ status: { $ne: 'deleted' } })
+        .select('sessionNo counter counterName cashierName status openedAt closedAt')
+        .sort({ openedAt: -1 })
+        .limit(120)
+        .lean();
+      const seen = new Set();
+      const current = [];
+      for (const t of tills) {
+        const key = String(t.counter || t.counterName || t._id);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        current.push(String(t._id));
+      }
+      return res.status(200).json({
+        success: true,
+        data: {
+          current,
+          tills: tills.map((t) => ({
+            _id: String(t._id),
+            sessionNo: t.sessionNo,
+            counterName: t.counterName || '',
+            cashierName: t.cashierName || '',
+            status: t.status,
+            openedAt: t.openedAt,
+            closedAt: t.closedAt || null,
+          })),
+        },
+      });
+    } catch (error) {
+      console.error('Sales tills error:', error);
+      return res.status(500).json({ success: false, message: 'Error loading tills', error: error.message });
+    }
+  },
+
+  // &sessions=id,id -> the bills of those tills instead of a date window (owner 2026-11-17:
+  // sale from one closing to the next).
   salesSummary: async (req, res) => {
     try {
       const { startDate, endDate } = req.query;
-      const start = toStartOfDay(startDate);
-      const end = toEndOfDay(endDate);
-      if (!start || !end) {
-        return res.status(400).json({ success: false, message: 'startDate and endDate are required' });
+      const sessionIds = String(req.query.sessions || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => mongoose.Types.ObjectId.isValid(s))
+        .map((s) => new mongoose.Types.ObjectId(s));
+      const match = { isDeleted: { $ne: true } };
+      if (sessionIds.length) {
+        match.cashSession = { $in: sessionIds };
+      } else {
+        const start = toStartOfDay(startDate);
+        const end = toEndOfDay(endDate);
+        if (!start || !end) {
+          return res.status(400).json({ success: false, message: 'startDate and endDate are required' });
+        }
+        match.createdAt = { $gte: start, $lte: end };
       }
 
-      const orders = await POSOrder.find({
-        isDeleted: { $ne: true },
-        createdAt: { $gte: start, $lte: end },
-      })
+      const orders = await POSOrder.find(match)
         .select('orderNumber total paidAmount pendingAmount paymentMethod paymentStatus orderStatus createdAt items customerInfo customer counter cashSession')
         .populate('customer', 'firstName lastName phone')
         .populate('items.product', 'name costPrice')
@@ -949,10 +1000,13 @@ const reportsController = {
       }
 
       // Shop use (own stock) is only shown in the expenses report, never subtracted.
+      // Loan repayments are not costs either.
       const expenses = await Expense.find({
         isDeleted: { $ne: true },
         date: { $gte: start, $lte: end },
         source: { $ne: 'shop_use' },
+        loanRepayLoan: null,
+        partner: null,
       })
         .select('amount')
         .lean();

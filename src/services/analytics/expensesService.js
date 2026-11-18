@@ -49,7 +49,8 @@ function fmtDay(key, withYear = false) {
 async function baseMatch(req, query) {
   const scope = await C.reportScope(req);
   const range = T.parseRange(query, { defaultFrom: 'month', maxDays: 1100 });
-  const match = { isDeleted: { $ne: true }, ...scope.salesMatch, date: { $gte: range.start, $lt: range.end } };
+  // Loan repayments are not expenses (services/loanRepayExpenseLink.js).
+  const match = { isDeleted: { $ne: true }, loanRepayLoan: null, partner: null, ...scope.salesMatch, date: { $gte: range.start, $lt: range.end } };
   if (query.category) match.category = String(query.category);
   if (query.source === 'shop_use') match.source = 'shop_use';
   else if (query.source === 'other') match.source = { $ne: 'shop_use' };

@@ -131,6 +131,7 @@ function dayFields(r) {
     inSource: sourceOf(r, 'checkIn'),
     outSource: sourceOf(r, 'checkOut'),
     lastCorrection: lastTimeCorrection(r),
+    lateNote: r && r.lateNote ? { text: r.lateNote, at: r.lateNoteAt || null } : null,
   };
 }
 

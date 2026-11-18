@@ -14,6 +14,10 @@ const PERMISSION_SECTIONS = [
             { key: 'dashboard', label: 'Dashboard', actions: ['view', 'export'] },
             { key: 'pos', label: 'POS', actions: ['view', 'create', 'edit', 'delete', 'export'] },
             { key: 'pos_orders', label: 'POS Orders', actions: ['view', 'create', 'edit', 'delete', 'export'] },
+            // Owner 2026-11-18: cashier may fix a bill from "Find a bill": payment method / split,
+            // full or part refund. Every change is kept in the bill's editLog (before -> after).
+            // NOT 'pos' edit: that one lets the cashier type prices at the POS.
+            { key: 'pos_bill_edit', label: 'Edit Bills (payment, split, refund)', actions: ['edit'] },
             // Give a free gift item at the POS (its cost goes to cost of sales).
             { key: 'pos_gifts', label: 'POS Gifts', actions: ['view', 'create'] },
             // Own till: open with a float, blind cash closing (cannot see expected cash / sales).
@@ -71,6 +75,7 @@ const PERMISSION_SECTIONS = [
             { key: 'report_expenses', label: 'Expenses', actions: ['view', 'export'] },
             { key: 'report_receivables', label: 'Receivables', actions: ['view', 'export'] },
             { key: 'report_cash_in_hand', label: 'Cash in Hand', actions: ['view', 'export'] },
+            { key: 'report_financial_statements', label: 'Financial Statements', actions: ['view', 'export'] },
             { key: 'report_demand', label: 'Demand List', actions: ['view', 'edit', 'export'] }, // edit = threshold % / par levels
             { key: 'report_trends', label: 'Sales Trends', actions: ['view', 'export'] },
             { key: 'report_slow_moving', label: 'Slow Moving', actions: ['view', 'edit', 'export'] }, // edit = days / sold % rule
@@ -251,7 +256,7 @@ const DEFAULT_ROLES = [
     {
         name: 'Cashier',
         description: 'Sells at the counter, adds expenses / refunds of their own open till and closes it (blind count). Cannot see sales totals.',
-        permissions: { pos: VC, till: VCE, till_expenses: VCE, customers: VC, desktop_pos: VC, desktop_download: V },
+        permissions: { pos: VC, pos_bill_edit: ['edit'], till: VCE, till_expenses: VCE, customers: VC, desktop_pos: VC, desktop_download: V },
     },
     {
         name: 'Warehouse Assistant',

@@ -52,6 +52,31 @@ router.post('/till-sessions/:id/draft', ...staff, can(['till', 'till_verify'], '
 router.post('/till-sessions/:id/day-cash', ...staff, can(['till', 'till_verify'], 'edit'), handle(till.dayCash));
 
 // ---- Cash closing report ----
+// Card machine settlement of a shop day (owner 2026-11-15): the total the POS machine
+// settled, typed by hand on Cash Closing → Combined → day, to compare with the system card.
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+router.get('/till-sessions/card-settlement', ...staff, can(['till_verify', 'report_cash_closing'], 'view'), handle(async (req, res) => {
+  const day = String(req.query.day || '');
+  if (!DAY_RE.test(day)) return res.status(400).json({ success: false, message: 'day must be YYYY-MM-DD' });
+  const doc = await require('mongoose').connection.db.collection('cardsettlements').findOne({ day });
+  res.json({ success: true, data: doc ? { day, amount: doc.amount, note: doc.note || '', byName: doc.byName || '', at: doc.at } : null });
+}));
+router.put('/till-sessions/card-settlement', ...staff, can('till_verify', 'edit'), handle(async (req, res) => {
+  const day = String((req.body || {}).day || '');
+  const raw = (req.body || {}).amount;
+  if (!DAY_RE.test(day)) return res.status(400).json({ success: false, message: 'day must be YYYY-MM-DD' });
+  const col = require('mongoose').connection.db.collection('cardsettlements');
+  if (raw === null || raw === '' || raw === undefined) {
+    await col.deleteOne({ day });
+    return res.json({ success: true, data: null });
+  }
+  const amount = Math.round(Number(raw) * 100) / 100;
+  if (!Number.isFinite(amount) || amount < 0 || amount > 100000000) return res.status(400).json({ success: false, message: 'Enter a valid amount' });
+  const u = req.user || {};
+  const set = { day, amount, note: String((req.body || {}).note || '').slice(0, 300), by: req.access && req.access.userId, byName: [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email || '', at: new Date() };
+  await col.updateOne({ day }, { $set: set }, { upsert: true });
+  res.json({ success: true, data: { day, amount, note: set.note, byName: set.byName, at: set.at } });
+}));
 router.get('/till-sessions/report/export', ...staff, can('report_cash_closing', 'export'), handle(till.exportCsv));
 router.get('/till-sessions/report', ...staff, can('report_cash_closing', 'view'), handle(till.report));
 

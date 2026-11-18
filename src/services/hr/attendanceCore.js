@@ -121,11 +121,15 @@ function evaluate(plan, record, policy, now = new Date()) {
   out.workedMinutes = worked();
   const early = Math.max(0, minutesBetween(checkOut, end));
   out.earlyLeaveMinutes = early > (Number(a.earlyLeaveGraceMinutes) || 0) ? early : 0;
-  out.overtimeMinutes = capOvertime(Math.max(0, minutesBetween(end, checkOut)));
+  const planned = Number(plan.workMinutes) || minutesBetween(start, end);
+  // Overtime = time after the shift end, but never more than the extra time
+  // actually worked (owner, 2026-11-17: came 6 h late, stayed 4 h after -> no overtime).
+  const afterEnd = Math.max(0, minutesBetween(end, checkOut));
+  const extraWorked = Math.max(0, out.workedMinutes - planned);
+  out.overtimeMinutes = capOvertime(Math.min(afterEnd, extraWorked));
   out.overtimeApproved = approval(out.overtimeMinutes);
 
   const hd = a.halfDay || {};
-  const planned = Number(plan.workMinutes) || minutesBetween(start, end);
   const tooLate = hd.enabled && lateCounts && out.lateMinutes > (Number(hd.lateAfterMinutes) || Infinity);
   const tooShort = hd.enabled && planned > 0 && out.workedMinutes < (planned * (Number(hd.minWorkedPct) || 0)) / 100;
   out.status = tooLate || tooShort ? 'half_day' : lateCounts ? 'late' : 'present';

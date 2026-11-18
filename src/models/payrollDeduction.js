@@ -7,7 +7,8 @@ const mongoose = require('mongoose');
 const payrollDeductionSchema = new mongoose.Schema(
   {
     employee: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', required: true },
-    type: { type: String, enum: ['till_shortage', 'damage', 'other'], required: true },
+    // absent / half_day / late: attendance cuts (owner, 2026-11-17) — never cut until approved here.
+    type: { type: String, enum: ['till_shortage', 'damage', 'other', 'absent', 'half_day', 'late'], required: true },
     amount: { type: Number, required: true, min: 0 },
     date: { type: Date, default: Date.now },
     refType: { type: String, default: '' }, // 'CashSession' ...
@@ -20,6 +21,8 @@ const payrollDeductionSchema = new mongoose.Schema(
     appliedMonth: { type: String, default: '' }, // 'YYYY-MM'
     appliedRun: { type: mongoose.Schema.Types.ObjectId, default: null },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    // Attendance cuts: the cut amount this row stands for (stays the same when approved for less).
+    covers: { type: Number, default: null },
   },
   { timestamps: true }
 );

@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 // src/controller/expenseController.js
 
 const Expense = require('../models/expense');
@@ -18,6 +19,8 @@ const EXPENSE_SEARCH_FIELDS = ['title', 'category', 'reference', 'notes'];
 const invLink = require('../services/investmentExpenseLink');
 const loanService = require('../services/loanService');
 const refundLink = require('../services/refundExpenseLink');
+const loanRepayLink = require('../services/loanRepayExpenseLink');
+const partnerDraw = require('../services/partnerDrawExpenseLink');
 const CashSession = require('../models/cashSession');
 const isYes = (v) => v === true || v === 'true';
 
@@ -146,12 +149,15 @@ const expenseController = {
                 });
             }
 
-            // Display-only rows (e.g. trip costs paid from a till) are listed too, marked.
-            const filter = { isDeleted: { $ne: true }, displayOnly: Expense.ALL_ROWS };
+            const filter = { isDeleted: { $ne: true } };
             // Cashier: only the expenses of their open till (dates do not matter).
             if (!scope.full) filter.cashSession = scope.session._id;
             if (category) filter.category = category;
             if (paymentMethod) filter.paymentMethod = paymentMethod;
+            // Counter filter (owner 2026-11-17): a counter id, or 'none' = not from a counter.
+            const counterQ = String(req.query.counter || '').trim();
+            if (counterQ === 'none') filter.counter = null;
+            else if (/^[a-f\d]{24}$/i.test(counterQ)) filter.counter = new mongoose.Types.ObjectId(counterQ);
             if (isActive === 'true') filter.isActive = true;
             else if (isActive === 'false') filter.isActive = false;
             if (scope.full && (startDate || endDate)) {
@@ -198,7 +204,7 @@ const expenseController = {
     getExpenseById: async (req, res) => {
         try {
             const { id } = req.params;
-            const expense = await Expense.findOne({ _id: id, isDeleted: { $ne: true }, displayOnly: Expense.ALL_ROWS }).lean();
+            const expense = await Expense.findOne({ _id: id, isDeleted: { $ne: true } }).lean();
             const scope = await scopeOf(req, 'view');
 
             if (!expense || !inScope(scope, expense)) {
@@ -216,6 +222,26 @@ const expenseController = {
         } catch (error) {
             console.error('Error fetching expense:', error);
             return res.status(500).json({ message: 'Failed to fetch expense' });
+        }
+    },
+
+    // GET /expenses/partner-options - partners for a "Profit Distribution" expense
+    getPartnerOptions: async (req, res) => {
+        try {
+            return res.json({ success: true, data: await partnerDraw.partnerOptions() });
+        } catch (error) {
+            console.error('Error listing partners:', error);
+            return res.status(500).json({ message: 'Failed to load partners' });
+        }
+    },
+
+    // GET /expenses/loan-options - open loans for a "Loan Repayment" expense
+    getLoanOptions: async (req, res) => {
+        try {
+            return res.json({ success: true, data: await loanRepayLink.openLoans() });
+        } catch (error) {
+            console.error('Error listing loans:', error);
+            return res.status(500).json({ message: 'Failed to load loans' });
         }
     },
 
@@ -344,6 +370,36 @@ const expenseController = {
                 }
             }
 
+            // Loan repayment: the loan is required and the amount can't go over what is left on it.
+            let repayLoan = null;
+            if (loanRepayLink.isLoanRepay(parsedCategories.length ? parsedCategories : categoryValue)) {
+                if (invPick || fromPersonal || refundBill) {
+                    dropLocal(files);
+                    return res.status(400).json({ message: 'A loan repayment cannot also be a refund, pay an investment bill or be paid from personal money.' });
+                }
+                try {
+                    repayLoan = await loanRepayLink.checkRepay(req.body.loanId, Number(amount));
+                } catch (e) {
+                    dropLocal(files);
+                    return res.status(e.status || 400).json({ message: e.message });
+                }
+            }
+
+            // Profit distribution: which partner took the money (not a shop expense).
+            let drawPartner = null;
+            if (partnerDraw.isPartnerDraw(parsedCategories.length ? parsedCategories : categoryValue)) {
+                if (invPick || fromPersonal || refundBill || repayLoan) {
+                    dropLocal(files);
+                    return res.status(400).json({ message: 'A profit distribution cannot also be a refund, loan repayment, investment bill or personal money.' });
+                }
+                try {
+                    drawPartner = await partnerDraw.checkPartner(req.body.partnerId);
+                } catch (e) {
+                    dropLocal(files);
+                    return res.status(e.status || 400).json({ message: e.message });
+                }
+            }
+
             // Owner 2026-11-10: cash out of a drawer must say which counter, or the till math goes wrong.
             if (!tillOnly && isCash && !fromPersonal && !counterPick.counter && (await require('../models/saleCounter').countDocuments({ isActive: true, isDeleted: { $ne: true } })) > 0) {
                 dropLocal(files);
@@ -378,6 +434,10 @@ const expenseController = {
                 investmentTitle: invPick ? invPick.title : '',
                 posOrder: refundBill ? refundBill._id : null,
                 posOrderNumber: refundBill ? refundBill.orderNumber : '',
+                loanRepayLoan: repayLoan ? repayLoan._id : null,
+                loanRepayNo: repayLoan ? repayLoan.loanNo : '',
+                partner: drawPartner ? drawPartner._id : null,
+                partnerName: drawPartner ? drawPartner.name : '',
                 cashSession: tillOnly ? scope.session._id : null,
                 createdBy: (req.access && req.access.userId) || null,
                 createdByName: userName(req),
@@ -388,6 +448,14 @@ const expenseController = {
                 fromPersonal,
             });
             if (invPick) await invLink.sync(expense);
+            if (repayLoan) {
+                try {
+                    await loanRepayLink.sync(expense, { user: req.user });
+                } catch (e) {
+                    await Expense.deleteOne({ _id: expense._id });
+                    return res.status(e.status || 400).json({ message: e.message || 'Could not add the loan repayment' });
+                }
+            }
             if (fromPersonal) {
                 try {
                     const loan = await loanService.createForExpense(expense, { lenderType: 'person', lender: req.body.lenderId }, { user: req.user });
@@ -441,6 +509,7 @@ const expenseController = {
             }
             try {
                 await loanService.checkExpenseAmount(expense, next);
+                if (expense.loanRepayLoan && next > 0) await loanRepayLink.checkRepay(expense.loanRepayLoan, next, expense._id);
             } catch (e) {
                 return res.status(e.status || 400).json({ message: e.message });
             }
@@ -456,6 +525,7 @@ const expenseController = {
             expense.amount = next;
             await expense.save();
             await loanService.syncFromExpense(expense);
+            await loanRepayLink.sync(expense, { user: req.user });
             res.json({ success: true, data: withReceipts(expense), message: `Amount is now Rs ${next}` });
         } catch (error) {
             res.status(500).json({ message: error.message || 'Could not add the adjustment' });
@@ -486,6 +556,26 @@ const expenseController = {
                     message: expense.posOrder
                         ? `This is a refund on bill ${expense.posOrderNumber}: its category must stay Refund.`
                         : 'To record a refund, add a new expense with the Refund category and pick the bill.',
+                });
+            }
+
+            // A profit distribution stays one, and a normal expense can't become one here.
+            if (category !== undefined && (expense.partner ? !partnerDraw.isPartnerDraw(category) : partnerDraw.isPartnerDraw(category) && !partnerDraw.isPartnerDraw(expense.category))) {
+                dropLocal(files);
+                return res.status(400).json({
+                    message: expense.partner
+                        ? 'This is money taken by ' + expense.partnerName + ': its category must stay ' + partnerDraw.CATEGORY + '.'
+                        : 'To record money a partner took, add a new expense with the ' + partnerDraw.CATEGORY + ' category and pick the partner.',
+                });
+            }
+
+            // A loan repayment stays one (add a new expense to pay a loan back).
+            if (category !== undefined && (expense.loanRepayLoan ? !loanRepayLink.isLoanRepay(category) : loanRepayLink.isLoanRepay(category) && !loanRepayLink.isLoanRepay(expense.category))) {
+                dropLocal(files);
+                return res.status(400).json({
+                    message: expense.loanRepayLoan
+                        ? 'This pays back loan ' + expense.loanRepayNo + ': its category must stay ' + loanRepayLink.CATEGORY + '.'
+                        : 'To pay back a loan, add a new expense with the ' + loanRepayLink.CATEGORY + ' category and pick the loan.',
                 });
             }
 
@@ -555,6 +645,7 @@ const expenseController = {
             await expense.save();
             await invLink.sync(expense);
             await loanService.syncFromExpense(expense);
+            await loanRepayLink.sync(expense, { user: req.user });
 
             return res.status(200).json({
                 message: 'Expense updated successfully',
@@ -592,6 +683,8 @@ const expenseController = {
             await invLink.sync(expense);
             // Paid from personal money: its loan goes too.
             await loanService.syncFromExpense(expense);
+            // Loan repayment: its payment comes off the loan again.
+            await loanRepayLink.sync(expense);
 
             return res.status(200).json({
                 message: 'Expense deleted successfully',
@@ -697,6 +790,8 @@ const expenseController = {
         try {
             // "Refund" is always there (refunds on a POS bill).
             try { await refundLink.ensureCategory(); } catch (e) { console.error('Could not add the Refund category:', e.message); }
+            try { await loanRepayLink.ensureCategory(); } catch (e) { console.error('Could not add the Loan Repayment category:', e.message); }
+            try { await partnerDraw.ensureCategory(); } catch (e) { console.error('Could not add the Profit Distribution category:', e.message); }
             const categories = await ExpenseCategory
                 .find({ isDeleted: { $ne: true }, isActive: true })
                 .sort({ name: 1 })

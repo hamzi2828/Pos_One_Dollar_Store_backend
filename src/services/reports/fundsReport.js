@@ -107,10 +107,16 @@ async function funds() {
   const expenses = await db
     .collection('expenses')
     // Shop use = own stock; personal money = never left the shop (its loan is skipped too).
-    .find({ createdAt: { $gte: since }, isDeleted: { $ne: true }, displayOnly: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true } })
-    .project({ title: 1, amount: 1, paymentMethod: 1, createdAt: 1, date: 1 })
+    // Loan repayment expenses are counted once, as "loan paid back" (below).
+    .find({ createdAt: { $gte: since }, isDeleted: { $ne: true }, displayOnly: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true }, loanRepayLoan: null })
+    .project({ title: 1, amount: 1, paymentMethod: 1, createdAt: 1, date: 1, partner: 1, partnerName: 1 })
     .toArray();
-  for (const e of expenses) movements.push({ at: placeOn(e.date, e.createdAt, since), kind: 'expense', label: `Expense · ${e.title || ''} (${e.paymentMethod || ''})`, amount: -round2(e.amount) });
+  for (const e of expenses)
+    movements.push(
+      e.partner
+        ? { at: placeOn(e.date, e.createdAt, since), kind: 'partner_draw', label: `Taken by ${e.partnerName || 'partner'} · ${e.title || ''} (${e.paymentMethod || ''})`, amount: -round2(e.amount) }
+        : { at: placeOn(e.date, e.createdAt, since), kind: 'expense', label: `Expense · ${e.title || ''} (${e.paymentMethod || ''})`, amount: -round2(e.amount) }
+    );
 
   // Loans: money borrowed comes in, paying it back goes out (owner 2026-11-06).
   const loans = await db
@@ -138,6 +144,7 @@ async function funds() {
     vendorPayments: -sum('vendor_payment'),
     tripCosts: -sum('trip_cost'),
     expenses: -sum('expense'),
+    partnerDraws: -sum('partner_draw'),
     loansIn: sum('loan_in'),
     loansPaid: -sum('loan_out'),
   };
