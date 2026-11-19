@@ -5,6 +5,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const compression = require('compression');
+const requestTiming = require('./src/middleware/requestTiming');
 const path = require('path');
 const { mongoose, ensureConnection } = require('./src/config/mongo');
 const app = express();
@@ -23,11 +24,15 @@ const FRONTEND_ORIGINS = (process.env.FRONTEND_ORIGIN || 'http://localhost:3000'
 app.use(cors({
   origin: [...FRONTEND_ORIGINS, 'http://localhost:3000', 'http://localhost:3001'],
   credentials: true,
+  exposedHeaders: ['Server-Timing'], // POS speed logs read the server's own time
 }));
 
 // Gzip every API answer (Vercel did this for us; on Coolify the app must).
 // Product lists and the offline catalogue are big JSON and the shop's link to
 // the server is slow, so this cuts load time a lot.
+// Time every request (Server-Timing header + log of slow ones). First, so it
+// measures everything the server does.
+app.use(requestTiming);
 app.use(compression());
 
 app.use(express.json({ limit: '50mb' }));
