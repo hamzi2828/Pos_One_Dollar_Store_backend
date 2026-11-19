@@ -334,8 +334,8 @@ const DEDUCTION_TYPES = ['till_shortage', 'absent', 'half_day', 'late', ...MANUA
 const TYPE_GROUP = { damage: ['damage', 'missing_item'] }; // filter key -> stored types
 const DEDUCTION_LABEL = {
   till_shortage: 'Till shortage',
-  damage: 'Damage / missing item',
-  missing_item: 'Damage / missing item',
+  damage: 'Damage',
+  missing_item: 'Damage',
   staff_purchase: 'Goods taken by staff',
   fine: 'Fine / rule break',
   uniform: 'Uniform / ID card',
