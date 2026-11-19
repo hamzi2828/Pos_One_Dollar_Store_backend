@@ -4,6 +4,7 @@ process.env.TZ = process.env.SHOP_TZ || 'Asia/Karachi';
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const compression = require('compression');
 const path = require('path');
 const { mongoose, ensureConnection } = require('./src/config/mongo');
 const app = express();
@@ -23,6 +24,11 @@ app.use(cors({
   origin: [...FRONTEND_ORIGINS, 'http://localhost:3000', 'http://localhost:3001'],
   credentials: true,
 }));
+
+// Gzip every API answer (Vercel did this for us; on Coolify the app must).
+// Product lists and the offline catalogue are big JSON and the shop's link to
+// the server is slow, so this cuts load time a lot.
+app.use(compression());
 
 app.use(express.json({ limit: '50mb' }));
 
