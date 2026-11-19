@@ -9,3 +9,4 @@ uploads/
 # Data backups written by the fix scripts, and the fingerprint reader runtime file
 scripts/*-backup-*.json
 .sgfplib_config.ini
+.claude/
