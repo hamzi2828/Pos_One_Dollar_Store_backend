@@ -327,12 +327,15 @@ async function employeeOptions(query = {}) {
 
 // Types a person can add by hand ("Add deduction"). Till shortage comes from cash
 // closing; absent / half day / late come from attendance. Owner 2026-11-19: more kinds.
-const MANUAL_DEDUCTION_TYPES = ['damage', 'missing_item', 'staff_purchase', 'fine', 'uniform', 'other'];
+// Owner 2026-11-19: damage and missing / lost item are ONE type ('damage'). 'missing_item'
+// stays valid for old rows and is counted / filtered together with 'damage'.
+const MANUAL_DEDUCTION_TYPES = ['damage', 'fine', 'uniform', 'other']; // 'staff_purchase' removed (owner 2026-11-19), old rows still show
 const DEDUCTION_TYPES = ['till_shortage', 'absent', 'half_day', 'late', ...MANUAL_DEDUCTION_TYPES];
+const TYPE_GROUP = { damage: ['damage', 'missing_item'] }; // filter key -> stored types
 const DEDUCTION_LABEL = {
   till_shortage: 'Till shortage',
-  damage: 'Damage',
-  missing_item: 'Missing / lost item',
+  damage: 'Damage / missing item',
+  missing_item: 'Damage / missing item',
   staff_purchase: 'Goods taken by staff',
   fine: 'Fine / rule break',
   uniform: 'Uniform / ID card',
@@ -401,7 +404,7 @@ async function listDeductions(query = {}, { scope = null } = {}) {
   }
   if (query.type && query.type !== 'all') {
     if (!DEDUCTION_TYPES.includes(query.type)) throw httpError(400, 'Unknown type');
-    filter.type = query.type;
+    filter.type = TYPE_GROUP[query.type] ? { $in: TYPE_GROUP[query.type] } : query.type;
   }
   if (query.employee || query.employeeId) {
     const id = query.employee || query.employeeId;
@@ -423,7 +426,10 @@ async function listDeductions(query = {}, { scope = null } = {}) {
   for (const c of counts) if (summary[c._id]) summary[c._id] = { count: c.count, amount: r2(c.amount) };
   summary.listed = { count: total, amount: rs(sum(byDay, (d) => d.amount)) };
   const tc = new Map(typeCounts.map((c) => [c._id, c]));
-  const byType = DEDUCTION_TYPES.map((k) => ({ key: k, label: DEDUCTION_LABEL[k], count: (tc.get(k) || {}).count || 0, amount: rs((tc.get(k) || {}).amount) }));
+  const byType = DEDUCTION_TYPES.map((k) => {
+    const parts = (TYPE_GROUP[k] || [k]).map((t) => tc.get(t) || {});
+    return { key: k, label: DEDUCTION_LABEL[k], count: sum(parts, (p) => p.count), amount: rs(sum(parts, (p) => p.amount)) };
+  });
   return {
     data: await deductionViews(rows, scope),
     meta: {

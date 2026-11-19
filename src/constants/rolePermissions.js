@@ -18,6 +18,8 @@ const PERMISSION_SECTIONS = [
             // full or part refund. Every change is kept in the bill's editLog (before -> after).
             // NOT 'pos' edit: that one lets the cashier type prices at the POS.
             { key: 'pos_bill_edit', label: 'Edit Bills (payment, split, refund)', actions: ['edit'] },
+            // Owner 2026-11-19 (Manager): POS Orders shows only the last 5 bills; older ones by search.
+            { key: 'pos_orders_recent_only', label: 'POS Orders: only last 5 bills (search for older)', actions: ['view'] },
             // Give a free gift item at the POS (its cost goes to cost of sales).
             { key: 'pos_gifts', label: 'POS Gifts', actions: ['view', 'create'] },
             // Own till: open with a float, blind cash closing (cannot see expected cash / sales).
@@ -198,9 +200,13 @@ const PERMISSION_SECTIONS = [
 /** Flat list of every permission group across every section. */
 const PERMISSION_GROUPS = PERMISSION_SECTIONS.flatMap((s) => s.groups);
 
+// Keys that LIMIT what a role sees (ticking them takes something away). Never part of "everything".
+const RESTRICTING_KEYS = new Set(['pos_orders_recent_only']);
+
 /** Build the full permission map (every action for every group). Used for the Admin role. */
 function buildAllPermissions() {
     return PERMISSION_GROUPS.reduce((acc, g) => {
+        if (RESTRICTING_KEYS.has(g.key)) return acc;
         acc[g.key] = [...g.actions];
         return acc;
     }, {});

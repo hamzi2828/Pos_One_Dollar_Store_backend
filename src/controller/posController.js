@@ -703,16 +703,27 @@ const posController = {
         }
       }
 
+      // Owner 2026-11-19 (Manager): `pos_orders_recent_only` sees only the last
+      // RECENT_ONLY bills; older ones only by search. Super admin is never limited.
+      const RECENT_ONLY = 5;
+      const recentOnly = !req.access.isSuperAdmin && req.access.can('pos_orders_recent_only', 'view');
+      const limitedList = recentOnly && !(search && String(search).trim());
+      let listQuery = query;
+      if (limitedList) {
+        const latest = await POSOrder.find(query).sort({ createdAt: -1 }).limit(RECENT_ONLY).select('_id').lean();
+        listQuery = { _id: { $in: latest.map((o) => o._id) } };
+      }
+
       // Pagination — default 25 per page, matches admin convention.
-      const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
+      const page = limitedList ? 1 : Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
       const limitParam = parseInt(String(req.query.limit || '25'), 10);
       const limit = Math.min(200, Math.max(1, Number.isFinite(limitParam) ? limitParam : 25));
       const skip = (page - 1) * limit;
 
       // Summary totals should reflect the full filtered set, not just the page.
       const [total, orders, summaryAgg] = await Promise.all([
-        POSOrder.countDocuments(query),
-        POSOrder.find(query)
+        POSOrder.countDocuments(listQuery),
+        POSOrder.find(listQuery)
           .populate('customer', 'firstName lastName email phone customerType source')
           .populate('cashier', 'firstName lastName email')
           .populate('counter', 'name code')
@@ -721,7 +732,7 @@ const posController = {
           .skip(skip)
           .limit(limit),
         POSOrder.aggregate([
-          { $match: query },
+          { $match: listQuery },
           {
             $group: {
               _id: null,
@@ -781,6 +792,8 @@ const posController = {
           ...(pricing.canSeeCost(req.access) ? { totalCogs: s.totalCogs || 0, totalGiftCost: s.totalGiftCost || 0 } : {}),
         },
         pagination: { total, page, pages: Math.max(1, Math.ceil(total / limit)), limit },
+        // Set when this user only sees the latest bills (search to find older ones).
+        ...(recentOnly ? { recentOnly: { limit: RECENT_ONLY, active: limitedList } } : {}),
         message: 'Orders fetched successfully',
       });
     } catch (error) {
