@@ -658,7 +658,7 @@ const reportsController = {
 
       // Summary aggregated across all products (ignores status filter so the
       // tiles give a shop-wide view) — fast single pipeline.
-      const [summaryAgg, total, pageProducts] = await Promise.all([
+      const [summaryAgg, total, pageProducts, categoryAgg] = await Promise.all([
         Product.aggregate([
           { $match: baseQuery },
           {
@@ -699,7 +699,35 @@ const reportsController = {
           .skip(skip)
           .limit(limit)
           .lean(),
+        // Units per category (owner 2026-11-20). Same products as the tiles (search applies).
+        Product.aggregate([
+          { $match: baseQuery },
+          {
+            $group: {
+              _id: { $trim: { input: { $ifNull: ['$category', ''] } } },
+              products: { $sum: 1 },
+              units: { $sum: { $ifNull: ['$stock', 0] } },
+              inStock: { $sum: { $cond: [{ $gt: ['$stock', threshold] }, 1, 0] } },
+              lowStock: { $sum: { $cond: [{ $and: [{ $gt: ['$stock', 0] }, { $lte: ['$stock', threshold] }] }, 1, 0] } },
+              outOfStock: { $sum: { $cond: [{ $lte: ['$stock', 0] }, 1, 0] } },
+              costValue: { $sum: { $multiply: [{ $max: [0, { $ifNull: ['$stock', 0] }] }, { $ifNull: ['$costPrice', 0] }] } },
+              saleValue: { $sum: { $multiply: [{ $max: [0, { $ifNull: ['$stock', 0] }] }, { $ifNull: ['$price', 0] }] } },
+            },
+          },
+          { $sort: { units: -1 } },
+        ]),
       ]);
+      const r2c = (n) => Math.round((Number(n) || 0) * 100) / 100;
+      const byCategory = categoryAgg.map((c) => ({
+        category: c._id || 'Uncategorized',
+        products: c.products,
+        units: c.units,
+        inStock: c.inStock,
+        lowStock: c.lowStock,
+        outOfStock: c.outOfStock,
+        costValue: r2c(c.costValue),
+        saleValue: r2c(c.saleValue),
+      }));
 
       const rows = pageProducts.map((p) => {
         const stock = Number(p.stock) || 0;
@@ -738,7 +766,7 @@ const reportsController = {
 
       return res.status(200).json({
         success: true,
-        data: { summary: { ...sa, threshold }, products: rows },
+        data: { summary: { ...sa, threshold }, products: rows, byCategory },
         pagination: buildPagination(page, limit, total),
         message: 'Stock report generated',
       });
