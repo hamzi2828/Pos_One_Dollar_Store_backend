@@ -38,6 +38,7 @@ const PayrollRun = require('../../models/payrollRun');
 const Expense = require('../../models/expense');
 const ExpenseCategory = require('../../models/expenseCategory');
 const Settings = require('../../models/settings');
+const User = require('../../models/user');
 const core = require('./attendanceCore');
 const schedule = require('./scheduleService');
 const policies = require('./policyService');
@@ -324,24 +325,60 @@ async function employeeOptions(query = {}) {
 /* Deductions                                                          */
 /* ------------------------------------------------------------------ */
 
-const DEDUCTION_TYPES = ['till_shortage', 'damage', 'other', 'absent', 'half_day', 'late'];
-const DEDUCTION_LABEL = { till_shortage: 'Till shortage', damage: 'Damage', other: 'Deduction', absent: 'Absent', half_day: 'Half days', late: 'Late' };
+// Types a person can add by hand ("Add deduction"). Till shortage comes from cash
+// closing; absent / half day / late come from attendance. Owner 2026-11-19: more kinds.
+const MANUAL_DEDUCTION_TYPES = ['damage', 'missing_item', 'staff_purchase', 'fine', 'uniform', 'other'];
+const DEDUCTION_TYPES = ['till_shortage', 'absent', 'half_day', 'late', ...MANUAL_DEDUCTION_TYPES];
+const DEDUCTION_LABEL = {
+  till_shortage: 'Till shortage',
+  damage: 'Damage',
+  missing_item: 'Missing / lost item',
+  staff_purchase: 'Goods taken by staff',
+  fine: 'Fine / rule break',
+  uniform: 'Uniform / ID card',
+  other: 'Deduction',
+  absent: 'Absent',
+  half_day: 'Half days',
+  late: 'Late',
+};
 
-async function deductionViews(rows) {
+const userName = (u) => (u ? [u.firstName, u.lastName].filter(Boolean).join(' ').trim() || u.email || '' : '');
+
+/**
+ * scope (from the controller): { userId, ownOnly, canDecideAll, canDecideOwn }.
+ * Each row gets addedByName / decidedByName and canDecide (may this caller approve / waive it).
+ */
+async function deductionViews(rows, scope = null) {
   const emps = await employeeMap([...new Set(rows.map((d) => idOf(d.employee)))]);
+  const userIds = [...new Set(rows.flatMap((d) => [idOf(d.createdBy), idOf(d.decidedBy)]).filter((v) => v && isId(v)))];
+  const users = new Map(
+    userIds.length ? (await User.find({ _id: { $in: userIds } }).select('firstName lastName email').lean()).map((u) => [String(u._id), u]) : []
+  );
   return rows.map((d) => {
     const e = emps.get(idOf(d.employee));
+    const mine = !!(scope && scope.userId && idOf(d.createdBy) === String(scope.userId));
     return {
       ...d,
       employeeName: nameOf(e) || 'Unknown employee',
       employeeCode: (e && e.employeeCode) || '',
       typeLabel: DEDUCTION_LABEL[d.type] || d.type,
       link: d.refType === 'CashSession' && d.refId ? `/admin/till?session=${d.refId}` : '',
+      addedByName: d.createdBy ? userName(users.get(idOf(d.createdBy))) || 'Staff user' : 'System',
+      decidedByName: d.decidedBy ? userName(users.get(idOf(d.decidedBy))) : '',
+      mine,
+      canDecide: !!scope && (scope.canDecideAll || (scope.canDecideOwn && mine)),
     };
   });
 }
 
-async function listDeductions(query = {}) {
+/** Own-only callers may decide only deductions they added. */
+function assertCanDecide(d, scope) {
+  if (!scope || scope.canDecideAll) return;
+  if (!scope.canDecideOwn) throw httpError(403, 'You cannot approve or waive deductions');
+  if (idOf(d.createdBy) !== String(scope.userId)) throw httpError(403, 'You can only approve or waive deductions you added');
+}
+
+async function listDeductions(query = {}, { scope = null } = {}) {
   // Keep the absent / late cuts up to date (this month and last month).
   const nowMonth = T.monthKey(new Date());
   const prevMonth = T.monthKey(new Date(T.dayStart(`${nowMonth}-01`).getTime() - 86400000));
@@ -354,6 +391,9 @@ async function listDeductions(query = {}) {
   }
   const { page, limit, skip } = paging(query);
   const filter = {};
+  // Own-only (e.g. the Manager): only the deductions this user added, summary included.
+  const base = scope && scope.ownOnly ? { createdBy: new ObjectId(String(scope.userId)) } : {};
+  Object.assign(filter, base);
   if (query.status && query.status !== 'all') {
     const list = String(query.status).split(',').filter(Boolean);
     if (list.some((s) => !PayrollDeduction.schema.path('status').enumValues.includes(s))) throw httpError(400, 'Unknown status');
@@ -370,16 +410,31 @@ async function listDeductions(query = {}) {
   }
   const range = dayRange(query);
   if (range) filter.date = range;
-  const [total, rows, counts, byDay] = await Promise.all([
+  // Type tabs: count per type with every filter except the type itself.
+  const { type: _ignored, ...typeFilter } = filter;
+  const [total, rows, counts, byDay, typeCounts] = await Promise.all([
     PayrollDeduction.countDocuments(filter),
     PayrollDeduction.find(filter).sort({ date: -1, _id: -1 }).skip(skip).limit(limit).lean(),
-    PayrollDeduction.aggregate([{ $group: { _id: '$status', count: { $sum: 1 }, amount: { $sum: '$amount' } } }]),
+    PayrollDeduction.aggregate([{ $match: base }, { $group: { _id: '$status', count: { $sum: 1 }, amount: { $sum: '$amount' } } }]),
     sumByDay(PayrollDeduction, filter),
+    PayrollDeduction.aggregate([{ $match: typeFilter }, { $group: { _id: '$type', count: { $sum: 1 }, amount: { $sum: '$amount' } } }]),
   ]);
   const summary = { pending: { count: 0, amount: 0 }, approved: { count: 0, amount: 0 }, applied: { count: 0, amount: 0 }, waived: { count: 0, amount: 0 } };
   for (const c of counts) if (summary[c._id]) summary[c._id] = { count: c.count, amount: r2(c.amount) };
   summary.listed = { count: total, amount: rs(sum(byDay, (d) => d.amount)) };
-  return { data: await deductionViews(rows), meta: { ...pageMeta({ page, limit }, total), summary, byDay } };
+  const tc = new Map(typeCounts.map((c) => [c._id, c]));
+  const byType = DEDUCTION_TYPES.map((k) => ({ key: k, label: DEDUCTION_LABEL[k], count: (tc.get(k) || {}).count || 0, amount: rs((tc.get(k) || {}).amount) }));
+  return {
+    data: await deductionViews(rows, scope),
+    meta: {
+      ...pageMeta({ page, limit }, total),
+      summary,
+      byDay,
+      byType,
+      ownOnly: !!(scope && scope.ownOnly),
+      types: MANUAL_DEDUCTION_TYPES.map((k) => ({ key: k, label: DEDUCTION_LABEL[k] })),
+    },
+  };
 }
 
 async function getDeductionDoc(id) {
@@ -389,10 +444,12 @@ async function getDeductionDoc(id) {
   return d;
 }
 
-async function createDeduction(body = {}, { userId, canApprove = false, now = new Date() } = {}) {
+async function createDeduction(body = {}, { userId, canApprove = false, scope = null, now = new Date() } = {}) {
   const e = await loadEmployee(body.employeeId || body.employee);
   const type = String(body.type || 'other');
-  if (!['damage', 'other'].includes(type)) throw httpError(400, 'Type must be damage or other (till shortages come from cash closing)');
+  if (!MANUAL_DEDUCTION_TYPES.includes(type)) {
+    throw httpError(400, 'Pick a type from the list (till shortages come from cash closing; absent / late from attendance)');
+  }
   const amount = rupees(body.amount, 'Amount', { min: 1 });
   const note = str(body.note, 500);
   if (!note) throw httpError(400, 'Write what this deduction is for');
@@ -410,12 +467,13 @@ async function createDeduction(body = {}, { userId, canApprove = false, now = ne
     decidedAt: approveNow ? now : null,
     createdBy: userId || null,
   });
-  return (await deductionViews([doc.toObject()]))[0];
+  return (await deductionViews([doc.toObject()], scope))[0];
 }
 
 /** pending → approved (optionally for a smaller amount). */
-async function approveDeduction(id, body = {}, { userId, now = new Date() } = {}) {
+async function approveDeduction(id, body = {}, { userId, scope = null, now = new Date() } = {}) {
   const d = await getDeductionDoc(id);
+  assertCanDecide(d, scope);
   if (d.status !== 'pending') throw httpError(409, `This deduction is already ${d.status}`);
   const set = { status: 'approved', decidedBy: userId || null, decidedAt: now };
   if (body.amount !== undefined && body.amount !== null && body.amount !== '') {
@@ -428,12 +486,13 @@ async function approveDeduction(id, body = {}, { userId, now = new Date() } = {}
   }
   const updated = await PayrollDeduction.findOneAndUpdate({ _id: d._id, status: 'pending' }, { $set: set }, { new: true }).lean();
   if (!updated) throw httpError(409, 'This deduction was just changed. Refresh.');
-  return (await deductionViews([updated]))[0];
+  return (await deductionViews([updated], scope))[0];
 }
 
 /** pending | approved → waived (note required). Applied ones cannot be waived. */
-async function waiveDeduction(id, body = {}, { userId, now = new Date() } = {}) {
+async function waiveDeduction(id, body = {}, { userId, scope = null, now = new Date() } = {}) {
   const d = await getDeductionDoc(id);
+  assertCanDecide(d, scope);
   if (!['pending', 'approved'].includes(d.status)) throw httpError(409, `This deduction is already ${d.status}`);
   const why = str(body.note, 500);
   if (!why) throw httpError(400, 'Write why it is waived');
@@ -443,7 +502,7 @@ async function waiveDeduction(id, body = {}, { userId, now = new Date() } = {}) 
     { new: true }
   ).lean();
   if (!updated) throw httpError(409, 'This deduction was just changed. Refresh.');
-  return (await deductionViews([updated]))[0];
+  return (await deductionViews([updated], scope))[0];
 }
 
 /**

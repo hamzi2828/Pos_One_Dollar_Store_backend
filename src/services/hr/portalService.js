@@ -210,7 +210,7 @@ async function profile(userId, { now = new Date() } = {}) {
  * simple): salary, earned so far, overtime (normal + after-12-hours), cuts
  * (approved = taken, pending = waiting for the manager), tips.
  */
-const DED_LABEL = { till_shortage: 'Till short', damage: 'Damage', other: 'Penalty', absent: 'Absent', half_day: 'Half day', late: 'Late' };
+const DED_LABEL = { till_shortage: 'Till short', damage: 'Damage', other: 'Penalty', absent: 'Absent', half_day: 'Half day', late: 'Late', missing_item: 'Missing item', staff_purchase: 'Goods taken', fine: 'Fine', uniform: 'Uniform / ID card' };
 async function payThisMonth(e, now) {
   try {
     const month = T.monthKey(now);

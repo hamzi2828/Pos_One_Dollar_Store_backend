@@ -142,6 +142,9 @@ const PERMISSION_SECTIONS = [
             { key: 'attendance_month', label: 'Attendance: Month sheet only', actions: ['view', 'export'] },
             // Payroll, advances and deductions; edit = approve / pay.
             { key: 'payroll', label: 'Payroll & Advances', actions: ['view', 'create', 'edit', 'delete', 'export'] },
+            // Owner 2026-11-19: for the Manager. Add deductions and approve / waive ONLY the ones
+            // they added; without payroll `edit` they see only their own deductions.
+            { key: 'payroll_own_deductions', label: 'Deductions: add & approve own only', actions: ['view', 'create', 'edit'] },
             // Which employees look after which product category (drives Category Performance).
             { key: 'category_assignments', label: 'Category Staff', actions: ['view', 'edit'] },
         ],
@@ -253,6 +256,7 @@ const DEFAULT_ROLES = [
             staff: VCE, roles: V, activity_log: V, notifications: V,
             shifts: ['view', 'create', 'edit', 'delete'], hr_policies: V, attendance: ['view', 'create', 'edit', 'export'],
             attendance_kiosk: VC, desktop_pos: VC, desktop_download: V, payroll: ['view', 'create', 'export'],
+            payroll_own_deductions: VCE,
         },
     },
     {

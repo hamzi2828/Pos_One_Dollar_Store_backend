@@ -8,7 +8,13 @@ const payrollDeductionSchema = new mongoose.Schema(
   {
     employee: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', required: true },
     // absent / half_day / late: attendance cuts (owner, 2026-11-17) — never cut until approved here.
-    type: { type: String, enum: ['till_shortage', 'damage', 'other', 'absent', 'half_day', 'late'], required: true },
+    // missing_item / staff_purchase / fine / uniform: more hand-added kinds (owner, 2026-11-19).
+    type: {
+      type: String,
+      enum: ['till_shortage', 'damage', 'other', 'absent', 'half_day', 'late', 'missing_item', 'staff_purchase', 'fine', 'uniform'],
+      required: true,
+    },
+    // createdBy below = who added it ("Added by" on the Deductions tab).
     amount: { type: Number, required: true, min: 0 },
     date: { type: Date, default: Date.now },
     refType: { type: String, default: '' }, // 'CashSession' ...

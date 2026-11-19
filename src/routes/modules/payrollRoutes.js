@@ -14,7 +14,7 @@ const tips = require('../../controller/store/staffTipController');
 const router = express.Router();
 
 // ----- Staff picker -----
-router.get('/payroll/employees', ...staff, can('payroll', 'view'), handle(runs.employees));
+router.get('/payroll/employees', ...staff, can(['payroll', 'payroll_own_deductions'], 'view'), handle(runs.employees));
 
 // ----- Payroll runs -----
 router.get('/payroll/to-date', ...staff, can('payroll', 'view'), handle(runs.toDate));
@@ -38,10 +38,13 @@ router.get('/salary-advances/:id', ...staff, can('payroll', 'view'), handle(adva
 router.post('/salary-advances/:id/cancel', ...staff, can('payroll', 'edit'), handle(advances.cancel));
 
 // ----- Deductions -----
-router.get('/payroll-deductions', ...staff, can('payroll', 'view'), handle(deductions.list));
-router.post('/payroll-deductions', ...staff, can('payroll', 'create'), handle(deductions.create));
-router.post('/payroll-deductions/:id/approve', ...staff, can('payroll', 'edit'), handle(deductions.approve));
-router.post('/payroll-deductions/:id/waive', ...staff, can('payroll', 'edit'), handle(deductions.waive));
+// `payroll_own_deductions` (Manager): add, and approve / waive only the ones they added;
+// the controller limits the list and the decisions to their own rows.
+const DED = ['payroll', 'payroll_own_deductions'];
+router.get('/payroll-deductions', ...staff, can(DED, 'view'), handle(deductions.list));
+router.post('/payroll-deductions', ...staff, can(DED, 'create'), handle(deductions.create));
+router.post('/payroll-deductions/:id/approve', ...staff, can(DED, 'edit'), handle(deductions.approve));
+router.post('/payroll-deductions/:id/waive', ...staff, can(DED, 'edit'), handle(deductions.waive));
 
 // ----- Staff tips (each one is an expense in "Staff Tips", not salary) -----
 router.get('/staff-tips', ...staff, can('payroll', 'view'), handle(tips.list));
