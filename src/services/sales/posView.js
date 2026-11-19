@@ -100,4 +100,56 @@ async function attachShelfCodes(products, branchId) {
   return list;
 }
 
-module.exports = { productForViewer, orderForViewer, shelfCodeMap, attachShelfCodes, stripUnitCosts };
+/* ---------------------------------------------------------------------------
+ * POS screen answers (GET /api/pos/products, /products/barcode/:code) go to the
+ * counter over a slow link, so they leave out what the POS page never reads
+ * (checked against pos_frontend admin/pos: it uses _id, name, slug, sku, barcode,
+ * price, discountedPrice, stock, piecesPerSale, category, thumbnailUrl,
+ * bannerUrls, colorMedia, productType, variants[color, size, price,
+ * discountedPrice, stock, sku, variantId, _id, shelfCodes], shelfCodes,
+ * shortCode, priceTier). Stock numbers are worked out BEFORE trimming.
+ * ------------------------------------------------------------------------- */
+
+// Text / history / internal code lists the POS never shows. Also safe to leave
+// out of the DB read (POS_LIST_EXCLUDE): nothing on the POS path reads them.
+const POS_SKIP_FIELDS = [
+  'description', 'shortDescription', 'features', 'tags',
+  'dimensionLength', 'dimensionWidth', 'dimensionHeight', 'weight',
+  'stockCodes', 'scanCodes',
+  'parLevel', 'reorderPct', 'lastReceivedAt', 'lastReceivedQty', 'firstReceivedAt', 'consignmentVendor',
+  'isDeleted', 'deletedAt', 'deletedBy', '__v',
+];
+// Needed to work out the shop's stock, then dropped from the answer.
+const POS_STOCK_FIELDS = ['batches', 'branchStock', 'totalStock', 'stockBranch'];
+const POS_VARIANT_SKIP = ['batches', 'branchStock', 'totalStock', 'lastReceivedAt', 'lastReceivedQty', 'firstReceivedAt'];
+
+/** Mongoose select() string that leaves POS_SKIP_FIELDS out of the read. */
+const POS_LIST_EXCLUDE = POS_SKIP_FIELDS.map((f) => `-${f}`).join(' ');
+
+/** Plain product for the POS screen (stock already per shop): drops unused heavy fields. */
+function posScreenProduct(product) {
+  const p = toPlain(product);
+  if (!p || typeof p !== 'object') return p;
+  const out = { ...p };
+  for (const f of POS_SKIP_FIELDS) delete out[f];
+  for (const f of POS_STOCK_FIELDS) delete out[f];
+  if (Array.isArray(out.variants)) {
+    out.variants = out.variants.map((v) => {
+      if (!v || typeof v !== 'object') return v;
+      const vo = { ...v };
+      for (const f of POS_VARIANT_SKIP) delete vo[f];
+      return vo;
+    });
+  }
+  return out;
+}
+
+module.exports = {
+  productForViewer,
+  orderForViewer,
+  shelfCodeMap,
+  attachShelfCodes,
+  stripUnitCosts,
+  posScreenProduct,
+  POS_LIST_EXCLUDE,
+};

@@ -22,7 +22,7 @@ const stockService = require('../services/stockService');
 const tillService = require('../services/tillService');
 const locationService = require('../services/inventory/locationService');
 const pricing = require('../services/sales/pricingService');
-const { orderForViewer, productForViewer, attachShelfCodes } = require('../services/sales/posView');
+const { orderForViewer, productForViewer, attachShelfCodes, posScreenProduct, POS_LIST_EXCLUDE } = require('../services/sales/posView');
 const {
   PAYMENT_METHODS,
   PROOF_METHODS,
@@ -162,7 +162,9 @@ const posController = {
         }
       }
 
-      let productsQuery = Product.find(query).sort({ name: 1 });
+      // Index { status, name } serves the filter + sort. Text / history / code
+      // lists the POS never reads are not loaded (posView POS_LIST_EXCLUDE).
+      let productsQuery = Product.find(query).select(POS_LIST_EXCLUDE).sort({ name: 1 });
       if (limit) productsQuery = productsQuery.limit(parseInt(limit, 10));
 
       const found = await productsQuery.lean();
@@ -175,7 +177,8 @@ const posController = {
 
       return res.status(200).json({
         success: true,
-        data: products,
+        // Stock is per shop already; batches / branch rows / descriptions are left out.
+        data: products.map(posScreenProduct),
         message: 'Products fetched successfully',
       });
     } catch (error) {
@@ -278,7 +281,8 @@ const posController = {
           : available < match.qty
           ? `Only ${available} of ${label} in stock (sold anyway)`
           : undefined;
-      return res.status(200).json({ success: true, data: here, match, stockWarning, message: 'Product fetched successfully' });
+      // data: the product without what the POS never reads (posView.posScreenProduct).
+      return res.status(200).json({ success: true, data: posScreenProduct(here), match, stockWarning, message: 'Product fetched successfully' });
     } catch (error) {
       console.error('Get product by barcode error:', error);
       return res.status(400).json({ success: false, message: 'Error fetching product', error: error.message });

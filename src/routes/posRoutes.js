@@ -24,6 +24,13 @@ const can = (keys, action = 'view') => {
   return mw;
 };
 
+// Answers are per user (permissions, cost prices): never kept by a shared
+// cache / proxy; the browser must ask again every time (no-cache = revalidate,
+// so an ETag can still answer 304). Routes may set their own.
+router.use((req, res, next) => {
+  res.set('Cache-Control', 'private, no-cache');
+  next();
+});
 router.use(auth);
 router.use(loadAccess);
 
