@@ -415,23 +415,51 @@ const reportsController = {
         .filter((s) => mongoose.Types.ObjectId.isValid(s))
         .map((s) => new mongoose.Types.ObjectId(s));
       const match = { isDeleted: { $ne: true } };
+      // Date window = Pakistan days (same as the financial statements).
+      const DAY_RX = /^\d{4}-\d{2}-\d{2}$/;
+      let windowStart = null;
+      let windowEnd = null;
       if (sessionIds.length) {
         match.cashSession = { $in: sessionIds };
       } else {
-        const start = toStartOfDay(startDate);
-        const end = toEndOfDay(endDate);
-        if (!start || !end) {
+        windowStart = DAY_RX.test(String(startDate)) ? new Date(`${startDate}T00:00:00.000+05:00`) : toStartOfDay(startDate);
+        windowEnd = DAY_RX.test(String(endDate)) ? new Date(`${endDate}T23:59:59.999+05:00`) : toEndOfDay(endDate);
+        if (!windowStart || !windowEnd) {
           return res.status(400).json({ success: false, message: 'startDate and endDate are required' });
         }
-        match.createdAt = { $gte: start, $lte: end };
+        match.createdAt = { $gte: windowStart, $lte: windowEnd };
       }
 
       const orders = await POSOrder.find(match)
-        .select('orderNumber total paidAmount pendingAmount paymentMethod paymentStatus orderStatus createdAt items customerInfo customer counter cashSession')
+        .select('orderNumber total subtotal discount tax paidAmount pendingAmount paymentMethod paymentStatus orderStatus createdAt items customerInfo customer counter cashSession')
         .populate('customer', 'firstName lastName phone')
-        .populate('items.product', 'name costPrice')
         .sort({ createdAt: -1 })
         .lean();
+      // Products of the lines (deleted ones too, like the financial statements), in the
+      // same shape the page reads (items.product = { _id, name, costPrice }).
+      const pids = [...new Set(orders.flatMap((o) => (o.items || []).map((it) => it.product).filter(Boolean).map(String)))];
+      const prodById = new Map(
+        (pids.length ? await Product.find({ _id: { $in: pids } }).setOptions({ withDeleted: true }).select('name costPrice').lean() : []).map((p) => [
+          String(p._id),
+          p,
+        ])
+      );
+      for (const o of orders)
+        for (const it of o.items || []) if (it.product) it.product = prodById.get(String(it.product)) || { _id: it.product, name: 'Deleted product', costPrice: 0 };
+
+      // Refunds paid back (expenses in the "Refund" category) come off gross profit,
+      // like the financial statements. Only for a date window (not per till).
+      let refundsPaid = 0;
+      if (windowStart) {
+        const refundRows = await Expense.find({ isDeleted: { $ne: true }, displayOnly: { $ne: true }, date: { $gte: windowStart, $lte: windowEnd } })
+          .select('amount category categories loanRepayLoan partner')
+          .lean();
+        for (const e of refundRows) {
+          if (e.loanRepayLoan || e.partner) continue;
+          const cats = [e.category, ...(Array.isArray(e.categories) ? e.categories : [])].flatMap((c) => String(c || '').split(',')).filter(Boolean);
+          if (cats.some((c) => /^\s*refund\s*$/i.test(c))) refundsPaid += Number(e.amount) || 0;
+        }
+      }
 
       // Counter each bill was rung on ("Counter 1"...): the bill's counter, else its till's.
       const counterNames = new Map(
@@ -456,6 +484,11 @@ const reportsController = {
         totalPending: 0,
         totalCost: 0,
         totalProfit: 0,
+        // Gross profit basis (owner 2026-11-20, same as the financial statements):
+        // net sales = bill lines after discounts, tax left out, refunded / cancelled
+        // bills left out, minus refunds paid back. Gross profit = net sales - cost of goods.
+        netSales: 0,
+        refunds: 0,
         cashSales: 0,
         cardSales: 0,
         bankSales: 0,
@@ -465,10 +498,25 @@ const reportsController = {
       };
 
       const rows = orders.map((o) => {
-        const orderCost = billCost(o.items);
-        const profit = (o.total || 0) - orderCost;
-        summary.totalCost += orderCost;
-        summary.totalProfit += profit;
+        // Refunded / cancelled bills earn nothing (they still show in the list).
+        const counted = !['refunded', 'cancelled'].includes(o.orderStatus) && o.paymentStatus !== 'refunded';
+        const sub = Number(o.subtotal) || 0;
+        const factor = sub > 0 ? Math.max(0, Math.min(1, (sub - (Number(o.discount) || 0)) / sub)) : 1;
+        let netSale = 0;
+        let orderCost = 0;
+        for (const it of o.items || []) {
+          if (!it.product) continue; // odd old lines without a product
+          const qty = Number(it.quantity) || 0;
+          if (it.isGift !== true) netSale += Math.max(0, (Number(it.price) || 0) * qty - (Number(it.discount) || 0)) * factor;
+          const snap = it.costPrice;
+          orderCost += (typeof snap === 'number' && Number.isFinite(snap) ? snap : Number(it.product.costPrice) || 0) * qty;
+        }
+        const profit = counted ? netSale - orderCost : 0;
+        if (counted) {
+          summary.netSales += netSale;
+          summary.totalCost += orderCost;
+          summary.totalProfit += profit;
+        }
         summary.totalSales += o.total || 0;
         summary.totalPaid += o.paidAmount || 0;
         summary.totalPending += o.pendingAmount || 0;
@@ -480,8 +528,16 @@ const reportsController = {
         else if (m === 'card') summary.cardSales += o.total || 0;
         else if (m === 'bank') summary.bankSales += o.total || 0;
         else if (m === 'jazzcash') summary.jazzcash += o.total || 0;
-        return { ...o, costPrice: orderCost, profit, itemCount, counterName: counterOf(o) };
+        return { ...o, costPrice: counted ? orderCost : 0, netSale: counted ? netSale : 0, profit, counted, itemCount, counterName: counterOf(o) };
       });
+      summary.refunds = refundsPaid;
+      summary.netSales -= refundsPaid;
+      summary.totalProfit -= refundsPaid;
+      const r2 = (n) => Math.round(n * 100) / 100;
+      summary.netSales = r2(summary.netSales);
+      summary.totalCost = r2(summary.totalCost);
+      summary.totalProfit = r2(summary.totalProfit);
+      summary.refunds = r2(summary.refunds);
 
       // Same totals split by counter (owner, 2026-11-08).
       const byCounterMap = new Map();
@@ -489,7 +545,8 @@ const reportsController = {
         const name = r.counterName || 'No counter';
         const c =
           byCounterMap.get(name) ||
-          { name, orders: 0, sales: 0, paid: 0, pending: 0, cost: 0, profit: 0, cash: 0, card: 0, bank: 0, jazzcash: 0, items: 0 };
+          { name, orders: 0, sales: 0, netSales: 0, paid: 0, pending: 0, cost: 0, profit: 0, cash: 0, card: 0, bank: 0, jazzcash: 0, items: 0 };
+        c.netSales += r.netSale || 0;
         c.orders += 1;
         c.sales += r.total || 0;
         c.paid += r.paidAmount || 0;
