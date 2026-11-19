@@ -138,6 +138,8 @@ const PERMISSION_SECTIONS = [
             { key: 'hr_policies', label: 'HR Policies', actions: ['view', 'create', 'edit', 'delete'] },
             // create = manual punch, edit = correct times / approve overtime.
             { key: 'attendance', label: 'Attendance', actions: ['view', 'create', 'edit', 'export'] },
+            // Only the Month sheet of Attendance (read-only; export = download CSV). Owner 2026-11-19: for the Manager.
+            { key: 'attendance_month', label: 'Attendance: Month sheet only', actions: ['view', 'export'] },
             // Payroll, advances and deductions; edit = approve / pay.
             { key: 'payroll', label: 'Payroll & Advances', actions: ['view', 'create', 'edit', 'delete', 'export'] },
             // Which employees look after which product category (drives Category Performance).
