@@ -73,6 +73,10 @@ const FIN = () => require('../../services/reports/financialStatements');
 router.get('/analytics/financial/income', ...staff, can('report_financial_statements', 'view'), handle(async (req, res) => {
   res.json({ success: true, data: await FIN().incomeStatement(req.query || {}) });
 }));
+// Goods (vendor price) by vendor + paid to each vendor (owner 2026-11-20, Reports page).
+router.get('/analytics/financial/vendor-goods', ...staff, can(['report_financial_statements', 'report_vendor_payments'], 'view'), handle(async (req, res) => {
+  res.json({ success: true, data: await FIN().vendorGoodsReport(req.query || {}) });
+}));
 router.get('/analytics/financial/balance-sheet', ...staff, can('report_financial_statements', 'view'), handle(async (req, res) => {
   res.json({ success: true, data: await FIN().balanceSheet() });
 }));

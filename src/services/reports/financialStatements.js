@@ -851,4 +851,18 @@ async function setPartnerShare(id, body = {}) {
   return partners();
 }
 
-module.exports = { incomeStatement, balanceSheet, cashFlow, partners, setPartnerShare, START };
+/** Goods (vendor price) sold per vendor + paid to each vendor, for a period (Reports page). */
+async function vendorGoodsReport(query = {}) {
+  const r = range(query);
+  const orderMatch = { ...SALE_MATCH, createdAt: { $gte: r.start, $lte: r.end } };
+  const shares = await tripShares().catch(() => new Map());
+  const rows = await vendorGoods(orderMatch, r.start, r.end, shares);
+  const sum = (k) => round2(rows.reduce((t, x) => t + (x[k] || 0), 0));
+  return {
+    range: { from: r.from, to: r.to, systemStart: START },
+    summary: { vendors: rows.filter((x) => x.vendorId).length, goodsCost: sum('goodsCost'), qty: rows.reduce((t, x) => t + x.qty, 0), paid: sum('paid'), payments: rows.reduce((t, x) => t + x.payments, 0) },
+    rows,
+  };
+}
+
+module.exports = { incomeStatement, balanceSheet, cashFlow, partners, setPartnerShare, vendorGoodsReport, START };
