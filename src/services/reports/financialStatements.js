@@ -365,7 +365,15 @@ async function incomeFor(start, end) {
   const db = mongoose.connection.db;
   const orderMatch = { ...SALE_MATCH, createdAt: { $gte: start, $lte: end } };
 
-  const [lines, billAgg, expenses, damage, adjust, assets] = await Promise.all([
+  // Bills of the period refunded in full (owner 2026-11-20): shown in Sales and again
+  // in Refunds, so "Refunds given" holds every refund; net sales does not change.
+  const refundedMatch = {
+    isDeleted: { $ne: true },
+    orderStatus: { $ne: 'cancelled' },
+    $or: [{ orderStatus: 'refunded' }, { paymentStatus: 'refunded' }],
+    createdAt: { $gte: start, $lte: end },
+  };
+  const [lines, billAgg, expenses, damage, adjust, assets, refundedLines] = await Promise.all([
     salesLines({ orderMatch, groupBy: {} }),
     db
       .collection('posorders')
@@ -398,7 +406,9 @@ async function incomeFor(start, end) {
       .find({ ...NOT_DELETED, purchaseDate: { $lte: end } })
       .project({ purchasePrice: 1, quantity: 1, salvageValue: 1, usefulLifeYears: 1, depreciationMethod: 1, purchaseDate: 1, disposal: 1 })
       .toArray(),
+    salesLines({ orderMatch: refundedMatch, groupBy: {} }).catch(() => []),
   ]);
+  const fullRefunds = refundedLines.reduce((t, l) => t + (l.revenue || 0), 0);
 
   let revenue = 0;
   let cogs = 0;
@@ -437,7 +447,7 @@ async function incomeFor(start, end) {
   const countLoss = adjust[0] ? (adjust[0].out || 0) - (adjust[0].in || 0) : 0;
   const depreciation = assets.reduce((t, a) => t + assetDepreciation(a, start, end), 0);
 
-  const netSales = revenue - refunds;
+  const netSales = revenue - refunds; // refunded bills are not in `revenue`
   const gross = netSales - cogs;
   const otherCosts = damageLoss + countLoss + depreciation;
   const operating = gross - totalExpenses;
@@ -447,10 +457,12 @@ async function incomeFor(start, end) {
   return {
     bills: b.bills,
     itemsSold: qty,
-    sales: round2(revenue),
+    sales: round2(revenue + fullRefunds), // incl. bills refunded later (taken off again in refunds)
     billDiscounts: round2(b.discount),
     taxCollected: round2(b.tax),
-    refunds: round2(refunds),
+    refunds: round2(refunds + fullRefunds), // whole bills + part refunds
+    refundsFull: round2(fullRefunds),
+    refundsPartial: round2(refunds),
     netSales: round2(netSales),
     costOfGoods: round2(cogs),
     // Cost of goods split: vendor price of what was sold + its share of trip costs.
