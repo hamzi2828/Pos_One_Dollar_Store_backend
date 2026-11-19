@@ -37,6 +37,16 @@ the old behaviour (online only, a clear "No internet" message).
 
 ## 2. GET /api/pos/offline/catalog  (auth, `desktop_pos` view)
 
+Conditional download (saves the whole body on the slow shop link): every 200
+carries `ETag: W/"cat1-<hash>"` (also in `data.etag`) and `Cache-Control:
+private, no-cache`. Send it back as `If-None-Match: W/"cat1-<hash>"`; while
+nothing in the snapshot changed (products, stock, price tiers, rules, taxes,
+shop settings, customers, this user's limits, till rule) the answer is
+`304 Not Modified` with no body: keep the saved copy. The ETag is worked out
+from row counts + newest `updatedAt`, without building the snapshot
+(`offlineSaleService.catalogEtag`). `version` / `serverTime` of a kept copy stay
+those of its last 200.
+
 Query: none (always a full snapshot; the shop is small). Response `data`
 (final shape, built by `services/sales/offlineSaleService.js catalog`):
 

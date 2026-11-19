@@ -24,7 +24,9 @@ const FRONTEND_ORIGINS = (process.env.FRONTEND_ORIGIN || 'http://localhost:3000'
 app.use(cors({
   origin: [...FRONTEND_ORIGINS, 'http://localhost:3000', 'http://localhost:3001'],
   credentials: true,
-  exposedHeaders: ['Server-Timing'], // POS speed logs read the server's own time
+  // Server-Timing: POS speed logs read the server's own time.
+  // ETag: the POS keeps it to ask for the offline catalogue with If-None-Match.
+  exposedHeaders: ['Server-Timing', 'ETag'],
 }));
 
 // Gzip every API answer (Vercel did this for us; on Coolify the app must).

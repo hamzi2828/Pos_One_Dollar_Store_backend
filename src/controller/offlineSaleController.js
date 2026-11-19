@@ -19,11 +19,22 @@ const fail = (res, err, what) => {
 
 module.exports = {
   // GET /api/pos/offline/catalog — products, prices, rules, taxes and limits for selling offline.
+  // Conditional: the answer carries `ETag: W/"cat1-..."`; a PC that sends it back
+  // in `If-None-Match` gets 304 Not Modified (no body) while nothing changed.
   catalog: async (req, res) => {
     try {
-      const data = await offline.catalog(req.access, { branchId: await shopBranch(req) });
+      const branchId = await shopBranch(req);
+      const now = new Date();
+      // Private: per-user data (limits); always revalidate, never in a shared cache.
+      res.set('Cache-Control', 'private, no-cache');
+      const etag = await offline.catalogEtag(req.access, { branchId, now });
+      res.set('ETag', etag);
+      if (offline.etagMatches(req.get('If-None-Match'), etag)) return res.status(304).end();
+      const data = await offline.catalog(req.access, { branchId, now });
+      data.etag = etag; // same value as the header (handy to store with the snapshot)
       return res.status(200).json({ success: true, data });
     } catch (err) {
+      if (!res.headersSent) res.removeHeader('ETag'); // an error answer has no version
       return fail(res, err, 'load the offline catalogue');
     }
   },

@@ -12,6 +12,7 @@
 //   - createdAt / completedAt / paidAt = the real time of the sale (soldAt)
 //   - till = the cashier's session open at soldAt, else their open one, else none (NO_TILL)
 //   - the same clientId is never saved twice (unique index on offline.clientId)
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 const Product = require('../../models/product');
 const POSOrder = require('../../models/posOrder');
@@ -55,6 +56,76 @@ function unitOut(unit, product, branchId, mainBranchId) {
   };
 }
 
+// Bump when the catalogue shape / maths change, so every PC downloads it again.
+const CATALOG_FORMAT = 1;
+
+// The same filters catalog() uses (the ETag must follow exactly these rows).
+// Functions: Mongoose may write into a filter object, so each query gets its own.
+const productFilter = () => ({ status: { $in: ['published', 'out_of_stock'] } });
+const customerFilter = () => ({ isActive: true, isDeleted: { $ne: true }, role: { $ne: 'admin' }, phone: { $nin: [null, ''] } });
+const activeRulesFilter = (now) => ({ isActive: true, $or: [{ endsAt: null }, { endsAt: { $gte: now } }] });
+
+// { n, max } of a filtered collection: row count + newest updatedAt.
+// Every write that changes a catalogue row moves its updatedAt (Mongoose
+// timestamps; stockService / recost set it by hand); a row leaving the set
+// changes the count, a row joining it moves the max.
+async function countAndMax(Model, filter) {
+  const [r] = await Model.aggregate([
+    { $match: filter },
+    { $group: { _id: null, n: { $sum: 1 }, max: { $max: '$updatedAt' } } },
+  ]);
+  return r ? [r.n, r.max ? new Date(r.max).getTime() : 0] : [0, 0];
+}
+
+/**
+ * Cheap fingerprint of what catalog() would return for this user, WITHOUT
+ * building it (no product documents are loaded). Same inputs => same ETag.
+ * Weak ETag (W/"...") because gzip / proxies may re-encode the body.
+ * Compute it BEFORE building the payload: a change in between only causes one
+ * extra download next time, never a stale copy.
+ */
+async function catalogEtag(access, { branchId, now = new Date() } = {}) {
+  const mainBranchId = await getMainBranchId();
+  const shop = String(branchId || mainBranchId);
+  const [products, tiers, rules, settings, customers, limits, tillRequired] = await Promise.all([
+    countAndMax(Product, productFilter()),
+    countAndMax(PriceTier, {}),
+    // Few rows: the exact id list also catches a rule that just ended (endsAt < now).
+    DiscountRule.find(activeRulesFilter(now)).select('_id updatedAt').sort({ _id: 1 }).lean(),
+    Settings.getSettings(),
+    countAndMax(User, customerFilter()),
+    pricing.manualLimits(access),
+    tillService.isTillRequired(shop),
+  ]);
+  const can = (key, action) => (pricing.canDo(access, key, action) ? 1 : 0);
+  const s = settings || {};
+  const parts = [
+    CATALOG_FORMAT,
+    shop,
+    String(mainBranchId || ''),
+    products,
+    tiers,
+    rules.map((r) => `${r._id}:${r.updatedAt ? new Date(r.updatedAt).getTime() : 0}`),
+    customers,
+    [s.taxes || [], s.siteName, s.currency, s.logoUrl, s.address, s.mobileNumber, s.timezone],
+    [limits.maxManualDiscountPct, limits.unlimitedManualDiscount ? 1 : 0],
+    [can('pos_gifts', 'create'), can('pos', 'edit'), can('discounts', 'edit'), can('desktop_pos', 'create'), can('pos', 'create')],
+    tillRequired ? 1 : 0,
+  ];
+  const hash = crypto.createHash('sha1').update(JSON.stringify(parts)).digest('base64url').slice(0, 27);
+  return `W/"cat${CATALOG_FORMAT}-${hash}"`;
+}
+
+/** Does the request's If-None-Match header hold this ETag? (weak compare, RFC 9110) */
+function etagMatches(ifNoneMatch, etag) {
+  if (!ifNoneMatch || !etag) return false;
+  const bare = (t) => String(t).trim().replace(/^W\//, '');
+  const want = bare(etag);
+  return String(ifNoneMatch)
+    .split(',')
+    .some((t) => t.trim() === '*' || bare(t) === want);
+}
+
 /**
  * Full snapshot for the offline POS (docs/OFFLINE_SALES.md section 2).
  * Prices, rules, taxes and limits are exactly what pricingService.computeBill uses.
@@ -64,7 +135,7 @@ async function catalog(access, { branchId, now = new Date() } = {}) {
   const shop = String(branchId || mainBranchId);
 
   const [products, tiers, rules, settings, customers, limits, tillRequired] = await Promise.all([
-    Product.find({ status: { $in: ['published', 'out_of_stock'] } })
+    Product.find(productFilter())
       .select(
         'name slug sku shortCode barcodes stockCodes.code stockCodes.variantId price discountedPrice category thumbnailUrl productType variants stock branchStock batches priceTier status'
       )
@@ -72,11 +143,11 @@ async function catalog(access, { branchId, now = new Date() } = {}) {
       .lean(),
     PriceTier.find({}).select('name price').lean(),
     // Rules running now or starting later (the PC checks startsAt / endsAt at sale time).
-    DiscountRule.find({ isActive: true, $or: [{ endsAt: null }, { endsAt: { $gte: now } }] })
+    DiscountRule.find(activeRulesFilter(now))
       .sort({ priority: -1, createdAt: 1 })
       .lean(),
     Settings.getSettings(),
-    User.find({ isActive: true, isDeleted: { $ne: true }, role: { $ne: 'admin' }, phone: { $nin: [null, ''] } })
+    User.find(customerFilter())
       .select('firstName lastName phone')
       .sort({ updatedAt: -1 })
       .limit(MAX_CUSTOMERS)
@@ -460,4 +531,4 @@ async function uploadOrders(body, { access, branchId, now = new Date() } = {}) {
   return { results };
 }
 
-module.exports = { catalog, uploadOrders, MAX_ORDERS };
+module.exports = { catalog, catalogEtag, etagMatches, uploadOrders, MAX_ORDERS };
