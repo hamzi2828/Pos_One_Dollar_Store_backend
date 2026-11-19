@@ -329,7 +329,7 @@ async function employeeOptions(query = {}) {
 // closing; absent / half day / late come from attendance. Owner 2026-11-19: more kinds.
 // Owner 2026-11-19: damage and missing / lost item are ONE type ('damage'). 'missing_item'
 // stays valid for old rows and is counted / filtered together with 'damage'.
-const MANUAL_DEDUCTION_TYPES = ['damage', 'fine', 'uniform', 'other']; // 'staff_purchase' removed (owner 2026-11-19), old rows still show
+const MANUAL_DEDUCTION_TYPES = ['damage', 'fine', 'other']; // 'uniform' removed too (owner 2026-11-19) // 'staff_purchase' removed (owner 2026-11-19), old rows still show
 const DEDUCTION_TYPES = ['till_shortage', 'absent', 'half_day', 'late', ...MANUAL_DEDUCTION_TYPES];
 const TYPE_GROUP = { damage: ['damage', 'missing_item'] }; // filter key -> stored types
 const DEDUCTION_LABEL = {
