@@ -123,6 +123,146 @@ async function tripShares() {
   return out;
 }
 
+/**
+ * Net sales / cost / gross profit per counter (owner 2026-11-20). Same line rules as
+ * the totals; a bill's counter is its own, else its till's.
+ */
+async function counterSales(orderMatch) {
+  const db = mongoose.connection.db;
+  const lines = await salesLines({ orderMatch, groupBy: { c: '$counter', s: '$cashSession' } });
+  const counterIds = [...new Set(lines.map((l) => l.key.c).filter(Boolean).map(String))];
+  const sessionIds = [...new Set(lines.filter((l) => !l.key.c && l.key.s).map((l) => l.key.s))];
+  const [counters, sessions] = await Promise.all([
+    counterIds.length ? db.collection('salecounters').find({ _id: { $in: counterIds.map((x) => new mongoose.Types.ObjectId(x)) } }).project({ name: 1 }).toArray() : [],
+    sessionIds.length ? db.collection('cashsessions').find({ _id: { $in: sessionIds } }).project({ counter: 1, counterName: 1 }).toArray() : [],
+  ]);
+  const cName = new Map(counters.map((c) => [String(c._id), c.name]));
+  const sName = new Map(sessions.map((s) => [String(s._id), (s.counter && cName.get(String(s.counter))) || s.counterName || null]));
+  const acc = new Map();
+  for (const l of lines) {
+    const name = (l.key.c && cName.get(String(l.key.c))) || (l.key.s && sName.get(String(l.key.s))) || 'No counter';
+    const a = acc.get(name) || { counter: name, netSales: 0, cost: 0, qty: 0 };
+    a.netSales += l.revenue;
+    a.cost += l.cost;
+    a.qty += l.qty;
+    acc.set(name, a);
+  }
+  return [...acc.values()]
+    .map((a) => ({ counter: a.counter, netSales: round2(a.netSales), cost: round2(a.cost), grossProfit: round2(a.netSales - a.cost), itemsSold: a.qty }))
+    .sort((x, y) => x.counter.localeCompare(y.counter));
+}
+
+/**
+ * Goods (vendor price) of what was sold, per vendor, and what was paid to each vendor
+ * in the period (owner 2026-11-20). A sold piece's vendor is the stock code it was
+ * scanned with; otherwise the product's own code, else its latest stock.
+ */
+async function vendorGoods(orderMatch, start, end, shares) {
+  const db = mongoose.connection.db;
+  const [groups, payments] = await Promise.all([
+    db
+      .collection('posorders')
+      .aggregate([
+        { $match: orderMatch },
+        { $unwind: '$items' },
+        { $match: { 'items.product': { $ne: null } } },
+        {
+          $group: {
+            _id: { p: '$items.product', code: { $toUpper: { $ifNull: ['$items.scannedCode', ''] } } },
+            qty: { $sum: '$items.quantity' },
+            snapCost: { $sum: { $cond: [{ $isNumber: '$items.costPrice' }, { $multiply: ['$items.costPrice', '$items.quantity'] }, 0] } },
+            noCostQty: { $sum: { $cond: [{ $isNumber: '$items.costPrice' }, 0, '$items.quantity'] } },
+          },
+        },
+      ])
+      .toArray(),
+    db
+      .collection('vendorpayments')
+      .aggregate([
+        { $match: { status: { $ne: 'voided' }, date: { $gte: start, $lte: end } } },
+        { $group: { _id: '$vendor', paid: { $sum: '$amount' }, count: { $sum: 1 } } },
+      ])
+      .toArray(),
+  ]);
+  const pids = [...new Set(groups.map((g) => String(g._id.p)))];
+  const products = pids.length
+    ? await db
+        .collection('products')
+        .find({ _id: { $in: pids.map((x) => new mongoose.Types.ObjectId(x)) } })
+        .project({ costPrice: 1, 'stockCodes.code': 1, 'stockCodes.vendor': 1, 'stockCodes.vendorName': 1, 'stockCodes.plain': 1, 'stockCodes.undone': 1, 'stockCodes.createdAt': 1 })
+        .toArray()
+    : [];
+  const byP = new Map(products.map((p) => [String(p._id), p]));
+  // Products with no vendor on their stock codes: vendor of their latest posted goods receipt.
+  const noCode = products.filter((p) => !(p.stockCodes || []).some((c) => c && c.vendor)).map((p) => p._id);
+  const grnVendor = new Map(
+    noCode.length
+      ? (
+          await db
+            .collection('goodsreceipts')
+            .aggregate([
+              { $match: { 'entries.product': { $in: noCode } } },
+              { $unwind: '$entries' },
+              { $match: { 'entries.product': { $in: noCode }, 'entries.posted': true } },
+              { $sort: { createdAt: -1 } },
+              {
+                $group: {
+                  _id: '$entries.product',
+                  vendor: { $first: { $ifNull: ['$entries.vendor', '$vendor'] } },
+                  vendorName: { $first: { $ifNull: ['$entries.vendorName', '$vendorName'] } },
+                },
+              },
+            ])
+            .toArray()
+        ).map((r) => [String(r._id), r])
+      : []
+  );
+  const acc = new Map();
+  const bump = (id, name) => {
+    const k = id ? String(id) : 'none';
+    const a = acc.get(k) || { vendorId: id ? String(id) : null, name: name || '', goodsCost: 0, qty: 0, paid: 0, payments: 0 };
+    if (!a.name && name) a.name = name;
+    acc.set(k, a);
+    return a;
+  };
+  for (const g of groups) {
+    const p = byP.get(String(g._id.p));
+    const codes = ((p && p.stockCodes) || []).filter((c) => c && c.vendor);
+    const live = codes.filter((c) => !c.undone);
+    const sc =
+      (g._id.code && codes.find((c) => String(c.code || '').toUpperCase() === g._id.code)) ||
+      live.find((c) => c.plain) ||
+      live.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))[0] ||
+      grnVendor.get(String(g._id.p)) ||
+      null;
+    const cost = g.snapCost + g.noCostQty * ((p && Number(p.costPrice)) || 0);
+    const goods = cost * (1 - (shares.get(String(g._id.p)) || 0)); // vendor price part (trip costs out)
+    const a = bump(sc && sc.vendor, sc && sc.vendorName);
+    a.goodsCost += goods;
+    a.qty += g.qty;
+  }
+  for (const pay of payments) {
+    const a = bump(pay._id, '');
+    a.paid += pay.paid;
+    a.payments += pay.count;
+  }
+  const ids = [...acc.values()].map((a) => a.vendorId).filter(Boolean);
+  const vendors = ids.length
+    ? await db.collection('vendors').find({ _id: { $in: ids.map((x) => new mongoose.Types.ObjectId(x)) } }).project({ name: 1 }).toArray()
+    : [];
+  const vName = new Map(vendors.map((v) => [String(v._id), v.name]));
+  return [...acc.values()]
+    .map((a) => ({
+      vendorId: a.vendorId,
+      name: (a.vendorId && vName.get(a.vendorId)) || a.name || (a.vendorId ? 'Deleted vendor' : 'No vendor on record'),
+      goodsCost: round2(a.goodsCost),
+      qty: a.qty,
+      paid: round2(a.paid),
+      payments: a.payments,
+    }))
+    .sort((x, y) => y.goodsCost - x.goodsCost || y.paid - x.paid);
+}
+
 // ---------------------------------------------------------------------------
 // Income statement
 // ---------------------------------------------------------------------------
@@ -239,6 +379,15 @@ async function incomeFor(start, end) {
 async function incomeStatement(query = {}) {
   const r = range(query);
   const current = await incomeFor(r.start, r.end);
+  // Per counter and per vendor (current period only; a breakdown never blocks the statement).
+  const orderMatch = { ...SALE_MATCH, createdAt: { $gte: r.start, $lte: r.end } };
+  const shares = await tripShares().catch(() => new Map());
+  const [byCounter, byVendor] = await Promise.all([
+    counterSales(orderMatch).catch((e) => (console.error('[fin] by counter', e.message), null)),
+    vendorGoods(orderMatch, r.start, r.end, shares).catch((e) => (console.error('[fin] by vendor', e.message), null)),
+  ]);
+  current.byCounter = byCounter;
+  current.byVendor = byVendor;
   // Same number of days just before, for comparison.
   let previous = null;
   if (String(query.compare || '1') !== '0') {
