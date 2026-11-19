@@ -123,6 +123,101 @@ async function tripShares() {
   return out;
 }
 
+const CHARGE_LABELS = {
+  car_rent: 'Car rent',
+  transport: 'Transport',
+  builty_freight: 'Builty / freight',
+  loading: 'Loading',
+  unloading: 'Unloading',
+  landing: 'Landing',
+  labour: 'Labour',
+  misc: 'Other trip costs',
+};
+
+/**
+ * Trip costs of the goods sold, split by charge type (owner 2026-11-20). Each product's
+ * trip part comes from its goods receipts; a receipt's trip part is split by that trip's
+ * own charges (car rent, builty, loading ...). Adds up to the "Trip costs" line.
+ */
+async function tripByType(orderMatch) {
+  const db = mongoose.connection.db;
+  const [entryRows, lineRows] = await Promise.all([
+    db
+      .collection('goodsreceipts')
+      .aggregate([
+        { $unwind: '$entries' },
+        { $match: { 'entries.posted': true, 'entries.landedUnitCost': { $gt: 0 } } },
+        {
+          $project: {
+            po: '$purchaseOrder',
+            p: '$entries.product',
+            landed: { $multiply: [{ $ifNull: ['$entries.stockQty', '$entries.qty'] }, '$entries.landedUnitCost'] },
+            trip: { $multiply: [{ $ifNull: ['$entries.stockQty', '$entries.qty'] }, { $max: [0, { $subtract: ['$entries.landedUnitCost', '$entries.costPrice'] }] }] },
+          },
+        },
+      ])
+      .toArray(),
+    db
+      .collection('goodsreceipts')
+      .aggregate([
+        { $unwind: '$lines' },
+        { $match: { 'lines.posted': true, 'lines.landedUnitCost': { $gt: 0 } } },
+        {
+          $project: {
+            po: '$purchaseOrder',
+            p: '$lines.product',
+            landed: { $multiply: ['$lines.acceptedQty', '$lines.landedUnitCost'] },
+            trip: { $ifNull: ['$lines.allocatedCharges', 0] },
+          },
+        },
+      ])
+      .toArray(),
+  ]);
+  const rows = [...entryRows, ...lineRows];
+  const poIds = [...new Set(rows.map((r) => r.po && String(r.po)).filter(Boolean))];
+  const pos = poIds.length
+    ? await db.collection('purchaseorders').find({ _id: { $in: poIds.map((x) => new mongoose.Types.ObjectId(x)) } }).project({ charges: 1 }).toArray()
+    : [];
+  // Charge-type mix of each trip.
+  const mix = new Map();
+  for (const po of pos) {
+    const by = {};
+    let t = 0;
+    for (const c of po.charges || []) {
+      const a = Number(c.amount) || 0;
+      by[c.type || 'misc'] = (by[c.type || 'misc'] || 0) + a;
+      t += a;
+    }
+    if (t > 0) mix.set(String(po._id), Object.fromEntries(Object.entries(by).map(([k, v]) => [k, v / t])));
+  }
+  // Per product: landed total and trip amount per type.
+  const prod = new Map();
+  for (const r of rows) {
+    const k = String(r.p);
+    const a = prod.get(k) || { landed: 0, types: {} };
+    a.landed += Number(r.landed) || 0;
+    const trip = Number(r.trip) || 0;
+    const m = (r.po && mix.get(String(r.po))) || { misc: 1 };
+    for (const [type, share] of Object.entries(m)) a.types[type] = (a.types[type] || 0) + trip * share;
+    prod.set(k, a);
+  }
+  // Sold lines: cost x (trip of type / landed).
+  const lines = await salesLines({ orderMatch, groupBy: {} });
+  const out = {};
+  for (const l of lines) {
+    const a = prod.get(String(l.productId));
+    if (!a || !(a.landed > 0)) continue;
+    for (const [type, amt] of Object.entries(a.types)) {
+      const share = Math.min(1, amt / a.landed);
+      out[type] = (out[type] || 0) + l.cost * share;
+    }
+  }
+  return Object.entries(out)
+    .map(([type, amount]) => ({ type, label: CHARGE_LABELS[type] || type, amount: round2(amount) }))
+    .filter((x) => x.amount !== 0)
+    .sort((x, y) => y.amount - x.amount);
+}
+
 /**
  * Net sales / cost / gross profit per counter (owner 2026-11-20). Same line rules as
  * the totals; a bill's counter is its own, else its till's.
@@ -382,12 +477,14 @@ async function incomeStatement(query = {}) {
   // Per counter and per vendor (current period only; a breakdown never blocks the statement).
   const orderMatch = { ...SALE_MATCH, createdAt: { $gte: r.start, $lte: r.end } };
   const shares = await tripShares().catch(() => new Map());
-  const [byCounter, byVendor] = await Promise.all([
+  const [byCounter, byVendor, tripTypes] = await Promise.all([
     counterSales(orderMatch).catch((e) => (console.error('[fin] by counter', e.message), null)),
     vendorGoods(orderMatch, r.start, r.end, shares).catch((e) => (console.error('[fin] by vendor', e.message), null)),
+    tripByType(orderMatch).catch((e) => (console.error('[fin] trip by type', e.message), null)),
   ]);
   current.byCounter = byCounter;
   current.byVendor = byVendor;
+  current.tripByType = tripTypes;
   // Same number of days just before, for comparison.
   let previous = null;
   if (String(query.compare || '1') !== '0') {
