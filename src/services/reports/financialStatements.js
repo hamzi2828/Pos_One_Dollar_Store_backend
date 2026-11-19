@@ -582,6 +582,9 @@ async function partners() {
     since: START,
     grossProfit: round2(profit.grossProfit),
     grossMargin: profit.grossMargin,
+    // Gross profit − these = net profit (owner 2026-11-19: show expenses between them).
+    totalExpenses: round2(profit.totalExpenses),
+    otherCosts: round2(profit.otherCosts), // damage + stock count loss + depreciation
     netMargin: profit.netMargin,
     netProfit: round2(net),
     totalShare,
