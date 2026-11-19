@@ -44,6 +44,8 @@ function cleanEmail(v) {
   return email;
 }
 
+// Link in the code email. Set PORTAL_URL=https://employee.dollarandco.org once that
+// address works, so staff land on their own portal site.
 function portalUrl() {
   if (process.env.PORTAL_URL) return process.env.PORTAL_URL;
   const site = String(process.env.FRONTEND_ORIGIN || '')
@@ -97,7 +99,9 @@ async function requestCode(emailInput, { now = new Date() } = {}) {
     await mail.sendMail({ to: email, ...message });
   } catch (err) {
     console.error('[portal-otp] send failed:', err && err.message);
-    throw httpError(503, 'Could not send the email right now. Please try again, or tell the shop admin.', 'MAIL_FAILED');
+    const e = httpError(503, 'Could not send the email right now. Please try again, or tell the shop admin.', 'MAIL_FAILED');
+    e.expose = true; // show this to the employee instead of "Something went wrong"
+    throw e;
   }
 
   // Saved only after the email went out, so a failed send does not burn the wait.

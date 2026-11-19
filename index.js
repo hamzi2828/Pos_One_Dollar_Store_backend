@@ -22,7 +22,8 @@ const FRONTEND_ORIGINS = (process.env.FRONTEND_ORIGIN || 'http://localhost:3000'
   .map((o) => o.trim().replace(/\/$/, ''))
   .filter(Boolean);
 app.use(cors({
-  origin: [...FRONTEND_ORIGINS, 'http://localhost:3000', 'http://localhost:3001'],
+  // employee.dollarandco.org: the Employee Portal on its own address (owner 2026-11-19).
+  origin: [...FRONTEND_ORIGINS, 'https://employee.dollarandco.org', 'http://localhost:3000', 'http://localhost:3001'],
   credentials: true,
   // Server-Timing: POS speed logs read the server's own time.
   // ETag: the POS keeps it to ask for the offline catalogue with If-None-Match.

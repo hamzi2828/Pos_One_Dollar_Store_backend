@@ -26,7 +26,8 @@ const handle = (fn) => async (req, res, next) => {
     if (!res.headersSent) {
       res.status(status).json({
         success: false,
-        message: status >= 500 ? 'Something went wrong' : err.message,
+        // err.expose: a 5xx whose message is safe and useful to show (e.g. "Could not send the email").
+        message: status >= 500 && !err.expose ? 'Something went wrong' : err.message,
         code: err.code || undefined,
         error: status >= 500 ? err.message : undefined,
         ...(err.available !== undefined ? { available: err.available } : {}),
