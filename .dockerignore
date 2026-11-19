@@ -1,0 +1,10 @@
+.git
+node_modules
+npm-debug.log*
+.env
+.env.*
+uploads
+scripts/*-backup-*.json
+.claude
+*.md
+!README.md
