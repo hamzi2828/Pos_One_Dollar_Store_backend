@@ -186,13 +186,41 @@ const BREAKDOWNS = {
   device: 'impression_device',
 };
 
-function dateRange(q) {
+// Meta's own last_7d / last_14d / last_30d leave TODAY out. The page wants
+// "the last N days up to now", so those are sent as a time_range ending today
+// in the ad account's time zone.
+let tzCache = { at: 0, tz: '' };
+async function accountTimezone(s) {
+  if (tzCache.tz && Date.now() - tzCache.at < 60 * 60 * 1000) return tzCache.tz;
+  try {
+    const a = await graph(s.adAccountId, { settings: s, params: { fields: 'timezone_name' } });
+    tzCache = { at: Date.now(), tz: a.timezone_name || 'Asia/Karachi' };
+  } catch {
+    tzCache = { at: Date.now(), tz: 'Asia/Karachi' };
+  }
+  return tzCache.tz;
+}
+
+function ymdInTz(date, tz) {
+  // en-CA formats as YYYY-MM-DD.
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+}
+
+async function dateRange(q, s) {
   const re = /^\d{4}-\d{2}-\d{2}$/;
   const since = re.test(q.since || '') ? q.since : null;
   const until = re.test(q.until || '') ? q.until : null;
   if (since && until) return { time_range: { since, until } };
-  const presets = ['today', 'yesterday', 'last_7d', 'last_14d', 'last_30d', 'this_month', 'last_month', 'maximum'];
-  return { date_preset: presets.includes(q.preset) ? q.preset : 'last_7d' };
+  const preset = q.preset || 'last_7d';
+  const days = { last_7d: 7, last_14d: 14, last_30d: 30 }[preset];
+  if (days) {
+    const tz = await accountTimezone(s);
+    const now = new Date();
+    const start = new Date(now.getTime() - (days - 1) * 24 * 60 * 60 * 1000);
+    return { time_range: { since: ymdInTz(start, tz), until: ymdInTz(now, tz) } };
+  }
+  const presets = ['today', 'yesterday', 'this_month', 'last_month', 'maximum'];
+  return { date_preset: presets.includes(preset) ? preset : 'maximum' };
 }
 
 // ---------------------------------------------------------------- public API
@@ -208,7 +236,7 @@ async function account() {
 /** Every ad with its status, ad set budget, campaign and the totals for the range. */
 async function listAds(q = {}) {
   const s = await getSettings();
-  const range = dateRange(q);
+  const range = await dateRange(q, s);
   const [ads, insights] = await Promise.all([
     graphAll(`${s.adAccountId}/ads`, {
       settings: s,
@@ -257,7 +285,7 @@ async function listAds(q = {}) {
 async function adInsights(adId, q = {}) {
   if (!/^\d{1,25}$/.test(String(adId))) throw httpError(400, 'Bad ad id');
   const s = await getSettings();
-  const range = dateRange(q);
+  const range = await dateRange(q, s);
   const breakdownKey = BREAKDOWNS[q.breakdown] ? q.breakdown : 'platform';
   const [total, daily, split] = await Promise.all([
     graph(`${adId}/insights`, { settings: s, params: { fields: INSIGHT_FIELDS, ...range } }),
