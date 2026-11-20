@@ -493,6 +493,29 @@ function rowState(record, status, plan, now) {
 }
 
 /**
+ * Yesterday's day views (by employee id) of people still clocked in from
+ * yesterday whose next scan still belongs to yesterday (attendanceCore's 06:00
+ * cut-off / night-shift rule). After the cut-off yesterday's record stays
+ * open (missing check-out) and the next scan is today's check-in.
+ */
+async function nightCarryOver(now) {
+  const today = T.dayKey(now);
+  const yesterday = T.addDays(today, -1);
+  const open = await AttendanceRecord.find({ date: yesterday, checkIn: { $ne: null }, checkOut: null }).select('employee').lean();
+  if (!open.length) return new Map();
+  const employees = await Employee.find({ _id: { $in: open.map((r) => r.employee) }, ...activeFilter() })
+    .select(core.EMP_FIELDS)
+    .lean();
+  if (!employees.length) return new Map();
+  const views = await core.dayView({ dateKey: yesterday, employees, now });
+  return new Map(
+    views
+      .filter((v) => v.record && core.belongsToYesterday(v.plan, v.record, now, today))
+      .map((v) => [String(v.employee._id), v])
+  );
+}
+
+/**
  * The counter's "who's in today": names, designation, planned shift, in / out
  * times, status and late minutes — nothing about pay, CNIC or phone.
  */
@@ -502,16 +525,23 @@ async function board({ date = null, now = new Date() } = {}) {
     dateKey = String(date).trim();
     if (!T.isDayKey(dateKey)) throw httpError(400, 'Invalid date (use YYYY-MM-DD)', 'INVALID_DATE');
   }
-  const [views, holiday] = await Promise.all([
+  const [views, holiday, night] = await Promise.all([
     core.dayView({ dateKey, now }),
     Holiday.findOne({ date: dateKey }).select('name').lean(),
+    dateKey === T.dayKey(now) ? nightCarryOver(now) : new Map(),
   ]);
 
   const rows = views
+    .map((v) => {
+      // Still clocked in from yesterday and before the 06:00 cut-off: their next
+      // scan is yesterday's clock-out, so show yesterday's open record as "in".
+      const y = night.get(String(v.employee._id));
+      return y && !(v.record && v.record.checkIn) ? { ...y, carried: true } : v;
+    })
     .filter((v) => v.record || (v.plan && v.plan.source !== 'not_employed'))
-    .map(({ employee, plan, record, eval: ev }) => {
+    .map(({ employee, plan, record, eval: ev, carried }) => {
       const p = plan || {};
-      const state = rowState(record, ev.status, p, now);
+      const state = carried ? (core.openBreak(record) ? 'break' : 'in') : rowState(record, ev.status, p, now);
       return {
         employeeId: String(employee._id),
         name: fullName(employee),

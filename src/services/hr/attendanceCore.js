@@ -214,6 +214,18 @@ async function recomputeRange(employeeIds, fromKey, toKey, { now = new Date() } 
 // yesterday's clock-out, whatever the shift (e.g. in 11:00, out 01:00 next day).
 const NIGHT_OUT_UNTIL_MIN = 6 * 60;
 
+/** shopDayFor's rule on loaded data: does a punch at `at` belong to yesterday's record? */
+function belongsToYesterday(yPlan, yRec, at, today = T.dayKey(at)) {
+  const open = !!(yRec && yRec.checkIn && !yRec.checkOut);
+  if (open && at < new Date(T.dayStart(today).getTime() + NIGHT_OUT_UNTIL_MIN * MIN)) return true;
+  const crossesMidnight = !!(yPlan && yPlan.type === 'shift' && yPlan.end && new Date(yPlan.end) > T.dayStart(today));
+  if (!crossesMidnight) return false;
+  const end = new Date(yPlan.end);
+  // Night shift ending late (e.g. 02:00): check-out still accepted up to 6 h after its end.
+  if (open && at <= new Date(end.getTime() + 6 * 60 * MIN)) return true;
+  return !(yRec && yRec.checkIn) && at < end;
+}
+
 async function shopDayFor(employee, at) {
   const today = T.dayKey(at);
   const yesterday = T.addDays(today, -1);
@@ -221,15 +233,7 @@ async function shopDayFor(employee, at) {
     schedule.planForDay(employee, yesterday),
     AttendanceRecord.findOne({ employee: employee._id, date: yesterday }).select('checkIn checkOut').lean(),
   ]);
-  const open = yRec && yRec.checkIn && !yRec.checkOut;
-  if (open && at < new Date(T.dayStart(today).getTime() + NIGHT_OUT_UNTIL_MIN * MIN)) return yesterday;
-  const crossesMidnight = yPlan.type === 'shift' && yPlan.end && new Date(yPlan.end) > T.dayStart(today);
-  if (!crossesMidnight) return today;
-  const end = new Date(yPlan.end);
-  // Night shift ending late (e.g. 02:00): check-out still accepted up to 6 h after its end.
-  if (open && at <= new Date(end.getTime() + 6 * 60 * MIN)) return yesterday;
-  if (!(yRec && yRec.checkIn) && at < end) return yesterday;
-  return today;
+  return belongsToYesterday(yPlan, yRec, at, today) ? yesterday : today;
 }
 
 const DOUBLE_PUNCH_MS = 60 * 1000;
@@ -486,4 +490,4 @@ async function monthSummary(month, { employeeIds = null, includeDays = false, no
   return { month, from, to, daysInMonth, employees };
 }
 
-module.exports = { evaluate, lateExcusedOf, breaksOf, openBreak, punch, recomputeDay, recomputeRange, dayView, monthSummary, shopDayFor, loadEmployee, EMP_FIELDS };
+module.exports = { evaluate, lateExcusedOf, breaksOf, openBreak, punch, recomputeDay, recomputeRange, dayView, monthSummary, shopDayFor, belongsToYesterday, loadEmployee, EMP_FIELDS };
