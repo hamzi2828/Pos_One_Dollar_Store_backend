@@ -61,6 +61,9 @@ const isRefundExpense = (e) => {
   return list.some((c) => REFUND_RX.test(c));
 };
 
+// Expense categories that buy things the shop keeps (capital spend, not a cost).
+const CAPITAL_EXPENSE = /^shop\s*setup/i;
+
 /** Depreciation of one asset between two moments (stops at disposal). */
 function assetDepreciation(a, start, end) {
   const qty = Number(a.quantity) || 1;
@@ -425,6 +428,7 @@ async function incomeFor(start, end) {
 
   let refunds = 0;
   const byCat = new Map();
+  let equipmentBought = 0;
   for (const e of expenses) {
     const amount = Number(e.amount) || 0;
     if (e.loanRepayLoan || e.partner) continue; // paying back a loan / a partner taking money is not a cost
@@ -433,6 +437,12 @@ async function incomeFor(start, end) {
       continue;
     }
     const cat = String(e.category || 'Other').split(',')[0].trim() || 'Other';
+    // Owner 2026-11-20: equipment bought for the shop (racks, generator, scanner...) is an
+    // asset, not a running cost; it goes on Fixed assets and is left out of profit here.
+    if (CAPITAL_EXPENSE.test(cat)) {
+      equipmentBought += amount;
+      continue;
+    }
     // Shop use: automatic rows and hand-typed "Shop Use ..." categories are one line (owner 2026-11-17).
     const name = e.source === 'payroll' ? 'Salaries' : e.source === 'shop_use' || /^shop\s*use\b/i.test(cat) ? 'Shop use (own stock)' : cat;
     const row = byCat.get(name) || { category: name, amount: 0, count: 0 };
@@ -472,6 +482,7 @@ async function incomeFor(start, end) {
     grossMargin: pct(gross),
     expenses: expenseRows,
     totalExpenses: round2(totalExpenses),
+    equipmentBought: round2(equipmentBought), // "Shop Setup / Equipment" spend, kept out of expenses
     operatingProfit: round2(operating),
     damage: round2(damageLoss),
     damageCount: (damage[0] && damage[0].count) || 0,
