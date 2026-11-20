@@ -732,7 +732,56 @@ async function balanceSheet() {
     // Off the balance sheet: the vendor's own stock sitting on our shelves.
     consignmentStock: round2((consignAgg[0] && consignAgg[0].value) || 0),
     cashMissing: cash === null,
+    gapReasons: await gapReasons(db).catch((e) => (console.error('[fin] gap reasons', e.message), null)),
   };
+}
+
+/**
+ * Owner 2026-11-20: why the balance sheet does not add up, from the data (the shop started from 0).
+ * Vendor bills vs what was unpacked from them (vendor price × qty of goods-receipt entries):
+ *   overBills  unpacked goods differ from the bill amount (bill too low, e.g. a Rs 1,000
+ *              placeholder, or unpacked prices wrong)
+ *   inBoxes    bills with nothing unpacked yet: owed, not in stock yet
+ */
+async function gapReasons(db) {
+  const pos = await db
+    .collection('purchaseorders')
+    .find({ status: { $ne: 'cancelled' } })
+    .project({ goodsReceipt: 1, 'bills._id': 1, 'bills.billTotal': 1, 'bills.billAmount': 1, 'bills.subtotal': 1, 'bills.discount': 1 })
+    .toArray();
+  const grnIds = pos.map((p) => p.goodsReceipt).filter(Boolean);
+  const grns = grnIds.length
+    ? await db.collection('goodsreceipts').find({ _id: { $in: grnIds } }).project({ 'entries.bill': 1, 'entries.undone': 1, 'entries.value': 1, 'entries.qty': 1, 'entries.costPrice': 1 }).toArray()
+    : [];
+  const unpacked = new Map();
+  for (const g of grns)
+    for (const e of g.entries || []) {
+      if (e.undone) continue;
+      const k = String(e.bill);
+      unpacked.set(k, (unpacked.get(k) || 0) + (Number(e.value) || (Number(e.qty) || 0) * (Number(e.costPrice) || 0)));
+    }
+  let overBills = 0;
+  let overCount = 0;
+  let placeholders = 0;
+  let inBoxes = 0;
+  let inBoxesCount = 0;
+  for (const p of pos)
+    for (const b of p.bills || []) {
+      const total = Number(b.billTotal) > 0 ? Number(b.billTotal) : Number(b.billAmount) > 0 ? Number(b.billAmount) : Math.max(0, (Number(b.subtotal) || 0) - (Number(b.discount) || 0));
+      const got = unpacked.get(String(b._id));
+      if (got === undefined) {
+        inBoxes += total;
+        inBoxesCount += 1;
+        continue;
+      }
+      const d = got - total;
+      if (Math.abs(d) > Math.max(100, total * 0.02)) {
+        overBills += d;
+        overCount += 1;
+        if (total <= 1000 && got > total) placeholders += 1;
+      }
+    }
+  return { overBills: round2(overBills), overCount, placeholders, inBoxes: round2(-inBoxes), inBoxesCount };
 }
 
 // ---------------------------------------------------------------------------
