@@ -8,8 +8,8 @@ const ok = (res, data, status = 200, meta, message) =>
 // Who may do what (owner 2026-11-19):
 //   payroll edit                    -> every deduction, approve / waive any of them
 //   payroll_own_deductions (no payroll edit) -> sees EVERY deduction, adds only damage / fine / other
-//                                      (owner 2026-11-20), approves / waives only the ones
-//                                      they added (with its `edit`)
+//                                      (owner 2026-11-20), approves only the ones they
+//                                      added (with its `edit`); cannot waive (Admin only)
 //   payroll view only               -> sees every deduction, cannot decide
 function scopeOf(access) {
   const full = access.can('payroll', 'edit');

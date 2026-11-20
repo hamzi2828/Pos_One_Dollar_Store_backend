@@ -372,6 +372,7 @@ async function deductionViews(rows, scope = null) {
       decidedByName: d.decidedBy ? userName(users.get(idOf(d.decidedBy))) : '',
       mine,
       canDecide: !!scope && (scope.canDecideAll || (scope.canDecideOwn && mine)),
+      canWaive: !!scope && scope.canDecideAll, // owner 2026-11-20: only payroll edit (Admin) may waive
     };
   });
 }
@@ -506,7 +507,7 @@ async function approveDeduction(id, body = {}, { userId, scope = null, now = new
 /** pending | approved → waived (note required). Applied ones cannot be waived. */
 async function waiveDeduction(id, body = {}, { userId, scope = null, now = new Date() } = {}) {
   const d = await getDeductionDoc(id);
-  assertCanDecide(d, scope);
+  if (scope && !scope.canDecideAll) throw httpError(403, 'Only the admin can waive deductions');
   if (!['pending', 'approved'].includes(d.status)) throw httpError(409, `This deduction is already ${d.status}`);
   const why = str(body.note, 500);
   if (!why) throw httpError(400, 'Write why it is waived');
