@@ -322,7 +322,19 @@ async function list(req) {
     PurchaseOrder.aggregate([{ $match: base }, { $group: { _id: '$status', n: { $sum: 1 } } }]),
     PurchaseOrder.aggregate([
       { $match: filter },
-      { $group: { _id: null, goods: { $sum: '$totals.goods' }, charges: { $sum: '$totals.charges' }, grand: { $sum: '$totals.grand' } } },
+      {
+        $group: {
+          _id: null,
+          goods: { $sum: '$totals.goods' },
+          charges: { $sum: '$totals.charges' },
+          grand: { $sum: '$totals.grand' },
+          // Owner 2026-11-20: vendor bills with no bill photo yet ("Bill pending").
+          bills: { $sum: { $size: { $ifNull: ['$bills', []] } } },
+          billsPending: {
+            $sum: { $size: { $filter: { input: { $ifNull: ['$bills', []] }, as: 'b', cond: { $eq: [{ $size: { $ifNull: ['$$b.photos', []] } }, 0] } } } },
+          },
+        },
+      },
     ]),
   ]);
 
@@ -335,6 +347,7 @@ async function list(req) {
   const data = rows.map((po) => ({
     ...po,
     vendors: [...new Set((po.bills || []).map((b) => b.vendorName).filter(Boolean))],
+    billsPending: (po.bills || []).filter((b) => !(b.photos && b.photos.length)).length,
     bills: (po.bills || []).map((b) => ({
       _id: b._id,
       vendor: b.vendor,
@@ -350,7 +363,7 @@ async function list(req) {
     data,
     meta: h.pageMeta(page, limit, total, {
       counts: statusCounts,
-      totals: { goods: h.round2(sum.goods), charges: h.round2(sum.charges), grand: h.round2(sum.grand) },
+      totals: { goods: h.round2(sum.goods), charges: h.round2(sum.charges), grand: h.round2(sum.grand), bills: sum.bills || 0, billsPending: sum.billsPending || 0 },
     }),
   };
 }
@@ -362,14 +375,17 @@ async function getOne(req, id) {
   delete plain.lockedAt;
   if (po.goodsReceipt) {
     const grn = await GoodsReceipt.findById(po.goodsReceipt)
-      .select('grnNumber status receiverName startedAt completedAt totals boxes boxesCheckedAt boxesDone entries.bill entries.undone')
+      .select('grnNumber status receiverName startedAt completedAt totals boxes boxesCheckedAt boxesDone entries.bill entries.undone entries.value entries.qty entries.costPrice')
       .lean();
     if (grn) {
       // Per vendor bill, where it is in the warehouse: not_checked → checked → unpacking → done.
       const legacy = grn.boxesCheckedAt && !(grn.boxes || []).some((b) => b.checkedAt);
       grn.byBill = (grn.boxes || []).map((b) => {
         const checked = !!b.checkedAt || !!legacy;
-        const items = (grn.entries || []).filter((e) => !e.undone && String(e.bill) === String(b.bill)).length;
+        const billEntries = (grn.entries || []).filter((e) => !e.undone && String(e.bill) === String(b.bill));
+        const items = billEntries.length;
+        // Owner 2026-11-20: vendor-price value of what was unpacked, to compare with the bill amount.
+        const value = h.round2(billEntries.reduce((t, e) => t + (Number(e.value) || (Number(e.qty) || 0) * (Number(e.costPrice) || 0)), 0));
         const boxesDone = (grn.boxesDone || []).filter((d) => String(d.bill) === String(b.bill)).length;
         const done = grn.status === 'completed' || (checked && b.received > 0 && boxesDone >= b.received);
         return {
@@ -379,6 +395,7 @@ async function getOne(req, id) {
           received: checked ? b.received || 0 : null,
           boxesDone,
           items,
+          value,
         };
       });
       delete grn.boxes;
