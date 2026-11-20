@@ -506,10 +506,10 @@ async function incomeFor(start, end) {
 
   const netSales = revenue - refunds; // refunded bills are not in `revenue`
   const gross = netSales - cogs;
-  // Owner 2026-11-20: assets bought this period from shop money are taken off the profit
-  // (own line under Other costs), not hidden inside the expenses.
-  const otherCosts = damageLoss + countLoss + depreciation + equipmentBought;
-  const operating = gross - totalExpenses;
+  // Owner 2026-11-20: "Assets purchased" sits right after the operating expenses, so it is
+  // taken off before the operating profit (net profit is the same either way).
+  const otherCosts = damageLoss + countLoss + depreciation;
+  const operating = gross - totalExpenses - equipmentBought;
   const net = operating - otherCosts;
   const pct = (n) => (netSales > 0 ? Math.round((n / netSales) * 1000) / 10 : null);
 
