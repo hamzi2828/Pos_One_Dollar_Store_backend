@@ -687,12 +687,8 @@ async function balanceSheet() {
     { key: 'stock', label: 'Stock at cost', amount: round2(stock), hint: stockAgg[0] ? `${Math.round(stockAgg[0].units)} pieces · ${stockAgg[0].products} products` : '' },
     { key: 'advances', label: 'Salary advances (staff owe)', amount: round2(advancesTotal) },
     { key: 'vendorAdvances', label: 'Paid ahead to vendors', amount: round2(vendorAdvances) },
-    {
-      key: 'fixed',
-      label: 'Fixed assets (book value)',
-      amount: round2(fixedNet),
-      hint: `Cost ${round2(fixedCost)} − depreciation ${round2(fixedDep)}${paidFromCash ? ` − bought from shop cash (already off profit) ${round2(paidFromCash)}` : ''}`,
-    },
+    // Owner 2026-11-20: fixed assets are NOT a row here — they are checked / printed on the
+    // Assets page. Their value is still used below so the "not explained" amount is right.
   ];
   const liabilityRows = [
     { key: 'payables', label: 'Owed to vendors', amount: round2(payables) },
@@ -712,7 +708,7 @@ async function balanceSheet() {
   const drawings = round2((drawAgg[0] && drawAgg[0].total) || 0);
   // Vendor payments before 5 Nov are NOT added here: they were paid from the "buying" money
   // already entered in Investments (owner 2026-11-20 — counting them again doubled it).
-  const difference = round2(netWorth - capital - profit.netProfit + drawings + startupCosts);
+  const difference = round2(netWorth + fixedNet - capital - profit.netProfit + drawings + startupCosts);
 
   return {
     asOf: now,
@@ -729,6 +725,8 @@ async function balanceSheet() {
       { key: 'difference', label: 'Opening balances / not explained', amount: difference },
     ],
     totalEquity: netWorth,
+    // Fixed assets (Assets page), kept off the balance sheet rows (owner 2026-11-20).
+    fixedAssets: { value: round2(fixedNet), cost: round2(fixedCost), depreciation: round2(fixedDep), paidFromCash: round2(paidFromCash) },
     // Off the balance sheet: the vendor's own stock sitting on our shelves.
     consignmentStock: round2((consignAgg[0] && consignAgg[0].value) || 0),
     cashMissing: cash === null,
