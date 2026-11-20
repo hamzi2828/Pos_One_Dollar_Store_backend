@@ -1042,7 +1042,8 @@ async function receiptPieces() {
               },
               {
                 $map: {
-                  input: { $filter: { input: { $ifNull: ['$entries', []] }, as: 'e', cond: { $eq: ['$$e.posted', true] } } },
+                  // Undone entries (wrong qty typed, then undone) never count.
+                  input: { $filter: { input: { $ifNull: ['$entries', []] }, as: 'e', cond: { $and: [{ $eq: ['$$e.posted', true] }, { $ne: ['$$e.undone', true] }] } } },
                   as: 'e',
                   in: { product: '$$e.product', vendor: '$$e.vendor', vendorName: '$$e.vendorName', qty: { $ifNull: ['$$e.stockQty', 0] }, price: { $ifNull: ['$$e.costPrice', 0] }, at: '$$e.postedAt' },
                 },
