@@ -388,7 +388,7 @@ async function incomeFor(start, end) {
     db
       .collection('expenses')
       .find({ ...NOT_DELETED, displayOnly: { $ne: true }, date: { $gte: start, $lte: end } })
-      .project({ amount: 1, category: 1, categories: 1, source: 1, loanRepayLoan: 1, partner: 1 })
+      .project({ amount: 1, category: 1, categories: 1, source: 1, loanRepayLoan: 1, partner: 1, title: 1, date: 1 })
       .toArray(),
     db
       .collection('damagerecords')
@@ -429,6 +429,7 @@ async function incomeFor(start, end) {
   let refunds = 0;
   const byCat = new Map();
   let equipmentBought = 0;
+  const equipmentItems = []; // each asset bought from shop money (shown under "Assets purchased")
   for (const e of expenses) {
     const amount = Number(e.amount) || 0;
     if (e.loanRepayLoan || e.partner) continue; // paying back a loan / a partner taking money is not a cost
@@ -441,6 +442,7 @@ async function incomeFor(start, end) {
     // asset, not a running cost; it goes on Fixed assets and is left out of profit here.
     if (CAPITAL_EXPENSE.test(cat)) {
       equipmentBought += amount;
+      equipmentItems.push({ title: e.title || cat, amount: round2(amount), date: e.date || null });
       continue;
     }
     // Shop use: automatic rows and hand-typed "Shop Use ..." categories are one line (owner 2026-11-17).
@@ -485,6 +487,7 @@ async function incomeFor(start, end) {
     expenses: expenseRows,
     totalExpenses: round2(totalExpenses),
     equipmentBought: round2(equipmentBought), // "Shop Setup / Equipment" spend, kept out of expenses
+    equipmentItems: equipmentItems.sort((x, y) => new Date(x.date || 0) - new Date(y.date || 0)),
     operatingProfit: round2(operating),
     damage: round2(damageLoss),
     damageCount: (damage[0] && damage[0].count) || 0,
