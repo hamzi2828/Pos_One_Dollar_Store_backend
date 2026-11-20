@@ -37,8 +37,6 @@ const { funds } = require('./fundsReport');
 const { jazzcash } = require('./jazzcashReport');
 
 const START = '2026-10-25'; // system start
-// Shop opened: vendor payments before it were paid from the investment (see vendorService).
-const SHOP_OPENED = new Date('2026-11-05T00:00:00+05:00');
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const bad = (m) => Object.assign(new Error(m), { status: 400 });
@@ -366,6 +364,33 @@ async function vendorGoods(orderMatch, start, end, shares) {
 // ---------------------------------------------------------------------------
 // Income statement
 // ---------------------------------------------------------------------------
+/** Money of manual POS lines (no product) on the matched bills: (price × qty − line discount) × bill factor. */
+async function manualSales(orderMatch) {
+  const rows = await mongoose.connection.db
+    .collection('posorders')
+    .aggregate([
+      { $match: orderMatch },
+      {
+        $project: {
+          items: 1,
+          factor: {
+            $cond: [{ $gt: ['$subtotal', 0] }, { $max: [0, { $min: [1, { $divide: [{ $subtract: ['$subtotal', { $ifNull: ['$discount', 0] }] }, '$subtotal'] }] }] }, 1],
+          },
+        },
+      },
+      { $unwind: '$items' },
+      { $match: { 'items.product': null, 'items.isGift': { $ne: true } } },
+      {
+        $group: {
+          _id: null,
+          revenue: { $sum: { $multiply: [{ $max: [0, { $subtract: [{ $multiply: ['$items.price', '$items.quantity'] }, { $ifNull: ['$items.discount', 0] }] }] }, '$factor'] } },
+        },
+      },
+    ])
+    .toArray();
+  return (rows[0] && rows[0].revenue) || 0;
+}
+
 async function incomeFor(start, end) {
   const db = mongoose.connection.db;
   const orderMatch = { ...SALE_MATCH, createdAt: { $gte: start, $lte: end } };
@@ -390,7 +415,7 @@ async function incomeFor(start, end) {
     db
       .collection('expenses')
       .find({ ...NOT_DELETED, displayOnly: { $ne: true }, date: { $gte: start, $lte: end } })
-      .project({ amount: 1, category: 1, categories: 1, source: 1, loanRepayLoan: 1, partner: 1, title: 1, date: 1 })
+      .project({ amount: 1, category: 1, categories: 1, source: 1, loanRepayLoan: 1, partner: 1, title: 1, date: 1, investment: 1 })
       .toArray(),
     db
       .collection('damagerecords')
@@ -413,13 +438,18 @@ async function incomeFor(start, end) {
       .toArray(),
     salesLines({ orderMatch: refundedMatch, groupBy: {} }).catch(() => []),
   ]);
-  const fullRefunds = refundedLines.reduce((t, l) => t + (l.revenue || 0), 0);
+  // Owner 2026-11-20: manual items (typed at the POS, no product) are real sales: the cash is in
+  // the till, so their money counts as sales too. They take no stock, so no cost is added.
+  const manualRevenue = await manualSales(orderMatch).catch(() => 0);
+  const manualRefunded = await manualSales(refundedMatch).catch(() => 0);
+  const fullRefunds = refundedLines.reduce((t, l) => t + (l.revenue || 0), 0) + manualRefunded;
 
   let revenue = 0;
   let cogs = 0;
   let qty = 0;
   let tripPart = 0;
   const shares = await tripShares().catch(() => new Map());
+  revenue += manualRevenue;
   for (const l of lines) {
     revenue += l.revenue;
     cogs += l.cost;
@@ -432,9 +462,21 @@ async function incomeFor(start, end) {
   const byCat = new Map();
   let equipmentBought = 0;
   const equipmentItems = []; // each asset bought from shop money (shown under "Assets purchased")
+  // Equipment already entered on Fixed assets (same amount, same day) is not taken off profit
+  // again (owner 2026-11-20: generator, cash counter, baskets were counted twice).
+  const pkDay = (d) => (d ? new Date(new Date(d).getTime() + 5 * 3600000).toISOString().slice(0, 10) : '');
+  const assetPool = assets.map((a) => ({ amount: round2((Number(a.purchasePrice) || 0) * (Number(a.quantity) || 1)), day: pkDay(a.purchaseDate), used: false }));
+  const onFixedAssets = (e) => {
+    const hit = assetPool.find((a) => !a.used && a.day === pkDay(e.date) && Math.abs(a.amount - round2(e.amount)) < 0.01);
+    if (hit) hit.used = true;
+    return !!hit;
+  };
   for (const e of expenses) {
     const amount = Number(e.amount) || 0;
     if (e.loanRepayLoan || e.partner) continue; // paying back a loan / a partner taking money is not a cost
+    // Paying what is left on an investment bill (owner 2026-11-20): the asset is already on
+    // Fixed assets at full cost, so this is paying a debt, not a cost.
+    if (e.investment) continue;
     if (isRefundExpense(e)) {
       refunds += amount;
       continue;
@@ -443,6 +485,7 @@ async function incomeFor(start, end) {
     // Owner 2026-11-20: equipment bought for the shop (racks, generator, scanner...) is an
     // asset, not a running cost; it goes on Fixed assets and is left out of profit here.
     if (CAPITAL_EXPENSE.test(cat)) {
+      if (onFixedAssets(e)) continue;
       equipmentBought += amount;
       equipmentItems.push({ title: e.title || cat, amount: round2(amount), date: e.date || null });
       continue;
@@ -668,15 +711,9 @@ async function balanceSheet() {
     .aggregate([{ $match: { ...NOT_DELETED, displayOnly: { $ne: true }, partner: { $type: 'objectId' } } }, { $group: { _id: null, total: { $sum: '$amount' } } }])
     .toArray();
   const drawings = round2((drawAgg[0] && drawAgg[0].total) || 0);
-  // Owner 2026-11-20: vendor payments dated before the shop opened (5 Nov) were paid with the
-  // partners' investment money (same rule as Vendors → "Paid from investment"). They never left
-  // the till (all entered before the start balance), so count them as partner money here.
-  const vendorInvestAgg = await db
-    .collection('vendorpayments')
-    .aggregate([{ $match: { status: 'active', date: { $lt: SHOP_OPENED } } }, { $group: { _id: null, total: { $sum: '$amount' } } }])
-    .toArray();
-  const vendorInvest = round2((vendorInvestAgg[0] && vendorInvestAgg[0].total) || 0);
-  const difference = round2(netWorth - capital - vendorInvest - profit.netProfit + drawings);
+  // Vendor payments before 5 Nov are NOT added here: they were paid from the "buying" money
+  // already entered in Investments (owner 2026-11-20 — counting them again doubled it).
+  const difference = round2(netWorth - capital - profit.netProfit + drawings);
 
   return {
     asOf: now,
@@ -687,7 +724,6 @@ async function balanceSheet() {
     totalLiabilities,
     equity: [
       { key: 'capital', label: 'Partner money put in', amount: round2(capital), partners: [...byPartner].map(([name, amount]) => ({ name, amount: round2(amount) })) },
-      { key: 'vendorInvest', label: 'Vendor payments from investment (before 5 Nov)', amount: vendorInvest },
       { key: 'profit', label: `Profit made (since ${START})`, amount: round2(profit.netProfit) },
       { key: 'drawings', label: 'Taken by partners (profit distribution)', amount: -drawings },
       { key: 'difference', label: 'Opening balances / not explained', amount: difference },
