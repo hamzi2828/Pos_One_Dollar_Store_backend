@@ -462,30 +462,19 @@ async function incomeFor(start, end) {
   const byCat = new Map();
   let equipmentBought = 0;
   const equipmentItems = []; // each asset bought from shop money (shown under "Assets purchased")
-  // Equipment already entered on Fixed assets (same amount, same day) is not taken off profit
-  // again (owner 2026-11-20: generator, cash counter, baskets were counted twice).
-  const pkDay = (d) => (d ? new Date(new Date(d).getTime() + 5 * 3600000).toISOString().slice(0, 10) : '');
-  const assetPool = assets.map((a) => ({ amount: round2((Number(a.purchasePrice) || 0) * (Number(a.quantity) || 1)), day: pkDay(a.purchaseDate), used: false }));
-  const onFixedAssets = (e) => {
-    const hit = assetPool.find((a) => !a.used && a.day === pkDay(e.date) && Math.abs(a.amount - round2(e.amount)) < 0.01);
-    if (hit) hit.used = true;
-    return !!hit;
-  };
   for (const e of expenses) {
     const amount = Number(e.amount) || 0;
     if (e.loanRepayLoan || e.partner) continue; // paying back a loan / a partner taking money is not a cost
-    // Paying what is left on an investment bill (owner 2026-11-20): the asset is already on
-    // Fixed assets at full cost, so this is paying a debt, not a cost.
-    if (e.investment) continue;
     if (isRefundExpense(e)) {
       refunds += amount;
       continue;
     }
     const cat = String(e.category || 'Other').split(',')[0].trim() || 'Other';
-    // Owner 2026-11-20: equipment bought for the shop (racks, generator, scanner...) is an
-    // asset, not a running cost; it goes on Fixed assets and is left out of profit here.
-    if (CAPITAL_EXPENSE.test(cat)) {
-      if (onFixedAssets(e)) continue;
+    // Owner 2026-11-20 (final): every asset paid from shop money in the period comes off the
+    // profit as "Assets purchased" (so profit is after ALL money spent): equipment bought
+    // (Shop Setup / Equipment, also when it is on Fixed assets) and payments on an investment
+    // bill (e.g. the electrical work, camera, sign board).
+    if (CAPITAL_EXPENSE.test(cat) || e.investment) {
       equipmentBought += amount;
       equipmentItems.push({ title: e.title || cat, amount: round2(amount), date: e.date || null });
       continue;
