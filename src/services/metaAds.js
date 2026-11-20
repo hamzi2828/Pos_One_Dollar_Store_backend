@@ -143,6 +143,10 @@ const INSIGHT_FIELDS = [
   'video_avg_time_watched_actions',
 ].join(',');
 
+// Hourly breakdowns don't support reach / frequency (Meta rejects them).
+const HOURLY_FIELDS = INSIGHT_FIELDS.split(',').filter((f) => f !== 'reach' && f !== 'frequency').join(',');
+const HOUR_KEY = 'hourly_stats_aggregated_by_advertiser_time_zone';
+
 const num = (v) => (v === undefined || v === null || v === '' ? 0 : Number(v) || 0);
 const actionVal = (list, type) => {
   if (!Array.isArray(list)) return 0;
@@ -287,18 +291,30 @@ async function adInsights(adId, q = {}) {
   const s = await getSettings();
   const range = await dateRange(q, s);
   const breakdownKey = BREAKDOWNS[q.breakdown] ? q.breakdown : 'platform';
-  const [total, daily, split] = await Promise.all([
+  const [total, daily, split, hourly] = await Promise.all([
     graph(`${adId}/insights`, { settings: s, params: { fields: INSIGHT_FIELDS, ...range } }),
     graphAll(`${adId}/insights`, { settings: s, params: { fields: INSIGHT_FIELDS, time_increment: 1, limit: 100, ...range } }),
     graphAll(`${adId}/insights`, {
       settings: s,
       params: { fields: INSIGHT_FIELDS, breakdowns: BREAKDOWNS[breakdownKey], limit: 200, ...range },
     }),
+    // Totals per hour of day (ad account time zone) across the whole range.
+    // Optional: the rest of the page still loads if Meta refuses this one.
+    graphAll(`${adId}/insights`, {
+      settings: s,
+      params: { fields: HOURLY_FIELDS, breakdowns: HOUR_KEY, limit: 100, ...range },
+    }).catch(() => []),
   ]);
+  const byHour = new Map();
+  for (const r of hourly) {
+    const h = parseInt(String(r[HOUR_KEY] || '').slice(0, 2), 10);
+    if (Number.isInteger(h) && h >= 0 && h < 24) byHour.set(h, shapeRow(r));
+  }
   const t = total.data?.[0];
   return {
     total: t ? shapeRow(t) : null,
     daily: daily.map((r) => ({ date: r.date_start, ...shapeRow(r) })),
+    hourly: hourly.length ? Array.from({ length: 24 }, (_, h) => ({ hour: h, ...(byHour.get(h) || shapeRow({})) })) : [],
     breakdown: breakdownKey,
     rows: split.map((r) => ({
       label: {
