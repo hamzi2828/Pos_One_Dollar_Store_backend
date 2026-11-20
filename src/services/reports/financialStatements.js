@@ -808,7 +808,8 @@ async function cashFlow(query = {}) {
     { key: 'refund', label: 'Refunds paid to customers', amount: sum('refund') },
     { key: 'vendor_payment', label: 'Paid to vendors', amount: sum('vendor_payment') },
     { key: 'trip_cost', label: 'Trip costs (rent, builty, loading)', amount: sum('trip_cost') },
-    { key: 'expense', label: 'Shop expenses + salaries', amount: sum('expense') },
+    { key: 'expense', label: 'Shop expenses', amount: round2(inside.filter((m) => m.kind === 'expense' && !isCapital(m) && !m.salary).reduce((t, m) => t + m.amount, 0)) },
+    { key: 'salaries', label: 'Salaries', amount: round2(inside.filter((m) => m.kind === 'expense' && !isCapital(m) && m.salary).reduce((t, m) => t + m.amount, 0)) },
   ];
   const financing = [
     { key: 'loan_in', label: 'Loans received', amount: sum('loan_in') },
