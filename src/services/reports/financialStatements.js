@@ -62,7 +62,7 @@ const isRefundExpense = (e) => {
 };
 
 // Expense categories that buy things the shop keeps (capital spend, not a cost).
-const CAPITAL_EXPENSE = /^shop\s*setup/i;
+const CAPITAL_EXPENSE = /^shop\s*setup\b/i;
 
 /** Depreciation of one asset between two moments (stops at disposal). */
 function assetDepreciation(a, start, end) {
