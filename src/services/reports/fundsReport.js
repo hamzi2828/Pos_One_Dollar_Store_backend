@@ -109,7 +109,7 @@ async function funds() {
     // Shop use = own stock; personal money = never left the shop (its loan is skipped too).
     // Loan repayment expenses are counted once, as "loan paid back" (below).
     .find({ createdAt: { $gte: since }, isDeleted: { $ne: true }, displayOnly: { $ne: true }, source: { $ne: 'shop_use' }, fromPersonal: { $ne: true }, loanRepayLoan: null })
-    .project({ title: 1, amount: 1, paymentMethod: 1, createdAt: 1, date: 1, partner: 1, partnerName: 1, category: 1, categories: 1 })
+    .project({ title: 1, amount: 1, paymentMethod: 1, createdAt: 1, date: 1, partner: 1, partnerName: 1, category: 1, categories: 1, investment: 1 })
     .toArray();
   // Refund expenses (money given back on part of a bill) are refunds, not shop expenses (owner 2026-11-20),
   // so "Refunds paid to customers" holds whole-bill AND part refunds.
@@ -123,7 +123,7 @@ async function funds() {
         ? { at: placeOn(e.date, e.createdAt, since), kind: 'partner_draw', label: `Taken by ${e.partnerName || 'partner'} · ${e.title || ''} (${e.paymentMethod || ''})`, amount: -round2(e.amount) }
         : isRefund(e)
         ? { at: placeOn(e.date, e.createdAt, since), kind: 'refund', label: `Refund · ${e.title || ''} (${e.paymentMethod || ''})`, amount: -round2(e.amount) }
-        : { at: placeOn(e.date, e.createdAt, since), kind: 'expense', label: `Expense · ${e.title || ''} (${e.paymentMethod || ''})`, amount: -round2(e.amount), category: String(e.category || '').split(',')[0].trim() }
+        : { at: placeOn(e.date, e.createdAt, since), kind: 'expense', label: `Expense · ${e.title || ''} (${e.paymentMethod || ''})`, amount: -round2(e.amount), category: String(e.category || '').split(',')[0].trim(), ...(e.investment ? { investment: true } : {}) }
     );
 
   // Loans: money borrowed comes in, paying it back goes out (owner 2026-11-06).

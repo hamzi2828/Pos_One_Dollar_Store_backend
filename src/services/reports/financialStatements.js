@@ -92,7 +92,8 @@ async function tripShares() {
       .collection('goodsreceipts')
       .aggregate([
         { $unwind: '$entries' },
-        { $match: { 'entries.posted': true, 'entries.landedUnitCost': { $gt: 0 } } },
+        // Undone entries stay in the receipt (marked undone) with their old landed cost: skip them.
+        { $match: { 'entries.posted': true, 'entries.undone': { $ne: true }, 'entries.landedUnitCost': { $gt: 0 } } },
         {
           $project: {
             p: '$entries.product',
@@ -149,7 +150,8 @@ async function tripByType(orderMatch) {
       .collection('goodsreceipts')
       .aggregate([
         { $unwind: '$entries' },
-        { $match: { 'entries.posted': true, 'entries.landedUnitCost': { $gt: 0 } } },
+        // Undone entries stay in the receipt (marked undone) with their old landed cost: skip them.
+        { $match: { 'entries.posted': true, 'entries.undone': { $ne: true }, 'entries.landedUnitCost': { $gt: 0 } } },
         {
           $project: {
             po: '$purchaseOrder',
@@ -795,7 +797,8 @@ async function cashFlow(query = {}) {
   for (const m of moves) if (new Date(m.at) < r.start) opening += m.amount;
   const inside = moves.filter((m) => new Date(m.at) >= r.start && new Date(m.at) <= r.end);
   // Owner 2026-11-20: equipment bought from shop money (Shop Setup / Equipment) is Investing, not Operating.
-  const isCapital = (m) => m.kind === 'expense' && CAPITAL_EXPENSE.test(m.category || '');
+  // So are payments on a partner investment bill (e.g. electrical material), same as the income statement.
+  const isCapital = (m) => m.kind === 'expense' && (CAPITAL_EXPENSE.test(m.category || '') || !!m.investment);
   const sum = (k) => round2(inside.filter((m) => m.kind === k && !isCapital(m)).reduce((t, m) => t + m.amount, 0));
   const capitalOut = round2(inside.filter(isCapital).reduce((t, m) => t + m.amount, 0));
   const investing = [{ key: 'assets_bought', label: 'Assets bought from shop money', amount: capitalOut }];
