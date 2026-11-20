@@ -43,6 +43,9 @@ const PERMISSION_SECTIONS = [
             { key: 'goods_receiving', label: 'Goods Receiving', actions: ['view', 'create', 'edit'] },
             { key: 'vendors', label: 'Vendors & Ledger', actions: ['view', 'create', 'edit', 'delete', 'export'] },
             { key: 'vendor_payments', label: 'Vendor Payments', actions: ['view', 'create', 'edit', 'delete'] },
+            // Owner 2026-11-20: on a purchase trip, "Paid now" / "Still owed" and each bill's vendor
+            // account (previous balance, total paid, balance). Without it: only "This bill".
+            { key: 'purchase_money', label: 'Purchase Trip: paid / owed / vendor balance', actions: ['view'] },
             // Sale-or-return stock placed by vendors; settled on their next visit.
             { key: 'consignment', label: 'Consignment', actions: ['view', 'create', 'edit', 'delete'] },
             { key: 'vendor_returns', label: 'Vendor Returns', actions: ['view', 'create', 'edit', 'delete'] },

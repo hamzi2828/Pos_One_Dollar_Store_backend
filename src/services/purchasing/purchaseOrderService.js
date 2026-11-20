@@ -387,9 +387,9 @@ async function getOne(req, id) {
     }
     plain.grn = grn || null;
   }
-  // Vendor money (previous balance, paid, balance) only for the admin
-  // (owner, 2026-11-20: every employee sees only "This bill").
-  const seesMoney = !req.access || req.access.isSuperAdmin;
+  // Vendor money (previous balance, paid, balance) only with the "purchase_money" permission
+  // (owner, 2026-11-20: set per role in Roles & Permissions; others see only "This bill").
+  const seesMoney = !req.access || req.access.isSuperAdmin || req.access.can('purchase_money', 'view');
   if (seesMoney) plain.billAccounts = await billAccounts(po);
   return plain;
 }

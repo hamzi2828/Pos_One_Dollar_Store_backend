@@ -37,6 +37,8 @@ const { funds } = require('./fundsReport');
 const { jazzcash } = require('./jazzcashReport');
 
 const START = '2026-10-25'; // system start
+// Shop opened: vendor payments before it were paid from the investment (see vendorService).
+const SHOP_OPENED = new Date('2026-11-05T00:00:00+05:00');
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const bad = (m) => Object.assign(new Error(m), { status: 400 });
@@ -666,7 +668,15 @@ async function balanceSheet() {
     .aggregate([{ $match: { ...NOT_DELETED, displayOnly: { $ne: true }, partner: { $type: 'objectId' } } }, { $group: { _id: null, total: { $sum: '$amount' } } }])
     .toArray();
   const drawings = round2((drawAgg[0] && drawAgg[0].total) || 0);
-  const difference = round2(netWorth - capital - profit.netProfit + drawings);
+  // Owner 2026-11-20: vendor payments dated before the shop opened (5 Nov) were paid with the
+  // partners' investment money (same rule as Vendors → "Paid from investment"). They never left
+  // the till (all entered before the start balance), so count them as partner money here.
+  const vendorInvestAgg = await db
+    .collection('vendorpayments')
+    .aggregate([{ $match: { status: 'active', date: { $lt: SHOP_OPENED } } }, { $group: { _id: null, total: { $sum: '$amount' } } }])
+    .toArray();
+  const vendorInvest = round2((vendorInvestAgg[0] && vendorInvestAgg[0].total) || 0);
+  const difference = round2(netWorth - capital - vendorInvest - profit.netProfit + drawings);
 
   return {
     asOf: now,
@@ -677,6 +687,7 @@ async function balanceSheet() {
     totalLiabilities,
     equity: [
       { key: 'capital', label: 'Partner money put in', amount: round2(capital), partners: [...byPartner].map(([name, amount]) => ({ name, amount: round2(amount) })) },
+      { key: 'vendorInvest', label: 'Vendor payments from investment (before 5 Nov)', amount: vendorInvest },
       { key: 'profit', label: `Profit made (since ${START})`, amount: round2(profit.netProfit) },
       { key: 'drawings', label: 'Taken by partners (profit distribution)', amount: -drawings },
       { key: 'difference', label: 'Opening balances / not explained', amount: difference },
