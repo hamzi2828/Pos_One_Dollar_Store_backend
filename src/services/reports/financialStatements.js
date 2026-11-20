@@ -459,7 +459,9 @@ async function incomeFor(start, end) {
 
   const netSales = revenue - refunds; // refunded bills are not in `revenue`
   const gross = netSales - cogs;
-  const otherCosts = damageLoss + countLoss + depreciation;
+  // Owner 2026-11-20: assets bought this period from shop money are taken off the profit
+  // (own line under Other costs), not hidden inside the expenses.
+  const otherCosts = damageLoss + countLoss + depreciation + equipmentBought;
   const operating = gross - totalExpenses;
   const net = operating - otherCosts;
   const pct = (n) => (netSales > 0 ? Math.round((n / netSales) * 1000) / 10 : null);
