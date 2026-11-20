@@ -30,6 +30,9 @@ const investmentSchema = new mongoose.Schema(
     // Sum of payments, and what is still to pay (amount - paidAmount - expensePaid).
     paidAmount: { type: Number, min: 0 },
     balance: { type: Number, min: 0 },
+    // Owner 2026-11-20: a start-up cost paid by partners that is NOT an asset (AI tokens,
+    // company registration, internet...). Shown on its own line on the balance sheet.
+    startupCost: { type: Boolean, default: false },
     // Paid later from the shop's money as expenses (not partner money, so not "invested").
     expensePaid: { type: Number, default: 0, min: 0 },
     expenseLinks: {

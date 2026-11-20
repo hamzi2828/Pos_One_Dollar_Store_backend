@@ -609,7 +609,7 @@ async function balanceSheet() {
     db
       .collection('investments')
       .find({ ...NOT_DELETED })
-      .project({ amount: 1, paidAmount: 1, balance: 1, partner: 1 })
+      .project({ amount: 1, paidAmount: 1, balance: 1, partner: 1, startupCost: 1 })
       .toArray(),
     db
       .collection('posorders')
@@ -650,11 +650,13 @@ async function balanceSheet() {
   const byPartner = new Map();
   let capital = 0;
   let investUnpaid = 0;
+  let startupCosts = 0; // partner money spent on start-up costs that are not assets
   for (const i of investments) {
     const paid = Number(i.paidAmount ?? i.amount) || 0;
     const left = Number(i.balance ?? Math.max(0, (Number(i.amount) || 0) - paid)) || 0;
     capital += paid;
     investUnpaid += left;
+    if (i.startupCost) startupCosts += paid;
     const name = pname.get(String(i.partner)) || 'Partner (not set)';
     byPartner.set(name, (byPartner.get(name) || 0) + paid);
   }
@@ -710,7 +712,7 @@ async function balanceSheet() {
   const drawings = round2((drawAgg[0] && drawAgg[0].total) || 0);
   // Vendor payments before 5 Nov are NOT added here: they were paid from the "buying" money
   // already entered in Investments (owner 2026-11-20 — counting them again doubled it).
-  const difference = round2(netWorth - capital - profit.netProfit + drawings);
+  const difference = round2(netWorth - capital - profit.netProfit + drawings + startupCosts);
 
   return {
     asOf: now,
@@ -723,6 +725,7 @@ async function balanceSheet() {
       { key: 'capital', label: 'Partner money put in', amount: round2(capital), partners: [...byPartner].map(([name, amount]) => ({ name, amount: round2(amount) })) },
       { key: 'profit', label: `Profit made (since ${START})`, amount: round2(profit.netProfit) },
       { key: 'drawings', label: 'Taken by partners (profit distribution)', amount: -drawings },
+      { key: 'startup', label: 'Start-up costs (paid by partners, not assets)', amount: -round2(startupCosts) },
       { key: 'difference', label: 'Opening balances / not explained', amount: difference },
     ],
     totalEquity: netWorth,

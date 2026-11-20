@@ -143,6 +143,7 @@ async function clean(body = {}, { partial = false } = {}) {
   for (const [k, max] of [['billNo', 80], ['paidTo', 120], ['note', 1000]]) {
     if (!partial || body[k] !== undefined) out[k] = str(body[k], max);
   }
+  if (body.startupCost !== undefined) out.startupCost = body.startupCost === true || body.startupCost === 'true';
   return out;
 }
 
