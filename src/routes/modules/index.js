@@ -31,6 +31,7 @@ const MODULES = [
   'employeePortalRoutes',
   'bankCheckRoutes',
   'perfRoutes',
+  'adsRoutes',
 ];
 
 // Purchasing log: records every change (non-GET) of the Purchasing & Vendors

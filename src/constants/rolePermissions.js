@@ -193,6 +193,9 @@ const PERMISSION_SECTIONS = [
         groups: [
             // Public marketing website content (/admin/website). Owner only by default.
             { key: 'website', label: 'Website', actions: ['view', 'edit'] },
+            // Facebook / Instagram ads (/admin/advertisements): view = numbers,
+            // edit = connect account, pause / start ads, change daily budget.
+            { key: 'advertisements', label: 'Advertisements (Facebook / Instagram)', actions: ['view', 'edit'] },
         ],
     },
 ];
