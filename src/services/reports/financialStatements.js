@@ -890,13 +890,232 @@ async function vendorGoodsReport(query = {}) {
   const r = range(query);
   const orderMatch = { ...SALE_MATCH, createdAt: { $gte: r.start, $lte: r.end } };
   const shares = await tripShares().catch(() => new Map());
-  const rows = await vendorGoods(orderMatch, r.start, r.end, shares);
+  const pieces = await receiptPieces();
+  const [sold, ledger, stock] = await Promise.all([vendorGoods(orderMatch, r.start, r.end, shares), vendorLedgerTotals(r.start, r.end), stockByVendor(pieces)]);
+  const received = receivedByVendor(pieces, r.start, r.end);
+
+  // Owner 2026-11-20: per vendor — goods received (goods receipts) and billed (vendor bills)
+  // in the period, sold, in store now, paid in the period, still owed now, and goods received
+  // that have no vendor bill yet (since the start).
+  const byId = new Map();
+  const row = (id, name) => {
+    const k = id ? String(id) : 'none';
+    let x = byId.get(k);
+    if (!x) {
+      x = { vendorId: id ? String(id) : null, name: name || '', received: 0, receivedQty: 0, billed: 0, goodsCost: 0, qty: 0, inStore: 0, inStoreQty: 0, paid: 0, payments: 0, owed: 0, receivedAll: 0, billedAll: 0 };
+      byId.set(k, x);
+    }
+    if (!x.name && name) x.name = name;
+    return x;
+  };
+  for (const s of sold) Object.assign(row(s.vendorId, s.name), { goodsCost: s.goodsCost, qty: s.qty, paid: s.paid, payments: s.payments });
+  for (const l of ledger) Object.assign(row(l.vendorId, l.name), { billed: l.billed, billedAll: l.billedAll, owed: l.owed });
+  for (const x of received) Object.assign(row(x.vendorId, x.name), { received: x.received, receivedQty: x.receivedQty, receivedAll: x.receivedAll });
+  for (const s of stock) Object.assign(row(s.vendorId, s.name), { inStore: s.value, inStoreQty: s.qty });
+
+  const ids = [...byId.values()].map((x) => x.vendorId).filter(Boolean);
+  const vendors = ids.length
+    ? await mongoose.connection.db.collection('vendors').find({ _id: { $in: ids.map((x) => new mongoose.Types.ObjectId(x)) } }).project({ name: 1 }).toArray()
+    : [];
+  const vName = new Map(vendors.map((v) => [String(v._id), v.name]));
+  const rows = [...byId.values()]
+    .map((x) => ({
+      ...x,
+      name: (x.vendorId && vName.get(x.vendorId)) || x.name || (x.vendorId ? 'Deleted vendor' : 'No vendor (stock added without a goods receipt)'),
+      received: round2(x.received),
+      billed: round2(x.billed),
+      inStore: round2(x.inStore),
+      owed: round2(x.owed),
+      // Received but not billed (since the start): + = vendor bill missing / lower than the goods.
+      notBilled: round2(x.receivedAll - x.billedAll),
+      receivedAll: undefined,
+      billedAll: undefined,
+    }))
+    .filter((x) => x.received || x.billed || x.goodsCost || x.inStore || x.paid || Math.abs(x.owed) >= 0.01 || Math.abs(x.notBilled) >= 0.01)
+    .sort((a, b) => b.received - a.received || b.inStore - a.inStore || b.goodsCost - a.goodsCost);
   const sum = (k) => round2(rows.reduce((t, x) => t + (x[k] || 0), 0));
   return {
     range: { from: r.from, to: r.to, systemStart: START },
-    summary: { vendors: rows.filter((x) => x.vendorId).length, goodsCost: sum('goodsCost'), qty: rows.reduce((t, x) => t + x.qty, 0), paid: sum('paid'), payments: rows.reduce((t, x) => t + x.payments, 0) },
+    summary: {
+      vendors: rows.filter((x) => x.vendorId).length,
+      received: sum('received'),
+      receivedQty: rows.reduce((t, x) => t + x.receivedQty, 0),
+      billed: sum('billed'),
+      notBilled: sum('notBilled'),
+      goodsCost: sum('goodsCost'),
+      qty: rows.reduce((t, x) => t + x.qty, 0),
+      inStore: sum('inStore'),
+      inStoreQty: rows.reduce((t, x) => t + x.inStoreQty, 0),
+      inStoreNoVendor: round2((rows.find((x) => !x.vendorId) || {}).inStore || 0),
+      paid: sum('paid'),
+      payments: rows.reduce((t, x) => t + x.payments, 0),
+      owed: round2(rows.reduce((t, x) => t + Math.max(0, x.owed), 0)), // same as "Owed to vendors" on the balance sheet
+      advance: round2(rows.reduce((t, x) => t + Math.max(0, -x.owed), 0)),
+    },
     rows,
   };
+}
+
+/**
+ * Vendor ledger per vendor: billed in the period and since the start (bills + credit notes −
+ * returns / debit notes) and the balance owed today (all non-voided entries, like the balance sheet).
+ */
+async function vendorLedgerTotals(start, end) {
+  const inRange = { $and: [{ $gte: ['$date', start] }, { $lte: ['$date', end] }] };
+  const rows = await mongoose.connection.db
+    .collection('vendorledgerentries')
+    .aggregate([
+      { $match: { isVoided: { $ne: true } } },
+      {
+        $group: {
+          _id: '$vendor',
+          name: { $last: '$vendorName' },
+          billed: {
+            $sum: {
+              $cond: [
+                inRange,
+                {
+                  $switch: {
+                    branches: [
+                      { case: { $in: ['$type', ['bill', 'credit_note']] }, then: { $ifNull: ['$credit', 0] } },
+                      { case: { $eq: ['$type', 'debit_note'] }, then: { $multiply: [-1, { $ifNull: ['$debit', 0] }] } },
+                    ],
+                    default: 0,
+                  },
+                },
+                0,
+              ],
+            },
+          },
+          billedAll: {
+            $sum: {
+              $switch: {
+                branches: [
+                  { case: { $in: ['$type', ['bill', 'credit_note']] }, then: { $ifNull: ['$credit', 0] } },
+                  { case: { $eq: ['$type', 'debit_note'] }, then: { $multiply: [-1, { $ifNull: ['$debit', 0] }] } },
+                ],
+                default: 0,
+              },
+            },
+          },
+          owed: { $sum: { $subtract: [{ $ifNull: ['$credit', 0] }, { $ifNull: ['$debit', 0] }] } },
+        },
+      },
+    ])
+    .toArray();
+  return rows.map((x) => ({ vendorId: x._id ? String(x._id) : null, name: x.name || '', billed: x.billed || 0, billedAll: x.billedAll || 0, owed: x.owed || 0 }));
+}
+
+/**
+ * Every posted goods receipt piece, per product and vendor (old line flow: acceptedQty;
+ * new entry flow: stockQty), valued at the vendor price typed when receiving.
+ */
+async function receiptPieces() {
+  const rows = await mongoose.connection.db
+    .collection('goodsreceipts')
+    .aggregate([
+      { $match: { status: { $ne: 'cancelled' } } },
+      {
+        $project: {
+          vendor: 1,
+          vendorName: 1,
+          updatedAt: 1,
+          items: {
+            $concatArrays: [
+              {
+                $map: {
+                  input: { $filter: { input: { $ifNull: ['$lines', []] }, as: 'l', cond: { $eq: ['$$l.posted', true] } } },
+                  as: 'l',
+                  in: { product: '$$l.product', vendor: '$$l.vendor', vendorName: '$$l.vendorName', qty: { $ifNull: ['$$l.acceptedQty', 0] }, price: { $ifNull: ['$$l.unitPrice', 0] }, at: '$$l.postedAt' },
+                },
+              },
+              {
+                $map: {
+                  input: { $filter: { input: { $ifNull: ['$entries', []] }, as: 'e', cond: { $eq: ['$$e.posted', true] } } },
+                  as: 'e',
+                  in: { product: '$$e.product', vendor: '$$e.vendor', vendorName: '$$e.vendorName', qty: { $ifNull: ['$$e.stockQty', 0] }, price: { $ifNull: ['$$e.costPrice', 0] }, at: '$$e.postedAt' },
+                },
+              },
+            ],
+          },
+        },
+      },
+      { $unwind: '$items' },
+      {
+        $project: {
+          _id: 0,
+          product: '$items.product',
+          vendor: { $ifNull: ['$items.vendor', '$vendor'] },
+          vendorName: { $ifNull: ['$items.vendorName', '$vendorName'] },
+          qty: '$items.qty',
+          price: '$items.price',
+          at: { $ifNull: ['$items.at', '$updatedAt'] },
+        },
+      },
+    ])
+    .toArray();
+  return rows.filter((x) => x.qty > 0);
+}
+
+/** Goods received (vendor price) per vendor: in the period and since the start. */
+function receivedByVendor(pieces, start, end) {
+  const acc = new Map();
+  for (const x of pieces) {
+    const k = x.vendor ? String(x.vendor) : 'none';
+    const a = acc.get(k) || { vendorId: x.vendor ? String(x.vendor) : null, name: x.vendorName || '', received: 0, receivedQty: 0, receivedAll: 0 };
+    if (!a.name && x.vendorName) a.name = x.vendorName;
+    const value = x.qty * (Number(x.price) || 0);
+    a.receivedAll += value;
+    const at = new Date(x.at || 0);
+    if (at >= start && at <= end) {
+      a.received += value;
+      a.receivedQty += x.qty;
+    }
+    acc.set(k, a);
+  }
+  return [...acc.values()];
+}
+
+/**
+ * Stock in the shop now, per vendor, valued like the balance sheet (pieces × product cost).
+ * Stock is one number per product, so its pieces go to the NEWEST goods receipts first
+ * (older pieces sell first). Pieces no receipt explains = stock added by hand (no vendor).
+ */
+async function stockByVendor(pieces) {
+  const products = await mongoose.connection.db
+    .collection('products')
+    .find({ ...NOT_DELETED, isConsignment: { $ne: true }, stock: { $gt: 0 } })
+    .project({ stock: 1, costPrice: 1 })
+    .toArray();
+  const byProduct = new Map();
+  for (const x of pieces) {
+    const k = String(x.product);
+    if (!byProduct.has(k)) byProduct.set(k, []);
+    byProduct.get(k).push(x);
+  }
+  const acc = new Map();
+  const add = (vendor, name, qty, cost) => {
+    if (!(qty > 0)) return;
+    const k = vendor ? String(vendor) : 'none';
+    const a = acc.get(k) || { vendorId: vendor ? String(vendor) : null, name: name || '', qty: 0, value: 0 };
+    if (!a.name && name) a.name = name;
+    a.qty += qty;
+    a.value += qty * cost;
+    acc.set(k, a);
+  };
+  for (const p of products) {
+    const cost = Number(p.costPrice) || 0;
+    let left = Number(p.stock) || 0;
+    const recs = (byProduct.get(String(p._id)) || []).slice().sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0));
+    for (const r of recs) {
+      if (left <= 0) break;
+      const take = Math.min(left, r.qty);
+      add(r.vendor, r.vendorName, take, cost);
+      left -= take;
+    }
+    add(null, '', left, cost); // no goods receipt for these pieces
+  }
+  return [...acc.values()];
 }
 
 module.exports = { incomeStatement, balanceSheet, cashFlow, partners, setPartnerShare, vendorGoodsReport, START };
