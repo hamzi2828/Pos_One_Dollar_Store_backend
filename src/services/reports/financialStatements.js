@@ -1054,7 +1054,8 @@ async function receiptPieces() {
       },
     ])
     .toArray();
-  return rows.filter((x) => x.qty > 0);
+  // Some old rows keep qty / price as text: make them numbers (else "12" + "5" = "125").
+  return rows.map((x) => ({ ...x, qty: Number(x.qty) || 0, price: Number(x.price) || 0 })).filter((x) => x.qty > 0);
 }
 
 /** Goods received (vendor price) per vendor: in the period and since the start. */
