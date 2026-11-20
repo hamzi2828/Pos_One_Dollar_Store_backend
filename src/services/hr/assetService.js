@@ -273,6 +273,8 @@ async function buildFilter(req) {
   const and = [{ isDeleted: { $ne: true } }];
   if (q.category === 'none') and.push({ category: null });
   else if (u.isId(q.category)) and.push({ category: q.category });
+  // Owner 2026-11-20: the "Assets" tab = everything except the "Startup cost" category.
+  if (u.isId(q.notCategory)) and.push({ category: { $ne: q.notCategory } });
   const statuses = String(q.status || '').split(',').map((s) => s.trim());
   if (statuses.includes('in_use')) and.push({ status: { $in: IN_USE } });
   else if (statuses.some((s) => STATUSES.includes(s))) and.push({ status: { $in: statuses.filter((s) => STATUSES.includes(s)) } });
