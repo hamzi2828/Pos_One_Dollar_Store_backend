@@ -144,9 +144,9 @@ const PERMISSION_SECTIONS = [
             { key: 'attendance_month', label: 'Attendance: Month sheet only', actions: ['view', 'export'] },
             // Payroll, advances and deductions; edit = approve / pay.
             { key: 'payroll', label: 'Payroll & Advances', actions: ['view', 'create', 'edit', 'delete', 'export'] },
-            // Owner 2026-11-19: for the Manager. Add deductions and approve / waive ONLY the ones
-            // they added; without payroll `edit` they see only their own deductions.
-            { key: 'payroll_own_deductions', label: 'Deductions: add & approve own only', actions: ['view', 'create', 'edit'] },
+            // Owner 2026-11-19/20: for the Manager / Senior Cashier. Sees every deduction, adds only
+            // Damage / Fine, approves / waives ONLY the ones they added (without payroll `edit`).
+            { key: 'payroll_own_deductions', label: 'Deductions: add damage / fine / other, approve own only', actions: ['view', 'create', 'edit'] },
             // Which employees look after which product category (drives Category Performance).
             { key: 'category_assignments', label: 'Category Staff', actions: ['view', 'edit'] },
         ],

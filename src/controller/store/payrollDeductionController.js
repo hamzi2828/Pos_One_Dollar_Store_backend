@@ -7,15 +7,16 @@ const ok = (res, data, status = 200, meta, message) =>
 
 // Who may do what (owner 2026-11-19):
 //   payroll edit                    -> every deduction, approve / waive any of them
-//   payroll_own_deductions (no payroll edit) -> sees ONLY the deductions they added,
-//                                      approves / waives only those (with its `edit`)
+//   payroll_own_deductions (no payroll edit) -> sees EVERY deduction, adds only damage / fine / other
+//                                      (owner 2026-11-20), approves / waives only the ones
+//                                      they added (with its `edit`)
 //   payroll view only               -> sees every deduction, cannot decide
 function scopeOf(access) {
   const full = access.can('payroll', 'edit');
   const own = !full && ['view', 'create', 'edit'].some((a) => access.can('payroll_own_deductions', a));
   return {
     userId: access.userId,
-    ownOnly: own,
+    ownOnly: own, // limited: add only LIMITED_DEDUCTION_TYPES, decide only own
     canDecideAll: full,
     canDecideOwn: full || access.can('payroll_own_deductions', 'edit'),
   };

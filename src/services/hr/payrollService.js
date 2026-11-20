@@ -330,6 +330,8 @@ async function employeeOptions(query = {}) {
 // Owner 2026-11-19: damage and missing / lost item are ONE type ('damage'). 'missing_item'
 // stays valid for old rows and is counted / filtered together with 'damage'.
 const MANUAL_DEDUCTION_TYPES = ['damage', 'fine', 'other']; // 'uniform' removed too (owner 2026-11-19) // 'staff_purchase' removed (owner 2026-11-19), old rows still show
+// Owner 2026-11-20: limited users (Manager / Senior Cashier, "Deductions: own only") may add only these (not till shortage / attendance kinds).
+const LIMITED_DEDUCTION_TYPES = ['damage', 'fine', 'other'];
 const DEDUCTION_TYPES = ['till_shortage', 'absent', 'half_day', 'late', ...MANUAL_DEDUCTION_TYPES];
 const TYPE_GROUP = { damage: ['damage', 'missing_item'] }; // filter key -> stored types
 const DEDUCTION_LABEL = {
@@ -394,8 +396,8 @@ async function listDeductions(query = {}, { scope = null } = {}) {
   }
   const { page, limit, skip } = paging(query);
   const filter = {};
-  // Own-only (e.g. the Manager): only the deductions this user added, summary included.
-  const base = scope && scope.ownOnly ? { createdBy: new ObjectId(String(scope.userId)) } : {};
+  // Owner 2026-11-20: everyone who can open the tab sees every deduction (own-only users too).
+  const base = {};
   Object.assign(filter, base);
   if (query.status && query.status !== 'all') {
     const list = String(query.status).split(',').filter(Boolean);
@@ -437,8 +439,8 @@ async function listDeductions(query = {}, { scope = null } = {}) {
       summary,
       byDay,
       byType,
-      ownOnly: !!(scope && scope.ownOnly),
-      types: MANUAL_DEDUCTION_TYPES.map((k) => ({ key: k, label: DEDUCTION_LABEL[k] })),
+      ownOnly: false, // own-only users now see every deduction (they still decide only their own)
+      types: (scope && scope.ownOnly ? LIMITED_DEDUCTION_TYPES : MANUAL_DEDUCTION_TYPES).map((k) => ({ key: k, label: DEDUCTION_LABEL[k] })),
     },
   };
 }
@@ -455,6 +457,9 @@ async function createDeduction(body = {}, { userId, canApprove = false, scope = 
   const type = String(body.type || 'other');
   if (!MANUAL_DEDUCTION_TYPES.includes(type)) {
     throw httpError(400, 'Pick a type from the list (till shortages come from cash closing; absent / late from attendance)');
+  }
+  if (scope && scope.ownOnly && !LIMITED_DEDUCTION_TYPES.includes(type)) {
+    throw httpError(403, 'You can only add Damage, Fine / rule break or Other deductions');
   }
   const amount = rupees(body.amount, 'Amount', { min: 1 });
   const note = str(body.note, 500);

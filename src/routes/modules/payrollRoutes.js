@@ -38,7 +38,7 @@ router.get('/salary-advances/:id', ...staff, can('payroll', 'view'), handle(adva
 router.post('/salary-advances/:id/cancel', ...staff, can('payroll', 'edit'), handle(advances.cancel));
 
 // ----- Deductions -----
-// `payroll_own_deductions` (Manager): add, and approve / waive only the ones they added;
+// `payroll_own_deductions` (Manager / Senior Cashier): see all, add damage / fine / other only, approve / waive only the ones they added;
 // the controller limits the list and the decisions to their own rows.
 const DED = ['payroll', 'payroll_own_deductions'];
 router.get('/payroll-deductions', ...staff, can(DED, 'view'), handle(deductions.list));
