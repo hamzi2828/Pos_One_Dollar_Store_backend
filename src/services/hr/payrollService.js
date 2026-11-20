@@ -396,8 +396,11 @@ async function listDeductions(query = {}, { scope = null } = {}) {
   }
   const { page, limit, skip } = paging(query);
   const filter = {};
-  // Owner 2026-11-20: everyone who can open the tab sees every deduction (own-only users too).
-  const base = {};
+  // Owner 2026-11-20: own-only users (Manager / Senior Cashier) see every deduction of the
+  // kinds they can add (damage / fine / other), whoever added it; nothing else.
+  const limited = !!(scope && scope.ownOnly);
+  const shownTypes = limited ? LIMITED_DEDUCTION_TYPES : DEDUCTION_TYPES;
+  const base = limited ? { type: { $in: shownTypes.flatMap((k) => TYPE_GROUP[k] || [k]) } } : {};
   Object.assign(filter, base);
   if (query.status && query.status !== 'all') {
     const list = String(query.status).split(',').filter(Boolean);
@@ -405,7 +408,7 @@ async function listDeductions(query = {}, { scope = null } = {}) {
     filter.status = { $in: list };
   }
   if (query.type && query.type !== 'all') {
-    if (!DEDUCTION_TYPES.includes(query.type)) throw httpError(400, 'Unknown type');
+    if (!shownTypes.includes(query.type)) throw httpError(400, 'Unknown type');
     filter.type = TYPE_GROUP[query.type] ? { $in: TYPE_GROUP[query.type] } : query.type;
   }
   if (query.employee || query.employeeId) {
@@ -428,7 +431,7 @@ async function listDeductions(query = {}, { scope = null } = {}) {
   for (const c of counts) if (summary[c._id]) summary[c._id] = { count: c.count, amount: r2(c.amount) };
   summary.listed = { count: total, amount: rs(sum(byDay, (d) => d.amount)) };
   const tc = new Map(typeCounts.map((c) => [c._id, c]));
-  const byType = DEDUCTION_TYPES.map((k) => {
+  const byType = shownTypes.map((k) => {
     const parts = (TYPE_GROUP[k] || [k]).map((t) => tc.get(t) || {});
     return { key: k, label: DEDUCTION_LABEL[k], count: sum(parts, (p) => p.count), amount: rs(sum(parts, (p) => p.amount)) };
   });
