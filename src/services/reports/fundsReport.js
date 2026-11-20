@@ -123,7 +123,7 @@ async function funds() {
         ? { at: placeOn(e.date, e.createdAt, since), kind: 'partner_draw', label: `Taken by ${e.partnerName || 'partner'} · ${e.title || ''} (${e.paymentMethod || ''})`, amount: -round2(e.amount) }
         : isRefund(e)
         ? { at: placeOn(e.date, e.createdAt, since), kind: 'refund', label: `Refund · ${e.title || ''} (${e.paymentMethod || ''})`, amount: -round2(e.amount) }
-        : { at: placeOn(e.date, e.createdAt, since), kind: 'expense', label: `Expense · ${e.title || ''} (${e.paymentMethod || ''})`, amount: -round2(e.amount) }
+        : { at: placeOn(e.date, e.createdAt, since), kind: 'expense', label: `Expense · ${e.title || ''} (${e.paymentMethod || ''})`, amount: -round2(e.amount), category: String(e.category || '').split(',')[0].trim() }
     );
 
   // Loans: money borrowed comes in, paying it back goes out (owner 2026-11-06).

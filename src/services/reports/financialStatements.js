@@ -700,7 +700,11 @@ async function cashFlow(query = {}) {
   let opening = f.baseline.amount;
   for (const m of moves) if (new Date(m.at) < r.start) opening += m.amount;
   const inside = moves.filter((m) => new Date(m.at) >= r.start && new Date(m.at) <= r.end);
-  const sum = (k) => round2(inside.filter((m) => m.kind === k).reduce((t, m) => t + m.amount, 0));
+  // Owner 2026-11-20: equipment bought from shop money (Shop Setup / Equipment) is Investing, not Operating.
+  const isCapital = (m) => m.kind === 'expense' && CAPITAL_EXPENSE.test(m.category || '');
+  const sum = (k) => round2(inside.filter((m) => m.kind === k && !isCapital(m)).reduce((t, m) => t + m.amount, 0));
+  const capitalOut = round2(inside.filter(isCapital).reduce((t, m) => t + m.amount, 0));
+  const investing = [{ key: 'assets_bought', label: 'Assets bought from shop money', amount: capitalOut }];
 
   const operating = [
     { key: 'sales', label: 'Money received from sales', amount: sum('sales') },
@@ -739,7 +743,8 @@ async function cashFlow(query = {}) {
 
   const opTotal = round2(operating.reduce((t, x) => t + x.amount, 0));
   const finTotal = round2(financing.reduce((t, x) => t + x.amount, 0));
-  const net = round2(opTotal + finTotal);
+  const invTotal = capitalOut;
+  const net = round2(opTotal + invTotal + finTotal);
   return {
     range: { from: r.from, to: r.to },
     baseline: f.baseline,
@@ -747,14 +752,15 @@ async function cashFlow(query = {}) {
     opening: round2(opening),
     operating,
     operatingTotal: opTotal,
-    investing: [],
-    investingTotal: 0,
+    investing,
+    investingTotal: invTotal,
     financing,
     financingTotal: finTotal,
     netChange: net,
     closing: round2(opening + net),
     nonCash: {
-      assetsBought: round2((assetsBought[0] && assetsBought[0].total) || 0),
+      // Assets register for the period minus the ones already paid from shop money (Investing above).
+      assetsBought: round2(Math.max(0, ((assetsBought[0] && assetsBought[0].total) || 0) + capitalOut)),
       partnerPaid: round2((partnerPaid[0] && partnerPaid[0].total) || 0),
     },
     // Closing money split (owner 2026-11-17): JazzCash wallet on the last day, rest = cash + bank.
