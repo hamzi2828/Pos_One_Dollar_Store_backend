@@ -662,7 +662,10 @@ async function balanceSheet() {
   const cash = money.left; // null when no start balance was set
   const stock = (stockAgg[0] && stockAgg[0].value) || 0;
   const advancesTotal = (advances[0] && advances[0].total) || 0;
-  const fixedNet = fixedCost - fixedDep;
+  // Owner 2026-11-20 rule: an asset bought with shop cash is taken off the profit ("Assets
+  // purchased"), so that part is not counted again as asset value here.
+  const paidFromCash = Math.min(Math.max(0, fixedCost - fixedDep), Number(profit.equipmentBought) || 0);
+  const fixedNet = fixedCost - fixedDep - paidFromCash;
   // JazzCash wallet (owner 2026-11-17): shown on its own line, taken out of "money left"
   // (same start as the start balance, so the two lines still add up to money left).
   let jazz = 0;
@@ -682,7 +685,12 @@ async function balanceSheet() {
     { key: 'stock', label: 'Stock at cost', amount: round2(stock), hint: stockAgg[0] ? `${Math.round(stockAgg[0].units)} pieces · ${stockAgg[0].products} products` : '' },
     { key: 'advances', label: 'Salary advances (staff owe)', amount: round2(advancesTotal) },
     { key: 'vendorAdvances', label: 'Paid ahead to vendors', amount: round2(vendorAdvances) },
-    { key: 'fixed', label: 'Fixed assets (book value)', amount: round2(fixedNet), hint: `Cost ${round2(fixedCost)} − depreciation ${round2(fixedDep)}` },
+    {
+      key: 'fixed',
+      label: 'Fixed assets (book value)',
+      amount: round2(fixedNet),
+      hint: `Cost ${round2(fixedCost)} − depreciation ${round2(fixedDep)}${paidFromCash ? ` − bought from shop cash (already off profit) ${round2(paidFromCash)}` : ''}`,
+    },
   ];
   const liabilityRows = [
     { key: 'payables', label: 'Owed to vendors', amount: round2(payables) },
