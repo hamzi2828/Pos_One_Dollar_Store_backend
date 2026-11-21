@@ -686,7 +686,15 @@ async function balanceSheet() {
   const assetRows = [
     { key: 'cash', label: 'Cash + bank (UBL)', amount: round2((cash || 0) - jazz), missing: cash === null },
     { key: 'jazzcash', label: 'JazzCash wallet', amount: jazz, hint: 'Money received by JazzCash minus paid out from it' },
-    { key: 'stock', label: 'Stock at cost', amount: round2(stock), hint: stockAgg[0] ? `${Math.round(stockAgg[0].units)} pieces · ${stockAgg[0].products} products` : '' },
+    {
+      key: 'stock',
+      label: 'Stock at cost',
+      amount: round2(stock),
+      // Owner, 2026-11-21: "35,559 pieces × Rs 254.62 avg".
+      hint: stockAgg[0]
+        ? `${Math.round(stockAgg[0].units).toLocaleString('en-US')} pieces${stockAgg[0].units > 0 ? ` × Rs ${round2(stock / stockAgg[0].units).toLocaleString('en-US')} avg` : ''} · ${stockAgg[0].products} products`
+        : '',
+    },
     { key: 'advances', label: 'Salary advances (staff owe)', amount: round2(advancesTotal) },
     { key: 'vendorAdvances', label: 'Paid ahead to vendors', amount: round2(vendorAdvances) },
     // Owner 2026-11-20: fixed assets are NOT a row here — they are checked / printed on the
