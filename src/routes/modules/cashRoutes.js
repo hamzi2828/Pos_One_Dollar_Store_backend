@@ -66,8 +66,11 @@ router.put('/till-sessions/card-settlement', ...staff, can('till_verify', 'edit'
   const raw = (req.body || {}).amount;
   if (!DAY_RE.test(day)) return res.status(400).json({ success: false, message: 'day must be YYYY-MM-DD' });
   const col = require('mongoose').connection.db.collection('cardsettlements');
+  const { recordChange } = require('../../helper/changeTracker');
+  const prev = await col.findOne({ day });
   if (raw === null || raw === '' || raw === undefined) {
     await col.deleteOne({ day });
+    if (prev) recordChange({ model: 'CardSettlement', collectionName: 'cardsettlements', docId: prev._id, operation: 'delete', op: 'deleteOne', before: prev });
     return res.json({ success: true, data: null });
   }
   const amount = Math.round(Number(raw) * 100) / 100;
@@ -75,6 +78,13 @@ router.put('/till-sessions/card-settlement', ...staff, can('till_verify', 'edit'
   const u = req.user || {};
   const set = { day, amount, note: String((req.body || {}).note || '').slice(0, 300), by: req.access && req.access.userId, byName: [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email || '', at: new Date() };
   await col.updateOne({ day }, { $set: set }, { upsert: true });
+  if (prev) {
+    recordChange({ model: 'CardSettlement', collectionName: 'cardsettlements', docId: prev._id, operation: 'update', op: 'updateOne', changedFields: ['amount', 'note'],
+      changes: [{ path: 'amount', from: prev.amount, to: amount }, { path: 'note', from: prev.note || '', to: set.note }].filter((c) => c.from !== c.to) });
+  } else {
+    const created = await col.findOne({ day });
+    recordChange({ model: 'CardSettlement', collectionName: 'cardsettlements', docId: created && created._id, operation: 'create', op: 'updateOne', after: created || set });
+  }
   res.json({ success: true, data: { day, amount, note: set.note, byName: set.byName, at: set.at } });
 }));
 router.get('/till-sessions/report/export', ...staff, can('report_cash_closing', 'export'), handle(till.exportCsv));

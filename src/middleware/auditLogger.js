@@ -59,9 +59,52 @@ const SEVERITY_MAP = {
 // Routes to completely skip (health, static, audit logs themselves)
 // '/api/public': anonymous reads by the public marketing website (would flood the log).
 // '/print-jobs/claim': the printer counter polls it every few seconds.
-const SKIP_PREFIXES = ['/uploads', '/health', '/admin/audit-logs', '/favicon', '/api/public', '/print-jobs/claim'];
+const SKIP_PREFIXES = ['/uploads', '/health', '/admin/audit-logs', '/admin/change-logs', '/favicon', '/api/public', '/print-jobs/claim'];
 
 const AUTH_ACTIONS = new Set(['login']);
+const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+const REDACT_BODY_KEY = /(password|passwd|secret|token|otp|apikey|api_key|authorization|^template$|^pin$|^code$)/i;
+const MAX_BODY_CHARS = 20000;
+
+/** Redacted, size-capped copy of the request body (writes only). */
+function sanitizeBody(body, depth = 0) {
+  if (body == null || depth > 8) return null;
+  if (typeof body === 'string') return body.length > 2000 ? `${body.slice(0, 2000)}…` : body;
+  if (typeof body !== 'object') return body;
+  if (Buffer.isBuffer(body)) return `[binary ${body.length} bytes]`;
+  if (Array.isArray(body)) {
+    const arr = body.slice(0, 200).map((v) => sanitizeBody(v, depth + 1));
+    if (body.length > 200) arr.push(`[+${body.length - 200} more]`);
+    return arr;
+  }
+  const out = {};
+  for (const [k, v] of Object.entries(body)) {
+    const key = k.replace(/^\$/, '_$').replace(/\./g, '_');
+    if (REDACT_BODY_KEY.test(k)) { out[key] = '[redacted]'; continue; }
+    // base64 images / files pasted in JSON
+    if (typeof v === 'string' && v.length > 2000) { out[key] = `[${v.length} chars]`; continue; }
+    out[key] = sanitizeBody(v, depth + 1);
+  }
+  return out;
+}
+
+function captureBody(req) {
+  if (!WRITE_METHODS.has(req.method.toUpperCase())) return null;
+  try {
+    const body = sanitizeBody(req.body);
+    const files = req.files
+      ? (Array.isArray(req.files) ? req.files : Object.values(req.files).flat()).map((f) => ({ field: f.fieldname, name: f.originalname, size: f.size }))
+      : (req.file ? [{ field: req.file.fieldname, name: req.file.originalname, size: req.file.size }] : null);
+    const hasBody = body && (typeof body !== 'object' || Object.keys(body).length);
+    if (!hasBody && !files) return null;
+    let out = files ? { body: hasBody ? body : null, files } : body;
+    const s = JSON.stringify(out);
+    if (s && s.length > MAX_BODY_CHARS) out = { _note: `body too large (${s.length} chars)`, keys: Object.keys(req.body || {}).slice(0, 50) };
+    return out;
+  } catch {
+    return null;
+  }
+}
 const SENSITIVE_QUERY_KEYS = new Set(['password', 'token', 'secret', 'apikey', 'api_key', 'authorization']);
 
 function normalizePathForMatching(path) {
@@ -306,6 +349,8 @@ function auditLogger(req, res, next) {
       referer: req.headers['referer'] || req.headers['referrer'] || null,
       queryParams: sanitizeQuery(req.query),
       resourceId: extractResourceId(req),
+      requestId: req.requestId || null,
+      requestBody: captureBody(req),
       errorMessage: failed ? extractErrorMessage(capturedBody) : null,
       cacheStatus: cacheHeader ? String(cacheHeader) : null,
       responseSize: typeof capturedBody === 'string'

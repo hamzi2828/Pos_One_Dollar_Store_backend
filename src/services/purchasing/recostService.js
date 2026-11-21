@@ -28,6 +28,7 @@ const StockMovement = require('../../models/stockMovement');
 const POSOrder = require('../../models/posOrder');
 const costing = require('./costing');
 const h = require('./helpers');
+const { recordChange } = require('../../helper/changeTracker');
 
 const { round2, round4 } = costing;
 const num = (n) => (Number.isFinite(Number(n)) ? Number(n) : 0);
@@ -270,12 +271,23 @@ async function apply(p, { by = {}, note = '' } = {}) {
         }
         const res = await POSOrder.collection.updateOne(filter, { $set: oset });
         if (!res.matchedCount) continue;
+        // Raw driver write: log it by hand (helper/changeTracker.js).
+        recordChange({
+          model: 'POSOrder', docId: o.orderId, operation: 'update', op: 'recost',
+          changedFields: ['cogs', 'giftCost', 'items'],
+          changes: [
+            { path: 'cogs', from: cur.cogs, to: oset.cogs },
+            { path: 'giftCost', from: cur.giftCost, to: oset.giftCost },
+            ...items.map((it) => ({ path: `items.${it.index}.costPrice`, from: it.old, to: it.new })),
+          ],
+        });
         for (const it of items) {
           const moves = await StockMovement.find({ refType: 'POSOrder', refId: o.orderId, product: u.product, variantId: u.variantId, type: it.isGift ? 'gift' : 'sale', unitCost: it.old })
             .select('quantity')
             .lean();
           for (const m of moves) {
             await StockMovement.collection.updateOne({ _id: m._id }, { $set: { unitCost: it.new, totalCost: round2(it.new * num(m.quantity)) } });
+            recordChange({ model: 'StockMovement', docId: m._id, operation: 'update', op: 'recost', changedFields: ['unitCost', 'totalCost'], changes: [{ path: 'unitCost', from: it.old, to: it.new }] });
           }
         }
         break;
@@ -286,6 +298,7 @@ async function apply(p, { by = {}, note = '' } = {}) {
     for (const r of u.receipts) {
       if (!r.movementId) continue;
       await StockMovement.collection.updateOne({ _id: r.movementId }, { $set: { unitCost: r.new, totalCost: round2(r.new * r.qty) } });
+      recordChange({ model: 'StockMovement', docId: r.movementId, operation: 'update', op: 'recost', changedFields: ['unitCost', 'totalCost'], changes: [{ path: 'unitCost', from: r.old, to: r.new }] });
     }
   }
 
@@ -298,6 +311,7 @@ async function apply(p, { by = {}, note = '' } = {}) {
         { $set: { 'stockCodes.$[sc].landedUnitCost': e.new } },
         { arrayFilters: [{ 'sc.entries': e.entryId, 'sc.landedUnitCost': e.old }] }
       );
+      recordChange({ model: 'Product', docId: prod._id, operation: 'update', op: 'recost', changedFields: ['stockCodes'], changes: [{ path: `stockCodes[entry ${e.entryId}].landedUnitCost`, from: e.old, to: e.new }] });
     }
   }
 

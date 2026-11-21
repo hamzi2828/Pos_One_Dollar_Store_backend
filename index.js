@@ -2,6 +2,10 @@
 // bill dates. Set before anything else uses Date (owner 2026-11-06).
 process.env.TZ = process.env.SHOP_TZ || 'Asia/Karachi';
 require('dotenv').config();
+// Data change log: every create / update / delete on every model is recorded
+// (helper/changeTracker.js). Must be registered before any model is loaded.
+require('mongoose').plugin(require('./src/helper/changeTracker').changeTracker);
+const { auditContextMiddleware } = require('./src/helper/auditContext');
 const express = require('express');
 const cors = require('cors');
 const compression = require('compression');
@@ -36,6 +40,8 @@ app.use(cors({
 // Time every request (Server-Timing header + log of slow ones). First, so it
 // measures everything the server does.
 app.use(requestTiming);
+// Request id + who-is-calling context for the data change log.
+app.use(auditContextMiddleware);
 app.use(compression());
 
 app.use(express.json({ limit: '50mb' }));

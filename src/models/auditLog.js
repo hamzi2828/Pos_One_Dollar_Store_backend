@@ -14,7 +14,7 @@ const auditLogSchema = new mongoose.Schema({
   },
   method: {
     type: String,
-    enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+    enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'],
     required: true,
   },
   path: {
@@ -59,6 +59,12 @@ const auditLogSchema = new mongoose.Schema({
   // 'info' | 'warn' | 'critical' — set per action so high-impact events stand out.
   severity: { type: String, default: 'info', index: true },
 
+  // Links this request to its rows in change_logs (what data it changed).
+  requestId: { type: String, default: null },
+
+  // POST/PUT/PATCH/DELETE: what was sent (secrets redacted, size capped).
+  requestBody: { type: mongoose.Schema.Types.Mixed, default: null },
+
   statusCode: {
     type: Number,
     default: null,
@@ -91,6 +97,8 @@ auditLogSchema.index({ severity: 1, createdAt: -1 });
 auditLogSchema.index({ statusCode: 1, createdAt: -1 });
 // Resource-specific timelines (who touched product X?)
 auditLogSchema.index({ resourceId: 1, createdAt: -1 });
+// All rows of one request
+auditLogSchema.index({ requestId: 1 }, { sparse: true });
 // Text search on action + path
 auditLogSchema.index({ action: 'text', path: 'text' });
 // Auto-delete logs older than 90 days

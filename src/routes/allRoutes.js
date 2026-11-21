@@ -28,6 +28,7 @@ const settingsController = require('../controller/settingsController');
 const vendorController = require('../controller/vendorController');
 const purchaseController = require('../controller/purchaseController');
 const auditLogController = require('../controller/auditLogController');
+const changeLogController = require('../controller/changeLogController');
 const bankController = require('../controller/bankController');
 const assetController = require('../controller/assetController');
 const expenseController = require('../controller/expenseController');
@@ -178,6 +179,10 @@ router.get('/admin/audit-logs/analytics', ...staff, can('activity_log', 'view'),
 router.get('/admin/audit-logs/top-users', ...staff, can('activity_log', 'view'), auditLogController.getTopUsers);
 router.get('/admin/audit-logs/user/:userId', ...staff, can('activity_log', 'view'), auditLogController.getUserAuditLogs);
 router.get('/admin/audit-logs/user/:userId/summary', ...staff, can('activity_log', 'view'), auditLogController.getUserAuditSummary);
+// Data change log: every create / update / delete with before / after values (helper/changeTracker.js)
+router.get('/admin/change-logs', ...staff, can('activity_log', 'view'), changeLogController.list);
+router.get('/admin/change-logs/models', ...staff, can('activity_log', 'view'), changeLogController.models);
+router.get('/admin/change-logs/:id', ...staff, can('activity_log', 'view'), changeLogController.getOne);
 
 // ----- Finance: banks, assets (old register), expenses -----
 router.get('/banks', ...staff, can('banks', 'view'), bankController.getAllBanks);
