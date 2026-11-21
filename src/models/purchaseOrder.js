@@ -77,6 +77,8 @@ const billSchema = new mongoose.Schema({
   sentBy: { type: ObjectId, ref: 'User', default: null },
   createdBy: { type: ObjectId, ref: 'User', default: null },
   createdAt: { type: Date, default: Date.now },
+  // Made offline in the phone app: the same bill sent twice is saved once.
+  clientId: { type: String, default: undefined },
 });
 
 const chargeSchema = new mongoose.Schema({
@@ -130,6 +132,8 @@ const totalsSchema = new mongoose.Schema(
 const purchaseOrderSchema = new mongoose.Schema(
   {
     poNumber: { type: String, required: true, unique: true, trim: true },
+    // Started offline in the phone app: the same trip sent twice is saved once.
+    clientId: { type: String, default: undefined },
     branch: { type: ObjectId, ref: 'Branch', required: true },
     status: { type: String, enum: STATUSES, default: 'open' },
 
@@ -171,6 +175,7 @@ purchaseOrderSchema.index({ status: 1, createdAt: -1 });
 purchaseOrderSchema.index({ 'bills.vendor': 1, createdAt: -1 });
 purchaseOrderSchema.index({ 'bills.billNo': 1 });
 purchaseOrderSchema.index({ 'builty.builtyNo': 1 });
+purchaseOrderSchema.index({ clientId: 1 }, { unique: true, partialFilterExpression: { clientId: { $type: 'string' } } });
 
 const PurchaseOrder = mongoose.models.PurchaseOrder || mongoose.model('PurchaseOrder', purchaseOrderSchema);
 PurchaseOrder.STATUSES = STATUSES;

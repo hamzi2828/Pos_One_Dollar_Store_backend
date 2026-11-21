@@ -21,6 +21,8 @@ const vendorSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     // Short vendor code, e.g. "VEN-0001" (auto when left empty). Unique among live vendors.
     code: { type: String, trim: true, uppercase: true, default: undefined },
+    // Added offline in the phone app: the same vendor sent twice is saved once.
+    clientId: { type: String, default: undefined },
     contactPerson: { type: String, default: '', trim: true },
     email: { type: String, default: '', trim: true, lowercase: true },
     phone: { type: String, default: '', trim: true },
@@ -79,6 +81,7 @@ vendorSchema.index(
   { code: 1 },
   { unique: true, name: 'vendor_code_unique', partialFilterExpression: { isDeleted: false, code: { $type: 'string' } } }
 );
+vendorSchema.index({ clientId: 1 }, { unique: true, partialFilterExpression: { clientId: { $type: 'string' } } });
 vendorSchema.index(
   { name: 'text', contactPerson: 'text', email: 'text', phone: 'text', category: 'text', notes: 'text' },
   { name: 'vendor_text_idx', weights: { name: 10, contactPerson: 5, email: 3, phone: 3, category: 2, notes: 1 } }

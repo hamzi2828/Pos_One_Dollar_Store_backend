@@ -449,7 +449,15 @@ async function costingFor(req, id) {
 
 // ---------------------------------------------------------------- write: header
 
+/** Phone app offline queue id ('' = none). */
+const clientIdOf = (body) => (typeof body.clientId === 'string' ? body.clientId.trim().slice(0, 80) : '');
+
 async function create(req, body = {}) {
+  const clientId = clientIdOf(body);
+  if (clientId) {
+    const seen = await PurchaseOrder.findOne({ clientId, ...branchFilter(req) });
+    if (seen) return seen.toObject();
+  }
   const branch = await resolveWriteBranch(req);
   const method = body.allocationMethod || 'value';
   if (!PurchaseOrder.ALLOCATION_METHODS.includes(method)) throw httpError('Unknown allocation method');
@@ -464,8 +472,9 @@ async function create(req, body = {}) {
     notes: h.toText(body.notes, 1000),
     expectedArrival: h.toDate(body.expectedArrival, 'Expected arrival'),
     allocationMethod: method,
+    clientId: clientId || undefined,
     createdBy: h.userId(req),
-    history: [h.historyEntry(req, 'created')],
+    history: [h.historyEntry(req, 'created', clientId ? 'from the phone app (made offline)' : undefined)],
   });
   costing.recalcPO(po);
   try {
@@ -528,6 +537,12 @@ async function afterBillChange(req, po) {
 }
 
 async function addBill(req, id, body = {}, photos = []) {
+  const clientId = clientIdOf(body);
+  if (clientId) {
+    const current = await findPO(req, id);
+    const seen = current.bills.find((b) => b.clientId === clientId);
+    if (seen) return { po: current.toObject(), billId: seen._id };
+  }
   const vendor = await loadVendor(body.vendorId || body.vendor);
   const items = h.toList(body.items);
   const money = await parseBillMoney(body);
@@ -535,7 +550,7 @@ async function addBill(req, id, body = {}, photos = []) {
     req,
     id,
     async (doc) => {
-      doc.bills.push({ vendor: vendor._id, vendorName: vendor.name, photos, createdBy: h.userId(req) });
+      doc.bills.push({ vendor: vendor._id, vendorName: vendor.name, photos, createdBy: h.userId(req), clientId: clientId || undefined });
       const bill = doc.bills[doc.bills.length - 1];
       applyBillFields(bill, body, null, money);
       assertUniqueBillNo(doc, bill);

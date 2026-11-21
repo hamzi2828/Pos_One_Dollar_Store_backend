@@ -317,6 +317,12 @@ async function getById(vendorId) {
 
 /** POST /api/vendors. `openingBalance` (> 0 we owe them, < 0 they owe us) -> ledger row. */
 async function create(body = {}, { userId } = {}) {
+  // Phone app offline queue: a resend of the same vendor returns the first one.
+  const clientId = typeof body.clientId === 'string' && body.clientId.trim() ? body.clientId.trim().slice(0, 80) : undefined;
+  if (clientId) {
+    const seen = await Vendor.findOne({ clientId }).select('_id').lean();
+    if (seen) return getById(seen._id);
+  }
   const fields = cleanInput(body);
   if (!fields.name) throw httpError('Vendor name is required');
   await assertUnique(fields);
@@ -326,8 +332,12 @@ async function create(body = {}, { userId } = {}) {
 
   let vendor;
   try {
-    vendor = await Vendor.create({ ...fields, createdBy: oid(userId), updatedBy: oid(userId) });
+    vendor = await Vendor.create({ ...fields, clientId, createdBy: oid(userId), updatedBy: oid(userId) });
   } catch (e) {
+    if (e && e.code === 11000 && clientId && e.keyPattern && e.keyPattern.clientId) {
+      const seen = await Vendor.findOne({ clientId }).select('_id').lean();
+      if (seen) return getById(seen._id);
+    }
     if (e && e.code === 11000) throw httpError('This vendor code is already used', 409, 'DUPLICATE_CODE');
     throw e;
   }
