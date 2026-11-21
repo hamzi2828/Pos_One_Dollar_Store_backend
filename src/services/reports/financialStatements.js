@@ -139,88 +139,33 @@ const CHARGE_LABELS = {
 };
 
 /**
- * Trip costs of the goods sold, split by charge type (owner 2026-11-20). Each product's
- * trip part comes from its goods receipts; a receipt's trip part is split by that trip's
- * own charges (car rent, builty, loading ...). Adds up to the "Trip costs" line.
+ * Trip costs PAID in the period, split by charge type (owner 2026-11-21: the P&L takes the
+ * trip costs paid in the period in full; goods sold count at vendor price only, so trip costs
+ * of goods sold later are not counted again). Same rows as the Spending report.
  */
-async function tripByType(orderMatch) {
+async function tripPaid(start, end) {
   const db = mongoose.connection.db;
-  const [entryRows, lineRows] = await Promise.all([
-    db
-      .collection('goodsreceipts')
-      .aggregate([
-        { $unwind: '$entries' },
-        // Undone entries stay in the receipt (marked undone) with their old landed cost: skip them.
-        { $match: { 'entries.posted': true, 'entries.undone': { $ne: true }, 'entries.landedUnitCost': { $gt: 0 } } },
-        {
-          $project: {
-            po: '$purchaseOrder',
-            p: '$entries.product',
-            landed: { $multiply: [{ $ifNull: ['$entries.stockQty', '$entries.qty'] }, '$entries.landedUnitCost'] },
-            trip: { $multiply: [{ $ifNull: ['$entries.stockQty', '$entries.qty'] }, { $max: [0, { $subtract: ['$entries.landedUnitCost', '$entries.costPrice'] }] }] },
-          },
-        },
-      ])
-      .toArray(),
-    db
-      .collection('goodsreceipts')
-      .aggregate([
-        { $unwind: '$lines' },
-        { $match: { 'lines.posted': true, 'lines.landedUnitCost': { $gt: 0 } } },
-        {
-          $project: {
-            po: '$purchaseOrder',
-            p: '$lines.product',
-            landed: { $multiply: ['$lines.acceptedQty', '$lines.landedUnitCost'] },
-            trip: { $ifNull: ['$lines.allocatedCharges', 0] },
-          },
-        },
-      ])
-      .toArray(),
-  ]);
-  const rows = [...entryRows, ...lineRows];
-  const poIds = [...new Set(rows.map((r) => r.po && String(r.po)).filter(Boolean))];
-  const pos = poIds.length
-    ? await db.collection('purchaseorders').find({ _id: { $in: poIds.map((x) => new mongoose.Types.ObjectId(x)) } }).project({ charges: 1 }).toArray()
-    : [];
-  // Charge-type mix of each trip.
-  const mix = new Map();
+  const pos = await db
+    .collection('purchaseorders')
+    .find({ status: { $ne: 'cancelled' }, 'charges.0': { $exists: true } })
+    .project({ charges: 1 })
+    .toArray();
+  const by = {};
+  let total = 0;
   for (const po of pos) {
-    const by = {};
-    let t = 0;
     for (const c of po.charges || []) {
-      const a = Number(c.amount) || 0;
-      by[c.type || 'misc'] = (by[c.type || 'misc'] || 0) + a;
-      t += a;
-    }
-    if (t > 0) mix.set(String(po._id), Object.fromEntries(Object.entries(by).map(([k, v]) => [k, v / t])));
-  }
-  // Per product: landed total and trip amount per type.
-  const prod = new Map();
-  for (const r of rows) {
-    const k = String(r.p);
-    const a = prod.get(k) || { landed: 0, types: {} };
-    a.landed += Number(r.landed) || 0;
-    const trip = Number(r.trip) || 0;
-    const m = (r.po && mix.get(String(r.po))) || { misc: 1 };
-    for (const [type, share] of Object.entries(m)) a.types[type] = (a.types[type] || 0) + trip * share;
-    prod.set(k, a);
-  }
-  // Sold lines: cost x (trip of type / landed).
-  const lines = await salesLines({ orderMatch, groupBy: {} });
-  const out = {};
-  for (const l of lines) {
-    const a = prod.get(String(l.productId));
-    if (!a || !(a.landed > 0)) continue;
-    for (const [type, amt] of Object.entries(a.types)) {
-      const share = Math.min(1, amt / a.landed);
-      out[type] = (out[type] || 0) + l.cost * share;
+      const at = c.date || c.createdAt;
+      if (!at || at < start || at > end) continue;
+      const amount = Number(c.amount) || 0;
+      total += amount;
+      by[c.type || 'misc'] = (by[c.type || 'misc'] || 0) + amount;
     }
   }
-  return Object.entries(out)
+  const byType = Object.entries(by)
     .map(([type, amount]) => ({ type, label: CHARGE_LABELS[type] || type, amount: round2(amount) }))
     .filter((x) => x.amount !== 0)
     .sort((x, y) => y.amount - x.amount);
+  return { total: round2(total), byType };
 }
 
 /**
@@ -496,7 +441,11 @@ async function incomeFor(start, end) {
   const depreciation = assets.reduce((t, a) => t + assetDepreciation(a, start, end), 0);
 
   const netSales = revenue - refunds; // refunded bills are not in `revenue`
-  const gross = netSales - cogs;
+  // Owner 2026-11-21: goods sold at vendor price + trip costs PAID in the period (in full).
+  const goodsCost = cogs - tripPart;
+  const trip = await tripPaid(start, end).catch((e) => (console.error('[fin] trip paid', e.message), { total: 0, byType: [] }));
+  const costOfGoods = goodsCost + trip.total;
+  const gross = netSales - costOfGoods;
   // Owner 2026-11-20: "Assets purchased" sits right after the operating expenses, so it is
   // taken off before the operating profit (net profit is the same either way).
   const otherCosts = damageLoss + countLoss + depreciation;
@@ -514,10 +463,11 @@ async function incomeFor(start, end) {
     refundsFull: round2(fullRefunds),
     refundsPartial: round2(refunds),
     netSales: round2(netSales),
-    costOfGoods: round2(cogs),
-    // Cost of goods split: vendor price of what was sold + its share of trip costs.
-    goodsCost: round2(cogs - tripPart),
-    tripCost: round2(tripPart),
+    costOfGoods: round2(costOfGoods),
+    // Cost of goods split: vendor price of what was sold + trip costs paid in the period.
+    goodsCost: round2(goodsCost),
+    tripCost: trip.total,
+    tripByType: trip.byType,
     grossProfit: round2(gross),
     grossMargin: pct(gross),
     expenses: expenseRows,
@@ -541,14 +491,12 @@ async function incomeStatement(query = {}) {
   // Per counter and per vendor (current period only; a breakdown never blocks the statement).
   const orderMatch = { ...SALE_MATCH, createdAt: { $gte: r.start, $lte: r.end } };
   const shares = await tripShares().catch(() => new Map());
-  const [byCounter, byVendor, tripTypes] = await Promise.all([
+  const [byCounter, byVendor] = await Promise.all([
     counterSales(orderMatch).catch((e) => (console.error('[fin] by counter', e.message), null)),
     vendorGoods(orderMatch, r.start, r.end, shares).catch((e) => (console.error('[fin] by vendor', e.message), null)),
-    tripByType(orderMatch).catch((e) => (console.error('[fin] trip by type', e.message), null)),
   ]);
   current.byCounter = byCounter;
   current.byVendor = byVendor;
-  current.tripByType = tripTypes;
   // Same number of days just before, for comparison.
   let previous = null;
   if (String(query.compare || '1') !== '0') {
@@ -664,7 +612,18 @@ async function balanceSheet() {
   }
 
   const cash = money.left; // null when no start balance was set
-  const stock = (stockAgg[0] && stockAgg[0].value) || 0;
+  // Owner 2026-11-21: trip costs come off the profit when paid, so stock is shown at vendor
+  // price (its trip share taken out), else the balance sheet would count them twice.
+  const shares = await tripShares().catch(() => new Map());
+  const stockRows = shares.size
+    ? await db
+        .collection('products')
+        .find({ ...NOT_DELETED, isConsignment: { $ne: true }, stock: { $gt: 0 } })
+        .project({ stock: 1, costPrice: 1 })
+        .toArray()
+    : [];
+  const stockTrip = stockRows.reduce((t, p) => t + (Number(p.stock) || 0) * (Number(p.costPrice) || 0) * (shares.get(String(p._id)) || 0), 0);
+  const stock = ((stockAgg[0] && stockAgg[0].value) || 0) - stockTrip;
   const advancesTotal = (advances[0] && advances[0].total) || 0;
   // Owner 2026-11-20 rule: an asset bought with shop cash is taken off the profit ("Assets
   // purchased"), so that part is not counted again as asset value here.
@@ -688,7 +647,7 @@ async function balanceSheet() {
     { key: 'jazzcash', label: 'JazzCash wallet', amount: jazz, hint: 'Money received by JazzCash minus paid out from it' },
     {
       key: 'stock',
-      label: 'Stock at cost',
+      label: 'Stock at cost (vendor price)',
       amount: round2(stock),
       // Owner, 2026-11-21: "35,559 pieces × Rs 254.62 avg".
       hint: stockAgg[0]
