@@ -301,6 +301,8 @@ async function list(req) {
           receivedPieces: { $sum: '$lines.receivedQty' },
           vendors: { $setUnion: ['$lines.vendorName', { $ifNull: ['$boxes.vendorName', []] }] },
           boxesCheckedAt: 1,
+          boxes: 1,
+          goodsTotal: 1,
           liveEntries: {
             $filter: { input: { $ifNull: ['$entries', []] }, as: 'e', cond: { $ne: ['$$e.undone', true] } },
           },
@@ -310,9 +312,22 @@ async function list(req) {
         $addFields: {
           entryCount: { $size: '$liveEntries' },
           enteredPieces: { $sum: '$liveEntries.qty' },
+          // Money: bills of this trip vs good pieces entered (tags printed), as on the unpack screen.
+          billTotal: {
+            $let: {
+              vars: { s: { $sum: { $ifNull: ['$boxes.billTotal', []] } } },
+              in: { $cond: [{ $gt: ['$$s', 0] }, '$$s', { $ifNull: ['$goodsTotal', 0] }] },
+            },
+          },
+          enteredValue: {
+            $sum: { $map: { input: '$liveEntries', as: 'e', in: { $multiply: [{ $ifNull: ['$$e.stockQty', 0] }, { $ifNull: ['$$e.costPrice', 0] }] } } },
+          },
+          enteredArticles: {
+            $sum: { $map: { input: '$liveEntries', as: 'e', in: { $multiply: [{ $ifNull: ['$$e.qty', 0] }, { $max: [1, { $ifNull: ['$$e.piecesPerSale', 1] }] }] } } },
+          },
         },
       },
-      { $project: { liveEntries: 0 } },
+      { $project: { liveEntries: 0, boxes: 0, goodsTotal: 0 } },
     ]),
     GoodsReceipt.countDocuments(filter),
     GoodsReceipt.aggregate([{ $match: base }, { $group: { _id: '$status', n: { $sum: 1 } } }]),
