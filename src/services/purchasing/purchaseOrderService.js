@@ -578,15 +578,21 @@ async function updateBill(req, id, billId, body = {}, photos = []) {
   return po.toObject();
 }
 
-async function removeBill(req, id, billId) {
+async function removeBill(req, id, billId, { confirm = false } = {}) {
+  // Goods already entered into stock from this bill: never removable.
   await assertBillNotUnpacked(req, id, billId, 'removed');
-  // Still buying: a bill sent on its own whose boxes the warehouse already checked stays.
+  // Boxes only checked (nothing entered yet): removable once the user confirms.
   const current = await findPO(req, id);
-  if (current.status === 'open' && current.goodsReceipt) {
+  let box = null;
+  if (current.goodsReceipt) {
     const grn = await GoodsReceipt.findById(current.goodsReceipt).select('boxes').lean();
-    const box = grn && (grn.boxes || []).find((b) => String(b.bill) === String(billId));
-    if (box && box.checkedAt) {
-      throw httpError('The warehouse has already checked the boxes/packs of this bill, so it cannot be removed.', 409, 'BILL_UNPACKING');
+    box = (grn && (grn.boxes || []).find((b) => String(b.bill) === String(billId))) || null;
+    if (box && box.checkedAt && !confirm) {
+      throw httpError(
+        'The warehouse has already checked the boxes/packs of this bill. Remove it anyway? It will be kept in the trip record.',
+        409,
+        'BILL_BOXES_CHECKED'
+      );
     }
   }
   let removed = null;
@@ -597,7 +603,10 @@ async function removeBill(req, id, billId) {
       const bill = findBill(doc, billId);
       if (doc.status !== 'open' && doc.bills.length <= 1) throw httpError('A sent trip needs at least one vendor bill. Cancel the trip instead.', 409);
       removed = { bill: bill.toObject(), index: doc.bills.indexOf(bill) };
-      doc.history.push(h.historyEntry(req, 'bill_removed', `${bill.vendorName}${bill.billNo ? ` bill ${bill.billNo}` : ''}`));
+      const checked = box && box.checkedAt ? ' (boxes already checked by warehouse)' : '';
+      doc.history.push(h.historyEntry(req, 'bill_removed', `${bill.vendorName}${bill.billNo ? ` bill ${bill.billNo}` : ''}${checked}`));
+      // Soft delete: keep the bill (and its warehouse box count) on the trip.
+      doc.removedBills.push({ bill: removed.bill, box, removedAt: new Date(), removedBy: h.userId(req), removedByName: h.userName(req) });
       bill.deleteOne();
     },
     BILLS

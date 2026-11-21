@@ -140,6 +140,8 @@ const purchaseOrderSchema = new mongoose.Schema(
     allocationMethod: { type: String, enum: ALLOCATION_METHODS, default: 'value' },
 
     bills: { type: [billSchema], default: [] },
+    // Soft delete: a removed bill is kept here as it was ({ bill, box, removedAt, removedBy, removedByName }).
+    removedBills: { type: [mongoose.Schema.Types.Mixed], default: [] },
     charges: { type: [chargeSchema], default: [] },
     builty: { type: builtySchema, default: () => ({}) },
     totals: { type: totalsSchema, default: () => ({}) },

@@ -50,7 +50,8 @@ module.exports = {
     ok(res, await service.updateBill(req, req.params.id, req.params.billId, req.body, photos));
   },
 
-  removeBill: async (req, res) => ok(res, await service.removeBill(req, req.params.id, req.params.billId)),
+  removeBill: async (req, res) =>
+    ok(res, await service.removeBill(req, req.params.id, req.params.billId, { confirm: ['1', 'true'].includes(String(req.query.confirm)) })),
 
   sendBill: async (req, res) => {
     const { po, grn } = await service.sendBill(req, req.params.id, req.params.billId);
