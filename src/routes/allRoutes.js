@@ -49,9 +49,39 @@ const can = (keys, action = 'view') => {
 };
 const superAdmin = requireSuperAdmin;
 
-// Read-only lookups shared by several screens (product form, POS, receive stock).
-const PRODUCT_READ = ['products', 'pos', 'product_stock', 'stock_receive'];
-const ATTRIBUTE_READ = ['product_attributes', 'products'];
+// Buying / receiving staff make new products from a PO or GRN (the "New product"
+// popup) without the Products menu. Owner 2026-11-21: Warehouse + Manager.
+const PURCHASING = ['goods_receiving', 'purchase_orders'];
+// Read-only lookups shared by several screens (product form, POS, receive stock, PO / GRN).
+const PRODUCT_READ = ['products', 'pos', 'product_stock', 'stock_receive', ...PURCHASING];
+const ATTRIBUTE_READ = ['product_attributes', 'products', ...PURCHASING];
+// Product form helpers + stickers: Products, or PO / GRN work.
+const PRODUCT_FORM_READ = ['products', ...PURCHASING];
+// products:<action>, or edit on a PO / GRN (where the popup lives).
+const productOrPurchasing = (action, purchasing = PURCHASING) => {
+  const mw = (req, res, next) => {
+    if (req.access && (req.access.can('products', action) || purchasing.some((k) => req.access.can(k, 'edit')))) return next();
+    return res.status(403).json({ message: 'You do not have permission for this action', required: { keys: ['products', ...purchasing], action } });
+  };
+  mw.permission = { keys: ['products', ...purchasing], action };
+  return mw;
+};
+const canCreateProduct = productOrPurchasing('create');
+// Fixing a product's details from a goods-receipt entry.
+const canEditProductFromGrn = productOrPurchasing('edit', ['goods_receiving']);
+// The PO / GRN popup never types stock: the pieces come with the receipt.
+const noStock = (req, _res, next) => {
+  if (req.body) req.body.stock = '0';
+  next();
+};
+// Editing from a GRN entry: stock and cost are set by the entry, never by the form.
+const noStockEdit = (req, _res, next) => {
+  if (req.body) {
+    delete req.body.stock;
+    delete req.body.costPrice;
+  }
+  next();
+};
 const PRODUCT_UPLOADS = uploadFields([
   { name: 'thumbnail', maxCount: 1 },
   { name: 'banners', maxCount: 10 },
@@ -110,16 +140,16 @@ router.delete('/sizes/:id', ...staff, can('product_attributes', 'delete'), sizeC
 // ----- Products -----
 router.get('/products', ...staff, can(PRODUCT_READ, 'view'), productController.listProducts);
 // Codes + stock receiving. Must sit before /products/:id.
-router.get('/products/codes/check', ...staff, can('products', 'view'), inventoryController.checkCode);
-router.get('/products/codes/new-short-code', ...staff, can('products', 'view'), inventoryController.generateShortCode);
+router.get('/products/codes/check', ...staff, can(PRODUCT_FORM_READ, 'view'), inventoryController.checkCode);
+router.get('/products/codes/new-short-code', ...staff, can(PRODUCT_FORM_READ, 'view'), inventoryController.generateShortCode);
 router.get('/products/codes/lookup/:code', ...staff, can(PRODUCT_READ, 'view'), inventoryController.lookupCode);
 router.post('/products/:id/stock/receive', ...staff, can('stock_receive', 'create'), inventoryController.receiveStock);
 // Barcode stickers (HTML page to print, JSON for a picker). Must sit before /products/:id.
-router.post('/products/labels/print', ...staff, can('products', 'view'), labelController.printBulk);
-router.get('/products/:id/labels', ...staff, can('products', 'view'), labelController.printLabels);
-router.get('/products/:id/label-data', ...staff, can('products', 'view'), labelController.getLabelData);
+router.post('/products/labels/print', ...staff, can(PRODUCT_FORM_READ, 'view'), labelController.printBulk);
+router.get('/products/:id/labels', ...staff, can(PRODUCT_FORM_READ, 'view'), labelController.printLabels);
+router.get('/products/:id/label-data', ...staff, can(PRODUCT_FORM_READ, 'view'), labelController.getLabelData);
 // "Improve name" button (OpenAI, key on the server). Before /products/:id routes.
-router.post('/products/improve-name', ...staff, can('products', 'create'), async (req, res) => {
+router.post('/products/improve-name', ...staff, canCreateProduct, async (req, res) => {
   try {
     const out = await require('../services/products/nameHelperService').improveName(req.body || {});
     res.json({ success: true, data: out });
@@ -133,6 +163,9 @@ router.get('/products/:id/sold-by-barcode', ...staff, can(PRODUCT_READ, 'view'),
 router.get('/products/:id', ...staff, can(PRODUCT_READ, 'view'), productController.getProductById);
 // multipart form-data: thumbnail (1), banners (up to 10), colorThumbnail / colorBanner (per colour)
 router.post('/products', ...staff, can('products', 'create'), PRODUCT_UPLOADS, productController.createProduct);
+// Same form, opened as "New product" while receiving goods / on a PO bill (stock always 0).
+router.post('/products/from-purchasing', ...staff, canCreateProduct, PRODUCT_UPLOADS, noStock, productController.createProduct);
+router.put('/products/:id/from-purchasing', ...staff, canEditProductFromGrn, PRODUCT_UPLOADS, noStockEdit, productController.updateProduct);
 router.put('/products/:id', ...staff, can('products', 'edit'), PRODUCT_UPLOADS, productController.updateProduct);
 router.delete('/products/:id', ...staff, can('products', 'delete'), productController.deleteProduct);
 

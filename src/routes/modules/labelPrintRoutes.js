@@ -8,6 +8,10 @@ const { staff, can, handle } = require('./_access');
 const log = require('../../services/labelPrintLog');
 
 const router = express.Router();
+// Stickers are printed from Products and while receiving / buying (Owner 2026-11-21:
+// Warehouse + Manager have no Products menu any more).
+const LABEL_READ = ['products', 'goods_receiving', 'purchase_orders'];
+const LABEL_EDIT = ['products', 'goods_receiving'];
 
 const limit = (() => {
   const hits = new Map();
@@ -34,7 +38,7 @@ router.post(
 router.get(
   '/label-prints',
   ...staff,
-  can('products', 'view'),
+  can(LABEL_READ, 'view'),
   handle(async (req, res) => {
     const data = await log.listForProduct(req.query.productId, { variantId: req.query.variantId || null, bill: req.query.bill || null, limit: req.query.limit });
     res.json({ success: true, data });
@@ -45,7 +49,7 @@ router.get(
 router.get(
   '/label-prints/summary',
   ...staff,
-  can('products', 'view'),
+  can(LABEL_READ, 'view'),
   handle(async (req, res) => {
     const data = await log.printedSummary(String(req.query.productIds || '').split(','));
     res.json({ success: true, data });
@@ -56,7 +60,7 @@ router.get(
 router.post(
   '/label-prints/scanned',
   ...staff,
-  can('products', 'edit'),
+  can(LABEL_EDIT, 'edit'),
   handle(async (req, res) => {
     const data = await log.markScanned(req, req.body || {});
     res.json({ success: true, data });
@@ -67,7 +71,7 @@ router.post(
 router.post(
   '/label-prints/remove-extra',
   ...staff,
-  can('products', 'edit'),
+  can(LABEL_EDIT, 'edit'),
   handle(async (req, res) => {
     const b = req.body || {};
     const data = await log.removeExtra(req, b.grnId, b.entryId);
@@ -79,7 +83,7 @@ router.post(
 router.patch(
   '/label-prints/:id',
   ...staff,
-  can('products', 'edit'),
+  can(LABEL_EDIT, 'edit'),
   handle(async (req, res) => {
     const data = await log.setIgnored(req, req.params.id, (req.body || {}).ignored);
     res.json({ success: true, data });

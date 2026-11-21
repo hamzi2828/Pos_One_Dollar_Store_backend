@@ -263,7 +263,8 @@ const DEFAULT_ROLES = [
             report_sales: VX, report_cost_analysis: VX, report_stock: VX, report_expenses: VX, report_receivables: VX, report_cash_in_hand: VX,
             report_demand: ['view', 'edit', 'export'], report_trends: VX, report_slow_moving: ['view', 'edit', 'export'],
             report_footfall: ['view', 'create', 'edit', 'export'], report_category_performance: VX, report_cash_closing: VX, report_stock_movement: VX,
-            products: VCE, product_categories: VCE, product_attributes: VCE, product_stock: VCE, stock_receive: VC, discounts: ['view', 'create', 'edit', 'delete'],
+            // Owner 2026-11-21: no Products / Categories / Stock menu; new products come from the PO / GRN popup.
+            product_attributes: VCE, discounts: ['view', 'create', 'edit', 'delete'],
             price_tiers: VCE, customers: VCE, banks: V, expenses: VCE, assets: VCE, employees: VCE, category_assignments: VE,
             staff: VCE, roles: V, activity_log: V, notifications: V,
             shifts: ['view', 'create', 'edit', 'delete'], hr_policies: V, attendance: ['view', 'create', 'edit', 'export'],
@@ -279,10 +280,11 @@ const DEFAULT_ROLES = [
     {
         name: 'Warehouse Assistant',
         // Owner, 2026-10-31: also does the buying (trips + vendor bills) and creates new products while storing.
-        description: 'Buys (trips and vendor bills), receives goods, creates new products, sends stock to the shelves, reports damage and counts stock.',
+        description: 'Buys (trips and vendor bills), receives goods, creates new products while receiving, sends stock to the shelves, reports damage and counts stock.',
         permissions: {
             purchase_orders: VCE, goods_receiving: VCE, vendors: ['create'], racks: V, stock_putaway: VC, stock_movements: V, damages: VC,
-            shop_use: VC, stock_adjustments: VC, products: VCE, product_categories: V, product_stock: V, stock_receive: VC,
+            // Owner 2026-11-21: no Products / Categories / Stock menu; new products come from the PO / GRN popup.
+            shop_use: VC, stock_adjustments: VC,
             desktop_download: V, attendance_kiosk: VC, desktop_pos: VC, pos: VC,
         },
     },

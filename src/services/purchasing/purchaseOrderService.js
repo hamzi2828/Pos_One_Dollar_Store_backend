@@ -670,7 +670,8 @@ async function removeItem(req, id, billId, itemId) {
 
 /** Stretch: create a brand-new product from a PO line and add it to the bill. */
 async function addNewProduct(req, id, billId, body = {}) {
-  if (!req.access.can('products', 'create')) throw httpError('You do not have permission to create products', 403);
+  // The route needs purchase_orders:edit; that is enough to add a new product to a bill (Owner 2026-11-21).
+  if (!req.access.can('products', 'create') && !req.access.can('purchase_orders', 'edit')) throw httpError('You do not have permission to create products', 403);
   const po = await findPO(req, id);
   assertOpen(po, BILLS);
   findBill(po, billId);
